@@ -214,7 +214,14 @@ where they are exercised)
   failure.
 - [x] Open-workspace indicators (D7).
 - [x] E2e: fixture repos discovered, filtered, opened; workspace focused/created asserted
-  via harness.
+  via harness. Harness promoted to `scripts/e2e.sh` + `just e2e` (env-overridable
+  sandbox/binary) — the standing e2e gate for every milestone from here on.
+- Reviewed and independently verified (commit 5acd139): 69 tests, clean lints, e2e
+  PASS in a fresh sandbox. Notable implementation upgrades over kiosk, accepted in
+  review: fuzzy filtering on a coalescing worker thread with generation-guarded
+  results (keeps typing responsive at large repo counts, per D17), bounded fallback
+  in `spawn_work_parallel`, and non-blocking toast queue instead of kiosk's modal
+  errors. Awaiting Tom's hand-test of picker feel in a real herdr.
 
 ### M4 — branch picker
 - [ ] Tab on repo → branch view: local branches + worktree enrichment; current/default
