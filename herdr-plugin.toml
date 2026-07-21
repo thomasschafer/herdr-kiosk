@@ -1,0 +1,23 @@
+id = "thomasschafer.herdr-kiosk"
+name = "Kiosk"
+version = "0.1.0"
+min_herdr_version = "0.7.4"
+description = "Fuzzy-find Git repositories and branches and open them as Herdr workspaces."
+platforms = ["linux", "macos"]
+
+[[panes]]
+id = "picker"
+title = "Repos"
+placement = "popup"
+width = "90%"
+height = "90%"
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-kiosk\""]
+
+[[actions]]
+id = "open-picker"
+title = "Open repo picker"
+contexts = ["workspace", "global"]
+command = ["sh", "scripts/open-picker.sh"]
+
+[[build]]
+command = ["sh", "-c", "cargo build --release"]
