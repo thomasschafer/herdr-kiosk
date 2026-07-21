@@ -208,12 +208,12 @@ where they are exercised)
   when a configured search dir does not exist (currently filtered silently).
 
 ### M3 — repo picker (the load-bearing UX)
-- [ ] Streaming repo discovery rendering as results arrive; fuzzy search; collision
+- [x] Streaming repo discovery rendering as results arrive; fuzzy search; collision
   display per §5; current-repo highlight from context.
-- [ ] Enter → `worktree open` → exit. Loading state while the call runs; error toast on
+- [x] Enter → `worktree open` → exit. Loading state while the call runs; error toast on
   failure.
-- [ ] Open-workspace indicators (D7).
-- [ ] E2e: fixture repos discovered, filtered, opened; workspace focused/created asserted
+- [x] Open-workspace indicators (D7).
+- [x] E2e: fixture repos discovered, filtered, opened; workspace focused/created asserted
   via harness.
 
 ### M4 — branch picker

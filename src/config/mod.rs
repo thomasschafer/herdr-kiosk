@@ -19,8 +19,49 @@ pub enum SearchDirEntry {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeysConfig {}
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ThemeConfig {}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemeColor {
+    Black,
+    Red,
+    Green,
+    Yellow,
+    Blue,
+    Magenta,
+    Cyan,
+    White,
+    Gray,
+    DarkGray,
+    Reset,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ThemeConfig {
+    pub accent: ThemeColor,
+    pub error: ThemeColor,
+    pub warning: ThemeColor,
+    pub muted: ThemeColor,
+    pub border: ThemeColor,
+    pub hint: ThemeColor,
+    pub highlight_fg: ThemeColor,
+    pub open: ThemeColor,
+}
+
+impl Default for ThemeConfig {
+    fn default() -> Self {
+        Self {
+            accent: ThemeColor::Magenta,
+            error: ThemeColor::Red,
+            warning: ThemeColor::Yellow,
+            muted: ThemeColor::DarkGray,
+            border: ThemeColor::DarkGray,
+            hint: ThemeColor::Blue,
+            highlight_fg: ThemeColor::Black,
+            open: ThemeColor::Green,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -35,8 +76,9 @@ impl Config {
         &self,
         home: Option<&Path>,
         is_dir: impl Fn(&Path) -> bool,
-    ) -> Result<Vec<(PathBuf, u16)>> {
-        self.search_dirs
+    ) -> Result<ResolvedSearchDirs> {
+        let expanded = self
+            .search_dirs
             .iter()
             .map(|entry| {
                 let (path, depth) = match entry {
@@ -47,14 +89,34 @@ impl Config {
                 };
                 expand_tilde(path, home).map(|path| (path, depth))
             })
-            .collect::<Result<Vec<_>>>()
-            .map(|dirs| dirs.into_iter().filter(|(path, _)| is_dir(path)).collect())
+            .collect::<Result<Vec<_>>>()?;
+        let mut dirs = Vec::with_capacity(expanded.len());
+        let mut warnings = Vec::new();
+        for (path, depth) in expanded {
+            if is_dir(&path) {
+                dirs.push((path, depth));
+            } else {
+                warnings.push(ConfigWarning {
+                    message: format!(
+                        "configured search directory does not exist or is not a directory: {}",
+                        path.display()
+                    ),
+                });
+            }
+        }
+        Ok(ResolvedSearchDirs { dirs, warnings })
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigWarning {
     pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedSearchDirs {
+    pub dirs: Vec<(PathBuf, u16)>,
+    pub warnings: Vec<ConfigWarning>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -247,19 +309,32 @@ mod tests {
             .resolved_search_dirs_with(Some(Path::new("/home/tester")), |_| true)
             .unwrap();
         assert_eq!(
-            resolved,
+            resolved.dirs,
             [
                 (PathBuf::from("/home/tester"), 1),
                 (PathBuf::from("/home/tester/Work"), 4),
                 (PathBuf::from("/absolute"), 1),
             ]
         );
+        assert!(resolved.warnings.is_empty());
     }
 
     #[test]
     fn missing_home_makes_tilde_expansion_fail_loudly() {
         let (config, _) = parse_config(r#"search_dirs = ["~/Work"]"#).unwrap();
         assert!(config.resolved_search_dirs_with(None, |_| true).is_err());
+    }
+
+    #[test]
+    fn missing_search_directories_are_reported_instead_of_silently_dropped() {
+        let (config, _) = parse_config(r#"search_dirs = ["/exists", "/missing"]"#).unwrap();
+        let resolved = config
+            .resolved_search_dirs_with(None, |path| path == Path::new("/exists"))
+            .unwrap();
+
+        assert_eq!(resolved.dirs, [(PathBuf::from("/exists"), 1)]);
+        assert_eq!(resolved.warnings.len(), 1);
+        assert!(resolved.warnings[0].message.contains("/missing"));
     }
 
     #[test]
@@ -332,6 +407,23 @@ future_theme_key = "blue"
                 .iter()
                 .any(|warning| warning.message.contains("future_theme_key"))
         );
+    }
+
+    #[test]
+    fn theme_accepts_named_terminal_colors_and_rejects_truecolor_values() {
+        let (config, warnings) = parse_config(
+            r#"
+[theme]
+accent = "cyan"
+highlight_fg = "reset"
+"#,
+        )
+        .unwrap();
+        assert!(warnings.is_empty());
+        assert_eq!(config.theme.accent, ThemeColor::Cyan);
+        assert_eq!(config.theme.highlight_fg, ThemeColor::Reset);
+        assert!(parse_config("[theme]\naccent = \"#ff00ff\"").is_err());
+        assert!(parse_config("[theme]\naccent = [255, 0, 255]").is_err());
     }
 
     #[test]

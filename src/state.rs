@@ -1,11 +1,364 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet, VecDeque},
+    ffi::OsString,
     path::{Path, PathBuf},
 };
 
 use serde::{Deserialize, Serialize};
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{git::Repo, herdr::WorktreeInfo};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoEntry {
+    pub repo: Repo,
+    pub disambiguator: Option<String>,
+    pub is_open: bool,
+}
+
+impl RepoEntry {
+    pub fn new(repo: Repo) -> Self {
+        Self {
+            repo,
+            disambiguator: None,
+            is_open: false,
+        }
+    }
+
+    pub fn display_name(&self) -> String {
+        self.disambiguator.as_ref().map_or_else(
+            || self.repo.name.clone(),
+            |suffix| format!("{} ({suffix})", self.repo.name),
+        )
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TextInput {
+    pub text: String,
+    pub cursor: usize,
+}
+
+impl TextInput {
+    fn boundaries(&self) -> Vec<usize> {
+        let mut boundaries: Vec<_> = self.text.grapheme_indices(true).map(|(i, _)| i).collect();
+        boundaries.push(self.text.len());
+        boundaries
+    }
+
+    fn clamp_cursor(&mut self, boundaries: &[usize]) -> usize {
+        let cursor = self.cursor.min(self.text.len());
+        let index = match boundaries.binary_search(&cursor) {
+            Ok(index) => index,
+            Err(index) => index.saturating_sub(1),
+        };
+        self.cursor = boundaries.get(index).copied().unwrap_or_default();
+        index
+    }
+
+    pub fn clear(&mut self) {
+        self.text.clear();
+        self.cursor = 0;
+    }
+
+    pub fn insert_char(&mut self, character: char) {
+        let boundaries = self.boundaries();
+        self.clamp_cursor(&boundaries);
+        self.text.insert(self.cursor, character);
+        self.cursor += character.len_utf8();
+    }
+
+    pub fn backspace(&mut self) {
+        let boundaries = self.boundaries();
+        let index = self.clamp_cursor(&boundaries);
+        if index > 0 {
+            let previous = boundaries[index - 1];
+            self.text.drain(previous..self.cursor);
+            self.cursor = previous;
+        }
+    }
+
+    pub fn delete_word(&mut self) {
+        if self.cursor == 0 || self.text.is_empty() {
+            return;
+        }
+        let boundaries = self.boundaries();
+        self.clamp_cursor(&boundaries);
+        let before = &self.text[..self.cursor];
+        let trimmed = before.trim_end_matches(char::is_whitespace);
+        let word_start = trimmed.rfind(char::is_whitespace).map_or(0, |index| {
+            index + self.text[index..].chars().next().unwrap().len_utf8()
+        });
+        self.text.drain(word_start..self.cursor);
+        self.cursor = word_start;
+    }
+
+    pub fn cursor_left(&mut self) {
+        let boundaries = self.boundaries();
+        let index = self.clamp_cursor(&boundaries);
+        if index > 0 {
+            self.cursor = boundaries[index - 1];
+        }
+    }
+
+    pub fn cursor_right(&mut self) {
+        let boundaries = self.boundaries();
+        let index = self.clamp_cursor(&boundaries);
+        if index + 1 < boundaries.len() {
+            self.cursor = boundaries[index + 1];
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SearchableList {
+    pub input: TextInput,
+    pub filtered: Vec<(usize, i64)>,
+    pub selected: Option<usize>,
+    pub scroll_offset: usize,
+}
+
+impl SearchableList {
+    pub fn new(item_count: usize) -> Self {
+        Self {
+            input: TextInput::default(),
+            filtered: (0..item_count).map(|index| (index, 0)).collect(),
+            selected: (item_count > 0).then_some(0),
+            scroll_offset: 0,
+        }
+    }
+
+    pub fn move_selection(&mut self, delta: i32) {
+        if self.filtered.is_empty() {
+            return;
+        }
+        let current = self.selected.unwrap_or_default();
+        self.selected = Some(if delta.is_positive() {
+            current
+                .saturating_add(delta.unsigned_abs() as usize)
+                .min(self.filtered.len() - 1)
+        } else {
+            current.saturating_sub(delta.unsigned_abs() as usize)
+        });
+    }
+
+    pub fn update_scroll_offset(&mut self, viewport_rows: usize) {
+        if self.filtered.is_empty() {
+            self.scroll_offset = 0;
+            return;
+        }
+        let viewport_rows = viewport_rows.max(1);
+        let selected = self
+            .selected
+            .unwrap_or_default()
+            .min(self.filtered.len() - 1);
+        if selected < self.scroll_offset {
+            self.scroll_offset = selected;
+        } else if selected >= self.scroll_offset.saturating_add(viewport_rows) {
+            self.scroll_offset = selected + 1 - viewport_rows;
+        }
+        self.scroll_offset = self
+            .scroll_offset
+            .min(self.filtered.len().saturating_sub(viewport_rows));
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Mode {
+    RepoSelect,
+    Loading(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToastKind {
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Toast {
+    pub kind: ToastKind,
+    pub message: String,
+}
+
+#[derive(Debug)]
+pub struct AppState {
+    pub repos: Vec<RepoEntry>,
+    pub repo_list: SearchableList,
+    pub mode: Mode,
+    pub loading_repos: bool,
+    pub seen_repo_paths: HashSet<PathBuf>,
+    pub open_repo_roots: HashSet<PathBuf>,
+    pub current_cwd: Option<PathBuf>,
+    pub selection_touched: bool,
+    pub toasts: VecDeque<Toast>,
+    pub active_list_rows: usize,
+    pub filter_generation: u64,
+}
+
+impl AppState {
+    pub fn new(current_cwd: Option<PathBuf>) -> Self {
+        Self {
+            repos: Vec::new(),
+            repo_list: SearchableList::new(0),
+            mode: Mode::RepoSelect,
+            loading_repos: true,
+            seen_repo_paths: HashSet::new(),
+            open_repo_roots: HashSet::new(),
+            current_cwd,
+            selection_touched: false,
+            toasts: VecDeque::new(),
+            active_list_rows: 1,
+            filter_generation: 0,
+        }
+    }
+
+    pub fn selected_repo(&self) -> Option<&RepoEntry> {
+        let selected = self.repo_list.selected?;
+        let index = self.repo_list.filtered.get(selected)?.0;
+        self.repos.get(index)
+    }
+
+    pub fn push_toast(&mut self, kind: ToastKind, message: impl Into<String>) {
+        let message = message
+            .into()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !message.is_empty() && !self.toasts.iter().any(|toast| toast.message == message) {
+            self.toasts.push_back(Toast { kind, message });
+        }
+    }
+
+    pub fn canonical_sort(&mut self) {
+        let selected_path = self.selected_repo().map(|entry| entry.repo.path.clone());
+        let filtered_paths = self
+            .repo_list
+            .filtered
+            .iter()
+            .filter_map(|(index, score)| {
+                self.repos
+                    .get(*index)
+                    .map(|entry| (entry.repo.path.clone(), *score))
+            })
+            .collect::<Vec<_>>();
+        self.repos.sort_by(|left, right| {
+            left.repo
+                .name
+                .to_lowercase()
+                .cmp(&right.repo.name.to_lowercase())
+                .then(left.repo.name.cmp(&right.repo.name))
+                .then(left.repo.path.cmp(&right.repo.path))
+        });
+        if self.repo_list.input.text.is_empty() {
+            self.repo_list.filtered = (0..self.repos.len()).map(|index| (index, 0)).collect();
+            self.repo_list.selected = selected_path
+                .and_then(|path| self.repos.iter().position(|entry| entry.repo.path == path))
+                .or_else(|| (!self.repos.is_empty()).then_some(0));
+        } else {
+            let indices: HashMap<_, _> = self
+                .repos
+                .iter()
+                .enumerate()
+                .map(|(index, entry)| (entry.repo.path.as_path(), index))
+                .collect();
+            self.repo_list.filtered = filtered_paths
+                .iter()
+                .filter_map(|(path, score)| {
+                    indices.get(path.as_path()).map(|index| (*index, *score))
+                })
+                .collect();
+            self.repo_list.selected = selected_path.and_then(|path| {
+                self.repo_list
+                    .filtered
+                    .iter()
+                    .position(|(index, _)| self.repos[*index].repo.path == path)
+            });
+        }
+    }
+
+    pub fn apply_current_repo_selection(&mut self) {
+        if self.selection_touched {
+            return;
+        }
+        let Some(cwd) = self.current_cwd.as_deref() else {
+            return;
+        };
+        let best = self
+            .repo_list
+            .filtered
+            .iter()
+            .enumerate()
+            .filter(|(_, (index, _))| cwd.starts_with(&self.repos[*index].repo.path))
+            .max_by_key(|(_, (index, _))| self.repos[*index].repo.path.components().count())
+            .map(|(position, _)| position);
+        if best.is_some() {
+            self.repo_list.selected = best;
+        }
+    }
+}
+
+pub fn collision_disambiguators(repos: &[Repo]) -> Vec<Option<String>> {
+    let mut groups: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (index, repo) in repos.iter().enumerate() {
+        groups.entry(&repo.name).or_default().push(index);
+    }
+    let parents: Vec<Vec<OsString>> = repos
+        .iter()
+        .map(|repo| {
+            repo.path
+                .parent()
+                .map(|parent| {
+                    parent
+                        .components()
+                        .filter_map(|component| match component {
+                            std::path::Component::Normal(value) => Some(value.to_os_string()),
+                            std::path::Component::Prefix(value) => {
+                                Some(value.as_os_str().to_os_string())
+                            }
+                            std::path::Component::RootDir
+                            | std::path::Component::CurDir
+                            | std::path::Component::ParentDir => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+        .collect();
+    let mut result = vec![None; repos.len()];
+
+    for indices in groups.values().filter(|indices| indices.len() > 1) {
+        for &index in indices {
+            let parent = &parents[index];
+            let depth = (1..=parent.len())
+                .find(|depth| {
+                    let suffix = &parent[parent.len() - depth..];
+                    indices.iter().all(|other| {
+                        *other == index
+                            || parents[*other].len() < *depth
+                            || parents[*other][parents[*other].len() - depth..] != *suffix
+                    })
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "duplicate repository path invariant violated for {}",
+                        repos[index].path.display()
+                    )
+                });
+            let suffix = parent[parent.len() - depth..]
+                .iter()
+                .map(|part| part.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/");
+            result[index] = Some(if depth < parent.len() {
+                format!("…/{suffix}")
+            } else {
+                suffix
+            });
+        }
+    }
+    result
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)]
@@ -112,6 +465,102 @@ mod tests {
     use crate::git::Worktree;
 
     use super::*;
+
+    fn repo(path: &str) -> Repo {
+        Repo {
+            name: Path::new(path)
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            path: path.into(),
+            worktrees: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn collision_disambiguates_two_equal_names_with_shortest_parent_suffix() {
+        let repos = [repo("foo/bar/baz"), repo("qux/bar/baz")];
+        assert_eq!(
+            collision_disambiguators(&repos),
+            [Some("foo/bar".into()), Some("qux/bar".into())]
+        );
+    }
+
+    #[test]
+    fn collision_disambiguates_three_places_independently() {
+        let repos = [
+            repo("/root/a/shared/demo"),
+            repo("/root/b/shared/demo"),
+            repo("/root/unique/demo"),
+        ];
+        assert_eq!(
+            collision_disambiguators(&repos),
+            [
+                Some("…/a/shared".into()),
+                Some("…/b/shared".into()),
+                Some("…/unique".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn collision_handles_parents_that_also_collide() {
+        let repos = [repo("/one/team/api"), repo("/two/team/api")];
+        assert_eq!(
+            collision_disambiguators(&repos),
+            [Some("one/team".into()), Some("two/team".into())]
+        );
+    }
+
+    #[test]
+    fn collision_handles_repos_nested_below_search_roots() {
+        let repos = [
+            repo("/search/client/ios/app"),
+            repo("/search/client/web/app"),
+            repo("/search/direct/app"),
+            repo("/search/other"),
+        ];
+        assert_eq!(
+            collision_disambiguators(&repos),
+            [
+                Some("…/ios".into()),
+                Some("…/web".into()),
+                Some("…/direct".into()),
+                None,
+            ]
+        );
+    }
+
+    #[test]
+    fn collision_leaves_unique_names_unchanged() {
+        let repos = [repo("/one/alpha"), repo("/two/beta")];
+        assert_eq!(collision_disambiguators(&repos), [None, None]);
+    }
+
+    #[test]
+    fn text_input_deletes_unicode_graphemes_and_words() {
+        let mut input = TextInput::default();
+        for character in "one 👩‍💻".chars() {
+            input.insert_char(character);
+        }
+        input.backspace();
+        assert_eq!(input.text, "one ");
+        input.delete_word();
+        assert!(input.text.is_empty());
+    }
+
+    #[test]
+    fn current_repo_selection_prefers_the_deepest_containing_repo() {
+        let mut state = AppState::new(Some("/work/outer/inner/src".into()));
+        state.repos = vec![
+            RepoEntry::new(repo("/work/outer")),
+            RepoEntry::new(repo("/work/outer/inner")),
+        ];
+        state.repo_list = SearchableList::new(2);
+        state.apply_current_repo_selection();
+        assert_eq!(state.repo_list.selected, Some(1));
+    }
 
     #[test]
     fn branch_entries_include_open_workspace_state() {

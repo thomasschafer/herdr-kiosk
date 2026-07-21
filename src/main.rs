@@ -1,20 +1,36 @@
-use std::io;
+use std::{path::PathBuf, sync::Arc};
 
 use anyhow::Result;
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, read};
+use crossterm::event::{self as ct_event, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Alignment, Constraint, Layout},
+    style::{Modifier, Style},
+    text::{Line, Span},
     widgets::Paragraph,
 };
 
+use crate::{
+    config::ConfigWarning,
+    context::PluginContext,
+    git::CliGitProvider,
+    herdr::{CliHerdrProvider, HerdrProvider},
+    state::{AppState, ToastKind},
+    theme::Theme,
+};
+
+pub mod app;
+pub mod components;
 pub mod config;
 pub mod context;
 pub mod event;
 pub mod git;
 pub mod herdr;
+pub mod keyboard;
+pub mod keymap;
 pub mod spawn;
 pub mod state;
+pub mod theme;
 
 struct TerminalRestoreGuard;
 
@@ -32,86 +48,88 @@ fn main() {
 }
 
 fn start() -> Result<()> {
-    let loaded_config = config::load_config()?;
-    for warning in &loaded_config.warnings {
-        eprintln!("herdr-kiosk: warning: {}", warning.message);
-    }
+    let loaded = config::load_config()?;
+    let herdr_binary = std::env::var_os("HERDR_BIN_PATH").filter(|path| !path.is_empty());
+    let context = std::env::var("HERDR_PLUGIN_CONTEXT_JSON")
+        .ok()
+        .filter(|json| !json.is_empty())
+        .map(|json| PluginContext::from_json(&json))
+        .transpose()
+        .map_err(|error| anyhow::anyhow!("invalid HERDR_PLUGIN_CONTEXT_JSON: {error}"))?
+        .unwrap_or_default();
 
     let _restore_guard = TerminalRestoreGuard;
     let mut terminal = ratatui::try_init()?;
-    run(&mut terminal)?;
+    if loaded.config.search_dirs.is_empty() {
+        return run_no_search_dirs(&mut terminal, loaded.path.as_ref());
+    }
+
+    let resolved = loaded.config.resolved_search_dirs_with(
+        std::env::var_os("HOME")
+            .as_deref()
+            .map(std::path::Path::new),
+        std::path::Path::is_dir,
+    )?;
+    let mut warnings = loaded.warnings;
+    warnings.extend(resolved.warnings);
+    let current_cwd = context
+        .current_cwd()
+        .map(|path| std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path)));
+    let mut state = AppState::new(current_cwd);
+    for ConfigWarning { message } in warnings {
+        state.push_toast(ToastKind::Warning, message);
+    }
+    let theme = Theme::from_config(&loaded.config.theme);
+    let herdr: Option<Arc<dyn HerdrProvider>> = herdr_binary
+        .map(|binary| Arc::new(CliHerdrProvider::new(binary)) as Arc<dyn HerdrProvider>);
+    let git = Arc::new(CliGitProvider) as Arc<dyn git::GitProvider>;
+    app::run(
+        &mut terminal,
+        &mut state,
+        &git,
+        herdr.as_ref(),
+        resolved.dirs,
+        &theme,
+    )?;
     Ok(())
 }
 
-fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
+fn run_no_search_dirs(terminal: &mut DefaultTerminal, path: Option<&PathBuf>) -> Result<()> {
+    let location = path.map_or_else(
+        || "No trusted config path could be resolved.".to_string(),
+        |path| format!("Config path: {}", path.display()),
+    );
     loop {
-        terminal.draw(draw)?;
-
-        if let Event::Key(key) = read()?
-            && should_quit(key)
+        terminal.draw(|frame| draw_no_search_dirs(frame, &location))?;
+        if let Event::Key(key) = ct_event::read()?
+            && key.kind == KeyEventKind::Press
+            && (matches!(key.code, KeyCode::Esc | KeyCode::Char('q'))
+                || key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
         {
             return Ok(());
         }
     }
 }
 
-fn draw(frame: &mut Frame) {
-    let [_, title_area, hint_area, _] = Layout::vertical([
+fn draw_no_search_dirs(frame: &mut Frame, location: &str) {
+    let [_, area, _] = Layout::vertical([
         Constraint::Fill(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
+        Constraint::Length(5),
         Constraint::Fill(1),
     ])
     .areas(frame.area());
-
     frame.render_widget(
-        Paragraph::new("herdr-kiosk").alignment(Alignment::Center),
-        title_area,
+        Paragraph::new(vec![
+            Line::from(Span::styled(
+                "No search directories configured",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Line::raw(""),
+            Line::raw(location),
+            Line::raw(""),
+            Line::raw("q / Esc / Ctrl+C to quit"),
+        ])
+        .alignment(Alignment::Center),
+        area,
     );
-    frame.render_widget(
-        Paragraph::new("q / Esc / Ctrl+C to quit").alignment(Alignment::Center),
-        hint_area,
-    );
-}
-
-fn should_quit(key: KeyEvent) -> bool {
-    if key.kind != KeyEventKind::Press {
-        return false;
-    }
-
-    matches!(key.code, KeyCode::Esc | KeyCode::Char('q'))
-        || key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn quit_keys_exit_on_press() {
-        for key in [
-            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
-            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
-        ] {
-            assert!(should_quit(key), "expected {key:?} to quit");
-        }
-    }
-
-    #[test]
-    fn unrelated_keys_and_key_releases_do_not_exit() {
-        assert!(!should_quit(KeyEvent::new(
-            KeyCode::Char('c'),
-            KeyModifiers::NONE
-        )));
-        assert!(!should_quit(KeyEvent::new(
-            KeyCode::Char('x'),
-            KeyModifiers::CONTROL
-        )));
-        assert!(!should_quit(KeyEvent::new_with_kind(
-            KeyCode::Char('q'),
-            KeyModifiers::NONE,
-            KeyEventKind::Release
-        )));
-    }
 }

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::{
-    git::{Repo, Worktree},
+    git::{Repo, ScanWarning, Worktree},
     herdr::{WorkspaceInfo, WorktreeInfo},
     state::BranchEntry,
 };
@@ -17,6 +17,12 @@ pub enum AppEvent {
     },
     ScanComplete {
         search_dirs: Vec<(PathBuf, u16)>,
+    },
+    ScanWarning(ScanWarning),
+    FilterCompleted {
+        generation: u64,
+        matches: Vec<(PathBuf, i64)>,
+        selected_path: Option<PathBuf>,
     },
     BranchesLoaded {
         branches: Vec<BranchEntry>,
@@ -50,6 +56,7 @@ pub enum AppEvent {
         repo_path: PathBuf,
         worktrees: Vec<WorktreeInfo>,
     },
+    RepoOpened,
     GitError(String),
     HerdrError(String),
 }

@@ -10,6 +10,9 @@ lint:
 test:
     cargo test
 
+e2e:
+    ./scripts/e2e.sh
+
 link: build
     "{{HERDR}}" plugin link "{{justfile_directory()}}"
 
