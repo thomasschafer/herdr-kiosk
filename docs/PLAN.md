@@ -268,6 +268,12 @@ refresh after removal. Kiosk defaults retained: Ctrl+O new branch, Ctrl+X delete
 confirm, Esc cancel, plus Enter on a non-empty no-match branch query. Strict fmt/clippy,
 103 unit tests plus the startup integration test, and the full M3–M6 tmux e2e pass.
 
+Reviewed and independently verified (commit 7f68d5c); one review round: pending-delete
+state now honours `HERDR_PLUGIN_STATE_DIR` before the XDG/HOME fallback, sharing the
+config module's absolute-path trust helper. Known benign overlap for the M7 keys pass:
+Ctrl+X dismisses a visible toast before it means delete-checkout (make bindings
+configurable in M7).
+
 ### M7 — wizard, config polish, UX finish
 - [ ] Setup wizard port (D9): first-run flow writing config to
   `$HERDR_PLUGIN_CONFIG_DIR/config.toml` (path completion, dir management as in kiosk).
