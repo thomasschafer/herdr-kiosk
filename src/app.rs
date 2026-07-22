@@ -31,10 +31,10 @@ use crate::{
     keyboard::Action,
     pending_delete::PendingWorktreeDelete,
     spawn::{
-        EventSender, spawn_branch_loading, spawn_create_new_branch, spawn_git_fetch,
-        spawn_open_branch, spawn_open_remote_branch, spawn_open_repo, spawn_open_worktrees,
-        spawn_remote_branch_loading, spawn_repo_discovery, spawn_validate_branch_name,
-        spawn_workspace_list, spawn_worktree_removal,
+        EventSender, FetchDeduplicator, spawn_branch_loading, spawn_create_new_branch,
+        spawn_git_fetch, spawn_open_branch, spawn_open_remote_branch, spawn_open_repo,
+        spawn_open_worktrees, spawn_remote_branch_loading, spawn_repo_discovery,
+        spawn_validate_branch_name, spawn_workspace_list, spawn_worktree_removal,
     },
     state::{
         AppState, BaseBranchSelection, BranchContext, BranchId, DeleteWorktreeTarget, Mode,
@@ -159,6 +159,7 @@ pub fn run(
     let cancel = Arc::new(AtomicBool::new(false));
     let sender = EventSender::new(tx, Arc::clone(&cancel));
     let filter_worker = FilterWorker::spawn(sender.clone());
+    let fetch_deduplicator = FetchDeduplicator::default();
     let spinner_start = Instant::now();
 
     spawn_repo_discovery(git, &sender, search_dirs);
@@ -206,15 +207,17 @@ pub fn run(
                 local_names.clone(),
                 generation,
             );
-            spawn_git_fetch(git, &sender, repo_path, local_names, generation);
+            spawn_git_fetch(
+                git,
+                &sender,
+                &fetch_deduplicator,
+                repo_path,
+                local_names,
+                generation,
+            );
         }
         if let Some(repo) = changes.refresh_branch.take() {
-            let repo_path = repo.path.clone();
-            let generation = state.branch_view_generation;
-            spawn_branch_loading(git, &sender, repo, state.current_cwd.clone(), generation);
-            if let Some(provider) = herdr {
-                spawn_open_worktrees(provider, &sender, repo_path, generation);
-            }
+            spawn_branch_refresh(state, git, herdr, &sender, repo);
         }
         if changes.resume_pending_deletes {
             resume_pending_deletes(state, git, herdr, &sender);
@@ -888,11 +891,6 @@ fn resume_pending_deletes(
         {
             continue;
         }
-        let open_workspace_id = state
-            .branches
-            .iter()
-            .find(|branch| branch.name == pending.branch_name)
-            .and_then(|branch| branch.open_workspace_id.clone());
         spawn_worktree_removal(
             git,
             herdr,
@@ -900,7 +898,6 @@ fn resume_pending_deletes(
             repo_path.clone(),
             pending.branch_name,
             pending.worktree_path,
-            open_workspace_id,
             pending.force,
         );
     }
@@ -1347,15 +1344,35 @@ fn begin_branch_select(
     state.loading_branches = true;
     state.reset_remote_branches();
     state.branch_filter_generation = state.branch_filter_generation.wrapping_add(1);
-    state.branch_view_generation = state
-        .branch_view_generation
-        .checked_add(1)
-        .expect("branch view generation overflow");
+    advance_branch_view_generation(state);
     let generation = state.branch_view_generation;
     spawn_branch_loading(git, sender, repo, state.current_cwd.clone(), generation);
     if let Some(provider) = herdr {
         spawn_open_worktrees(provider, sender, repo_path, generation);
     }
+}
+
+fn spawn_branch_refresh(
+    state: &mut AppState,
+    git: &Arc<dyn GitProvider>,
+    herdr: Option<&Arc<dyn HerdrProvider>>,
+    sender: &EventSender,
+    repo: Repo,
+) {
+    advance_branch_view_generation(state);
+    let repo_path = repo.path.clone();
+    let generation = state.branch_view_generation;
+    spawn_branch_loading(git, sender, repo, state.current_cwd.clone(), generation);
+    if let Some(provider) = herdr {
+        spawn_open_worktrees(provider, sender, repo_path, generation);
+    }
+}
+
+fn advance_branch_view_generation(state: &mut AppState) {
+    state.branch_view_generation = state
+        .branch_view_generation
+        .checked_add(1)
+        .expect("branch view generation overflow");
 }
 
 fn begin_open_selected_branch(
@@ -1573,7 +1590,6 @@ fn confirm_delete_worktree(
         context.repo_path,
         target_snapshot.branch_name,
         target_snapshot.worktree_path,
-        target_snapshot.open_workspace_id,
         target_snapshot.force,
     );
 }
@@ -2739,13 +2755,9 @@ mod tests {
         );
 
         let repo = changes.refresh_branch.take().expect("branch refresh");
-        spawn_branch_loading(
-            &git,
-            &sender,
-            repo,
-            state.current_cwd.clone(),
-            state.branch_view_generation,
-        );
+        let previous_generation = state.branch_view_generation;
+        spawn_branch_refresh(&mut state, &git, None, &sender, repo);
+        assert_eq!(state.branch_view_generation, previous_generation + 1);
         let refreshed = rx.recv_timeout(Duration::from_secs(1)).unwrap();
         let mut refreshed_changes = TickChanges::default();
         process_app_event(refreshed, &mut state, &mut refreshed_changes);
@@ -3299,10 +3311,15 @@ mod tests {
     }
 
     #[test]
-    fn late_open_state_updates_dialog_and_routes_removal_through_herdr() {
+    fn checkout_becoming_open_after_confirmation_routes_removal_through_herdr() {
         let git_mock = Arc::new(MockGitProvider::default());
         let git: Arc<dyn GitProvider> = git_mock.clone();
         let herdr_mock = Arc::new(MockHerdrProvider::default());
+        herdr_mock
+            .worktree_list_results
+            .lock()
+            .unwrap()
+            .push_back(Ok(worktree_list_response(vec![worktree()])));
         herdr_mock
             .worktree_remove_results
             .lock()
@@ -3319,37 +3336,65 @@ mod tests {
                 if target.open_workspace_id.is_none()
         ));
 
-        process_app_event(
-            AppEvent::OpenWorktreesLoaded {
-                repo_path: "/repo".into(),
-                generation: state.branch_view_generation,
-                worktrees: vec![worktree()],
-            },
-            &mut state,
-            &mut TickChanges::default(),
-        );
-        assert!(matches!(
-            &state.mode,
-            Mode::ConfirmWorktreeDelete { target, .. }
-                if target.open_workspace_id.as_deref() == Some("w_1")
-        ));
-
         confirm_delete_worktree(&mut state, &git, Some(&herdr), &sender);
         let _event = rx.recv_timeout(Duration::from_secs(1)).unwrap();
 
         assert_eq!(
             *herdr_mock.calls.lock().unwrap(),
-            [HerdrCall::WorktreeRemove {
-                workspace_id: "w_1".into(),
-                force: false,
-            }]
+            [
+                HerdrCall::WorktreeList {
+                    cwd: "/repo".into(),
+                },
+                HerdrCall::WorktreeRemove {
+                    workspace_id: "w_1".into(),
+                    force: false,
+                },
+            ]
         );
         assert!(git_mock.remove_calls.lock().unwrap().is_empty());
     }
 
     #[test]
+    fn fresh_open_state_failure_refuses_removal_without_falling_back_to_git() {
+        let git_mock = Arc::new(MockGitProvider::default());
+        let git: Arc<dyn GitProvider> = git_mock.clone();
+        let herdr_mock = Arc::new(MockHerdrProvider::default());
+        herdr_mock
+            .worktree_list_results
+            .lock()
+            .unwrap()
+            .push_back(Err(HerdrError::Invocation("herdr unavailable".into())));
+        let herdr: Arc<dyn HerdrProvider> = herdr_mock.clone();
+        let (sender, rx) = sender();
+        let mut state = state_with_branch(true);
+
+        begin_delete_worktree(&mut state);
+        confirm_delete_worktree(&mut state, &git, Some(&herdr), &sender);
+        let event = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        process_app_event(event, &mut state, &mut TickChanges::default());
+
+        assert!(matches!(state.mode, Mode::BranchSelect(_)));
+        assert!(state.toasts.back().is_some_and(|toast| {
+            toast
+                .message
+                .contains("could not refresh open checkout state")
+        }));
+        assert!(git_mock.remove_calls.lock().unwrap().is_empty());
+        assert_eq!(
+            *herdr_mock.calls.lock().unwrap(),
+            [HerdrCall::WorktreeList {
+                cwd: "/repo".into(),
+            }]
+        );
+    }
+
+    #[test]
     fn herdr_delete_requires_a_second_force_confirmation_then_refreshes() {
         let herdr_mock = Arc::new(MockHerdrProvider::default());
+        herdr_mock.worktree_list_results.lock().unwrap().extend([
+            Ok(worktree_list_response(vec![worktree()])),
+            Ok(worktree_list_response(vec![worktree()])),
+        ]);
         herdr_mock.worktree_remove_results.lock().unwrap().extend([
             Err(HerdrError::DirtyWorktreeRequiresForce("dirty".into())),
             Ok(remove_response(true)),
@@ -3379,9 +3424,15 @@ mod tests {
         assert_eq!(
             *herdr_mock.calls.lock().unwrap(),
             [
+                HerdrCall::WorktreeList {
+                    cwd: "/repo".into(),
+                },
                 HerdrCall::WorktreeRemove {
                     workspace_id: "w_1".into(),
                     force: false,
+                },
+                HerdrCall::WorktreeList {
+                    cwd: "/repo".into(),
                 },
                 HerdrCall::WorktreeRemove {
                     workspace_id: "w_1".into(),
@@ -3396,11 +3447,19 @@ mod tests {
         let git_mock = Arc::new(MockGitProvider::default());
         git_mock.dirty_remove_once.store(true, Ordering::Release);
         let git: Arc<dyn GitProvider> = git_mock.clone();
+        let herdr_mock = Arc::new(MockHerdrProvider::default());
+        let mut closed_worktree = worktree();
+        closed_worktree.open_workspace_id = None;
+        herdr_mock.worktree_list_results.lock().unwrap().extend([
+            Ok(worktree_list_response(vec![closed_worktree.clone()])),
+            Ok(worktree_list_response(vec![closed_worktree])),
+        ]);
+        let herdr: Arc<dyn HerdrProvider> = herdr_mock.clone();
         let (sender, rx) = sender();
         let mut state = state_with_branch(true);
 
         begin_delete_worktree(&mut state);
-        confirm_delete_worktree(&mut state, &git, None, &sender);
+        confirm_delete_worktree(&mut state, &git, Some(&herdr), &sender);
         let first = rx.recv_timeout(Duration::from_secs(1)).unwrap();
         process_app_event(first, &mut state, &mut TickChanges::default());
         assert!(matches!(
@@ -3409,7 +3468,7 @@ mod tests {
                 if target.force && !target.in_progress
         ));
 
-        confirm_delete_worktree(&mut state, &git, None, &sender);
+        confirm_delete_worktree(&mut state, &git, Some(&herdr), &sender);
         let second = rx.recv_timeout(Duration::from_secs(1)).unwrap();
         let mut changes = TickChanges::default();
         process_app_event(second, &mut state, &mut changes);
@@ -3429,6 +3488,64 @@ mod tests {
         assert_eq!(
             *git_mock.prune_calls.lock().unwrap(),
             [PathBuf::from("/repo")]
+        );
+        assert_eq!(
+            *herdr_mock.calls.lock().unwrap(),
+            [
+                HerdrCall::WorktreeList {
+                    cwd: "/repo".into(),
+                },
+                HerdrCall::WorktreeList {
+                    cwd: "/repo".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn post_deletion_refresh_rejects_old_final_fetch_without_clearing_spinner() {
+        let git = git_provider();
+        let (sender, _rx) = sender();
+        let mut state = state_with_branch(true);
+        let old_generation = state.branch_view_generation;
+        begin_delete_worktree(&mut state);
+        if let Mode::ConfirmWorktreeDelete { target, .. } = &mut state.mode {
+            target.in_progress = true;
+        }
+        let mut changes = TickChanges::default();
+
+        process_app_event(
+            AppEvent::WorktreeRemovalFinished {
+                repo_path: "/repo".into(),
+                branch_name: "feature".into(),
+                worktree_path: "/repo-feature".into(),
+                outcome: WorktreeRemovalOutcome::Removed { warning: None },
+            },
+            &mut state,
+            &mut changes,
+        );
+        let repo = changes.refresh_branch.take().expect("branch refresh");
+        spawn_branch_refresh(&mut state, &git, None, &sender, repo);
+        assert_eq!(state.branch_view_generation, old_generation + 1);
+        state.fetching_remote_repo = Some("/repo".into());
+
+        process_app_event(
+            AppEvent::GitFetchCompleted {
+                remote: Some("origin".into()),
+                branches: Vec::new(),
+                repo_path: "/repo".into(),
+                generation: old_generation,
+                error: None,
+                is_final: true,
+                skipped_unsupported_refs: false,
+            },
+            &mut state,
+            &mut TickChanges::default(),
+        );
+
+        assert_eq!(
+            state.fetching_remote_repo.as_deref(),
+            Some(Path::new("/repo"))
         );
     }
 

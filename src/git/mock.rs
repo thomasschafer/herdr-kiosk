@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{
-        Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -35,6 +35,7 @@ pub struct MockGitProvider {
     pub remove_calls: Mutex<Vec<(PathBuf, PathBuf, bool)>>,
     pub prune_calls: Mutex<Vec<PathBuf>>,
     pub fetch_calls: Mutex<Vec<(PathBuf, String)>>,
+    pub fetch_gate: Option<Arc<(Mutex<bool>, Condvar)>>,
 }
 
 impl MockGitProvider {
@@ -107,6 +108,13 @@ impl GitProvider for MockGitProvider {
             .lock()
             .unwrap()
             .push((repo_path.to_path_buf(), remote.to_string()));
+        if let Some(gate) = &self.fetch_gate {
+            let (released, condition) = &**gate;
+            let mut released = released.lock().unwrap();
+            while !*released {
+                released = condition.wait(released).unwrap();
+            }
+        }
         Ok(())
     }
 

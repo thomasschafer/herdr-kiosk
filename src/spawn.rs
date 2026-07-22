@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -27,6 +27,38 @@ use crate::{
 
 /// Bounds concurrent remote fetches.
 pub const FETCH_POOL_SIZE: usize = 4;
+
+type FetchKey = (PathBuf, String);
+
+#[derive(Clone, Default)]
+pub struct FetchDeduplicator {
+    in_flight: Arc<Mutex<HashSet<FetchKey>>>,
+}
+
+impl FetchDeduplicator {
+    fn claim(&self, repo_path: &Path, remote: &str) -> Option<FetchClaim> {
+        let key = (repo_path.to_path_buf(), remote.to_string());
+        self.in_flight
+            .lock()
+            .unwrap()
+            .insert(key.clone())
+            .then(|| FetchClaim {
+                key,
+                in_flight: Arc::clone(&self.in_flight),
+            })
+    }
+}
+
+struct FetchClaim {
+    key: FetchKey,
+    in_flight: Arc<Mutex<HashSet<FetchKey>>>,
+}
+
+impl Drop for FetchClaim {
+    fn drop(&mut self) {
+        self.in_flight.lock().unwrap().remove(&self.key);
+    }
+}
 
 #[derive(Clone)]
 pub struct EventSender {
@@ -290,12 +322,14 @@ pub fn spawn_remote_branch_loading(
 pub fn spawn_git_fetch(
     git: &Arc<dyn GitProvider>,
     sender: &EventSender,
+    deduplicator: &FetchDeduplicator,
     repo_path: PathBuf,
     local_names: Vec<String>,
     generation: u64,
 ) {
     let git = Arc::clone(git);
     let sender = sender.clone();
+    let deduplicator = deduplicator.clone();
     thread::spawn(move || {
         let remotes = match git.list_remotes(&repo_path) {
             Ok(remotes) => remotes,
@@ -312,7 +346,15 @@ pub fn spawn_git_fetch(
                 return;
             }
         };
-        if remotes.is_empty() {
+        let claimed = remotes
+            .into_iter()
+            .filter_map(|remote| {
+                deduplicator
+                    .claim(&repo_path, &remote)
+                    .map(|claim| (remote, claim))
+            })
+            .collect::<Vec<_>>();
+        if claimed.is_empty() {
             sender.send(AppEvent::GitFetchCompleted {
                 remote: None,
                 branches: Vec::new(),
@@ -325,15 +367,16 @@ pub fn spawn_git_fetch(
             return;
         }
 
-        let remaining = Arc::new(AtomicUsize::new(remotes.len()));
+        let remaining = Arc::new(AtomicUsize::new(claimed.len()));
         let local_names = Arc::new(local_names);
-        spawn_work_parallel(FETCH_POOL_SIZE, remotes, |remote| {
+        spawn_work_parallel(FETCH_POOL_SIZE, claimed, |(remote, claim)| {
             let git = Arc::clone(&git);
             let sender = sender.clone();
             let repo_path = repo_path.clone();
             let local_names = Arc::clone(&local_names);
             let remaining = Arc::clone(&remaining);
             move || {
+                let _claim = claim;
                 let (branches, error, skipped_unsupported_refs) = if sender.is_cancelled() {
                     (Vec::new(), None, false)
                 } else {
@@ -523,32 +566,35 @@ pub fn spawn_worktree_removal(
     repo_path: PathBuf,
     branch_name: String,
     worktree_path: PathBuf,
-    open_workspace_id: Option<String>,
     force: bool,
 ) {
     let git = Arc::clone(git);
     let herdr = herdr.cloned();
     let sender = sender.clone();
     thread::spawn(move || {
-        let outcome = if let Some(workspace_id) = open_workspace_id {
-            match herdr {
-                Some(provider) => provider.worktree_remove(&workspace_id, force).map_or_else(
+        let fresh_workspace_id =
+            fresh_open_workspace_id(herdr.as_deref(), &repo_path, &worktree_path);
+        let outcome = match (fresh_workspace_id, herdr.as_ref()) {
+            (Ok(Some(workspace_id)), Some(provider)) => {
+                provider.worktree_remove(&workspace_id, force).map_or_else(
                     |error| removal_error(RemoveError::Herdr(error), force),
                     |response| WorktreeRemovalOutcome::Removed {
                         warning: response.warning,
                     },
-                ),
-                None => WorktreeRemovalOutcome::Failed("not running inside herdr".into()),
+                )
             }
-        } else {
-            match git.remove_worktree(&repo_path, &worktree_path, force) {
+            (Ok(Some(_)), None) => WorktreeRemovalOutcome::Failed(
+                "could not determine fresh open checkout state because herdr is unavailable".into(),
+            ),
+            (Ok(None), _) => match git.remove_worktree(&repo_path, &worktree_path, force) {
                 Ok(()) => WorktreeRemovalOutcome::Removed {
                     warning: git.prune_worktrees(&repo_path).err().map(|error| {
                         format!("checkout was removed, but git worktree prune failed: {error:#}")
                     }),
                 },
                 Err(error) => removal_error(RemoveError::Git(error), force),
-            }
+            },
+            (Err(error), _) => WorktreeRemovalOutcome::Failed(error),
         };
         sender.send(AppEvent::WorktreeRemovalFinished {
             repo_path,
@@ -557,6 +603,30 @@ pub fn spawn_worktree_removal(
             outcome,
         });
     });
+}
+
+fn fresh_open_workspace_id(
+    herdr: Option<&dyn HerdrProvider>,
+    repo_path: &Path,
+    worktree_path: &Path,
+) -> Result<Option<String>, String> {
+    let provider = herdr.ok_or_else(|| {
+        "could not determine fresh open checkout state because herdr is unavailable".to_string()
+    })?;
+    let response = provider.worktree_list(repo_path).map_err(|error| {
+        format!("could not refresh open checkout state before removal: {error}")
+    })?;
+    response
+        .worktrees
+        .into_iter()
+        .find(|worktree| crate::path::equivalent(Path::new(&worktree.path), worktree_path))
+        .map(|worktree| worktree.open_workspace_id)
+        .ok_or_else(|| {
+            format!(
+                "could not confirm checkout state before removal because {} was not returned by herdr",
+                crate::path::display(worktree_path)
+            )
+        })
 }
 
 fn removal_error(error: RemoveError, force: bool) -> WorktreeRemovalOutcome {
@@ -766,14 +836,15 @@ mod tests {
     use std::{
         collections::HashMap,
         path::{Path, PathBuf},
-        time::Duration,
+        time::{Duration, Instant},
     };
 
     use crate::{
         config::{OnOpenPaneConfig, OnOpenPaneDirection},
         git::{Repo, Worktree, mock::MockGitProvider},
         herdr::{
-            OpenedWorktree, PaneRunResponse, PaneSplitResponse, WorktreeOpenResponse,
+            OpenedWorktree, PaneRunResponse, PaneSplitResponse, WorktreeInfo, WorktreeListResponse,
+            WorktreeOpenResponse,
             mock::{HerdrCall, MockHerdrProvider},
         },
     };
@@ -1189,7 +1260,14 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let sender = EventSender::new(tx, Arc::new(AtomicBool::new(false)));
 
-        spawn_git_fetch(&git, &sender, "/repo".into(), Vec::new(), 7);
+        spawn_git_fetch(
+            &git,
+            &sender,
+            &FetchDeduplicator::default(),
+            "/repo".into(),
+            Vec::new(),
+            7,
+        );
 
         let events = [
             rx.recv_timeout(Duration::from_secs(1)).unwrap(),
@@ -1214,21 +1292,73 @@ mod tests {
     }
 
     #[test]
+    fn rapid_reentry_does_not_start_a_duplicate_in_flight_fetch() {
+        let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let git_mock = Arc::new(MockGitProvider {
+            remotes: vec!["origin".into()],
+            fetch_gate: Some(Arc::clone(&gate)),
+            ..MockGitProvider::default()
+        });
+        let git: Arc<dyn GitProvider> = git_mock.clone();
+        let (tx, rx) = mpsc::channel();
+        let sender = EventSender::new(tx, Arc::new(AtomicBool::new(false)));
+        let deduplicator = FetchDeduplicator::default();
+
+        spawn_git_fetch(&git, &sender, &deduplicator, "/repo".into(), Vec::new(), 7);
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while git_mock.fetch_calls.lock().unwrap().is_empty() && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        assert_eq!(git_mock.fetch_calls.lock().unwrap().len(), 1);
+
+        spawn_git_fetch(&git, &sender, &deduplicator, "/repo".into(), Vec::new(), 8);
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            AppEvent::GitFetchCompleted {
+                generation: 8,
+                remote: None,
+                is_final: true,
+                ..
+            }
+        ));
+        assert_eq!(git_mock.fetch_calls.lock().unwrap().len(), 1);
+
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_all();
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            AppEvent::GitFetchCompleted { generation: 7, .. }
+        ));
+    }
+
+    #[test]
     fn prune_failure_after_removal_reports_success_with_warning() {
         let git_mock = Arc::new(MockGitProvider::default());
         *git_mock.prune_failure.lock().unwrap() = Some("prune broke".into());
         let git: Arc<dyn GitProvider> = git_mock;
+        let herdr_mock = Arc::new(MockHerdrProvider::default());
+        herdr_mock
+            .worktree_list_results
+            .lock()
+            .unwrap()
+            .push_back(Ok(WorktreeListResponse {
+                worktrees: vec![WorktreeInfo {
+                    path: "/repo-feature".into(),
+                    branch: Some("feature".into()),
+                    open_workspace_id: None,
+                }],
+            }));
+        let herdr: Arc<dyn HerdrProvider> = herdr_mock;
         let (tx, rx) = mpsc::channel();
         let sender = EventSender::new(tx, Arc::new(AtomicBool::new(false)));
 
         spawn_worktree_removal(
             &git,
-            None,
+            Some(&herdr),
             &sender,
             "/repo".into(),
             "feature".into(),
             "/repo-feature".into(),
-            None,
             false,
         );
 
