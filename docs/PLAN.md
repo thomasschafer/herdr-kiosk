@@ -230,11 +230,17 @@ where they are exercised)
   errors. Awaiting Tom's hand-test of picker feel in a real herdr.
 
 ### M4 — branch picker
-- [ ] Tab on repo → branch view: local branches + worktree enrichment; current/default
+- [x] Tab on repo → branch view: local branches + worktree enrichment; current/default
   markers; Enter open-vs-create rule from §3.3; back navigation.
-- [ ] Open indicators per branch.
-- [ ] E2e: existing-checkout open, new-checkout create, branch-checked-out-in-main-checkout
+- [x] Open indicators per branch.
+- [x] E2e: existing-checkout open, new-checkout create, branch-checked-out-in-main-checkout
   case (resolves to the source workspace).
+- Reviewed and independently verified (commit f051a83): 78 tests, lints clean, full
+  e2e PASS including the five new branch-flow assertions. Accepted deviation: the
+  current-branch marker no longer falls back to the main checkout's branch when the
+  context cwd is outside the repo (kiosk marked it anyway); the `(default)` marker
+  still identifies main/master. Stale-event guards (`branch_view_matches`) drop
+  late-arriving loads from a previously viewed repo.
 
 ### M5 — remotes
 - [ ] `git fetch` per remote on entering branch view (pool of 4), streamed updates,
