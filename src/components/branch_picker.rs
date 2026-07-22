@@ -8,7 +8,10 @@ use ratatui::{
     widgets::{Block, Borders, HighlightSpacing, List, ListItem, ListState},
 };
 
-use crate::{state::AppState, theme::Theme};
+use crate::{
+    state::{AppState, BranchEntry},
+    theme::Theme,
+};
 
 use super::{
     list_row::{right_align_suffix, truncate_spans},
@@ -47,31 +50,7 @@ pub fn draw(
         .filtered
         .iter()
         .filter_map(|(index, _)| state.branches.get(*index))
-        .map(|branch| {
-            let mut left = vec![Span::raw(branch.name.clone())];
-            if branch.worktree_path.is_some() {
-                left.push(Span::styled(
-                    " (worktree)",
-                    Style::default().fg(theme.warning),
-                ));
-            }
-            if branch.is_current {
-                left.push(Span::styled(" *", Style::default().fg(theme.accent)));
-            }
-            if branch.is_default {
-                left.push(Span::styled(" (default)", Style::default().fg(theme.muted)));
-            }
-            let spans = if branch.open_workspace_id.is_some() {
-                right_align_suffix(
-                    &left,
-                    &[Span::styled("● open", Style::default().fg(theme.open))],
-                    row_width,
-                )
-            } else {
-                truncate_spans(&left, row_width)
-            };
-            ListItem::new(Line::from(spans))
-        })
+        .map(|branch| branch_item(branch, theme, row_width))
         .collect();
     if state.loading_branches && items.is_empty() {
         items.push(ListItem::new(Span::styled(
@@ -80,9 +59,14 @@ pub fn draw(
         )));
     }
 
-    let loading_suffix = if state.loading_branches {
+    let loading_suffix = if state.loading_branches || state.fetching_remote_repo.is_some() {
         let frame = (spinner_start.elapsed().as_millis() / 80) as usize % SPINNER_FOR_LOADING.len();
-        format!(" | loading… {}", SPINNER_FOR_LOADING[frame])
+        let label = if state.loading_branches {
+            "loading"
+        } else {
+            "fetching"
+        };
+        format!(" | {label}… {}", SPINNER_FOR_LOADING[frame])
     } else {
         String::new()
     };
@@ -113,4 +97,45 @@ pub fn draw(
         .update_scroll_offset(state.active_list_rows);
     *list_state.offset_mut() = state.branch_list.scroll_offset;
     frame.render_stateful_widget(list, list_area, &mut list_state);
+}
+
+fn branch_item(branch: &BranchEntry, theme: &Theme, row_width: usize) -> ListItem<'static> {
+    let mut left = if branch.remote.is_some() {
+        vec![
+            Span::styled(
+                branch.name.clone(),
+                Style::default().fg(theme.muted).add_modifier(Modifier::DIM),
+            ),
+            Span::styled(
+                " (remote)",
+                Style::default()
+                    .fg(theme.muted)
+                    .add_modifier(Modifier::DIM | Modifier::ITALIC),
+            ),
+        ]
+    } else {
+        vec![Span::raw(branch.name.clone())]
+    };
+    if branch.remote.is_none() && branch.worktree_path.is_some() {
+        left.push(Span::styled(
+            " (worktree)",
+            Style::default().fg(theme.warning),
+        ));
+    }
+    if branch.remote.is_none() && branch.is_current {
+        left.push(Span::styled(" *", Style::default().fg(theme.accent)));
+    }
+    if branch.remote.is_none() && branch.is_default {
+        left.push(Span::styled(" (default)", Style::default().fg(theme.muted)));
+    }
+    let spans = if branch.open_workspace_id.is_some() {
+        right_align_suffix(
+            &left,
+            &[Span::styled("● open", Style::default().fg(theme.open))],
+            row_width,
+        )
+    } else {
+        truncate_spans(&left, row_width)
+    };
+    ListItem::new(Line::from(spans))
 }

@@ -1,8 +1,37 @@
-use std::path::{Path, PathBuf};
+use std::{
+    error::Error,
+    fmt,
+    path::{Path, PathBuf},
+};
 
 use anyhow::Result;
 
 use super::{Repo, RepoScan, ScanWarning, Worktree};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalBranchAlreadyExists {
+    branch: String,
+}
+
+impl LocalBranchAlreadyExists {
+    pub fn new(branch: impl Into<String>) -> Self {
+        Self {
+            branch: branch.into(),
+        }
+    }
+}
+
+impl fmt::Display for LocalBranchAlreadyExists {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "local branch '{}' already exists", self.branch)
+    }
+}
+
+impl Error for LocalBranchAlreadyExists {}
+
+pub fn is_local_branch_already_exists(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<LocalBranchAlreadyExists>().is_some()
+}
 
 pub trait GitProvider: Send + Sync {
     fn scan_repos(&self, dirs: &[(PathBuf, u16)]) -> Result<RepoScan>;

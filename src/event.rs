@@ -47,11 +47,19 @@ pub enum AppEvent {
         message: String,
     },
     RemoteBranchesLoaded {
+        repo_path: PathBuf,
+        remote: String,
         branches: Vec<BranchEntry>,
     },
+    RemoteBranchLoadFailed {
+        repo_path: PathBuf,
+        message: String,
+    },
     GitFetchCompleted {
+        remote: Option<String>,
         branches: Vec<BranchEntry>,
         repo_path: PathBuf,
+        error: Option<String>,
         is_final: bool,
     },
     WorktreeCreated {

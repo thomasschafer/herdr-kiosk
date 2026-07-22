@@ -7,7 +7,10 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-use super::{GitProvider, Repo, RepoScan, ScanWarning, Worktree, parse_worktree_porcelain};
+use super::{
+    GitProvider, LocalBranchAlreadyExists, Repo, RepoScan, ScanWarning, Worktree,
+    parse_worktree_porcelain,
+};
 
 const GIT_DIR_ENTRY: &str = ".git";
 const GITDIR_FILE_PREFIX: &str = "gitdir:";
@@ -87,13 +90,39 @@ impl GitProvider for CliGitProvider {
     }
 
     fn fetch_remote(&self, repo_path: &Path, remote: &str) -> Result<()> {
-        run_git(repo_path, ["fetch", remote])?;
+        let mut command = fetch_command(repo_path, remote);
+        let output = command
+            .output()
+            .with_context(|| format!("failed to run git in {}", repo_path.display()))?;
+        if !output.status.success() {
+            bail!(
+                "git fetch {remote} failed in {}: {}",
+                repo_path.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
         Ok(())
     }
 
     fn create_tracking_branch(&self, repo_path: &Path, branch: &str, remote: &str) -> Result<()> {
         let upstream = format!("{remote}/{branch}");
-        run_git(repo_path, ["branch", "--track", branch, &upstream])?;
+        let output = Command::new("git")
+            .env("LC_ALL", "C")
+            .args(["branch", "--track", branch, &upstream])
+            .current_dir(repo_path)
+            .output()
+            .with_context(|| format!("failed to run git in {}", repo_path.display()))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if tracking_branch_already_exists(&stderr, branch) {
+                return Err(LocalBranchAlreadyExists::new(branch).into());
+            }
+            bail!(
+                "git branch --track {branch} {upstream} failed in {}: {}",
+                repo_path.display(),
+                stderr.trim()
+            );
+        }
         Ok(())
     }
 
@@ -324,6 +353,19 @@ fn run_git<'a>(repo_path: &Path, args: impl IntoIterator<Item = &'a str>) -> Res
         );
     }
     Ok(output)
+}
+
+fn fetch_command(repo_path: &Path, remote: &str) -> Command {
+    let mut command = Command::new("git");
+    command
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .args(["fetch", remote])
+        .current_dir(repo_path);
+    command
+}
+
+fn tracking_branch_already_exists(stderr: &str, branch: &str) -> bool {
+    stderr.contains(&format!("a branch named '{branch}' already exists"))
 }
 
 fn lines(bytes: &[u8]) -> Vec<String> {
@@ -569,12 +611,23 @@ mod tests {
             String::from_utf8_lossy(&upstream.stdout).trim(),
             "upstream/feature"
         );
+        let error = provider
+            .create_tracking_branch(&local, "feature", "upstream")
+            .unwrap_err();
         assert!(
-            provider
-                .create_tracking_branch(&local, "feature", "upstream")
-                .is_err(),
-            "an existing local branch must not be silently reused"
+            crate::git::is_local_branch_already_exists(&error),
+            "an existing local branch must produce the typed race outcome"
         );
+    }
+
+    #[test]
+    fn fetch_disables_terminal_prompts() {
+        let command = fetch_command(Path::new("/repo"), "upstream");
+        let prompt = command
+            .get_envs()
+            .find(|(key, _)| *key == "GIT_TERMINAL_PROMPT")
+            .and_then(|(_, value)| value);
+        assert_eq!(prompt, Some(std::ffi::OsStr::new("0")));
     }
 
     #[test]

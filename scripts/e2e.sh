@@ -2,13 +2,14 @@
 set -euo pipefail
 
 PROJECT_ROOT=$(cd "$(dirname "$0")/.." && pwd)
-HK_ROOT=${HK_E2E_HOME:-/tmp/hk-m4}
+HK_ROOT=${HK_E2E_HOME:-/tmp/hk-m5}
 HERDR_BIN=${HERDR:-"$PROJECT_ROOT/../herdr/target/release/herdr"}
 HK_HOME_DIR="$HK_ROOT/home"
 TMUX_SOCKET="$HK_ROOT/tmux.sock"
-SESSION=hk-m4
+SESSION=hk-m5
 LAST_SCREEN="$HK_ROOT/last-screen.txt"
-CARGO_PATH=/Users/tomschafer/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin
+CARGO_PATH=/Users/tomschafer/.cargo/bin:/etc/profiles/per-user/tomschafer/bin:/usr/bin:/bin:/usr/sbin:/sbin
+export PATH="$CARGO_PATH"
 
 case "$HK_ROOT" in
     /tmp/* | /private/tmp/*) ;;
@@ -164,6 +165,13 @@ mkdir -p "$HK_ROOT/existing-worktrees"
 git -C "$HK_ROOT/repos/direct/open-me" worktree add -q \
     "$HK_ROOT/existing-worktrees/feature" feature
 
+mkdir -p "$HK_ROOT/remote.git"
+git -C "$HK_ROOT/remote.git" init -q --bare
+make_repo "$HK_ROOT/remote-seed"
+git -C "$HK_ROOT/remote-seed" branch remote-only
+git -C "$HK_ROOT/remote-seed" remote add upstream "$HK_ROOT/remote.git"
+git -C "$HK_ROOT/remote-seed" push -q upstream master remote-only
+
 printf 'building plugin...\n'
 (cd "$PROJECT_ROOT" && env PATH="$CARGO_PATH" cargo build --release)
 h plugin link "$PROJECT_ROOT" >/dev/null
@@ -289,6 +297,34 @@ wait_screen_contains "herdr-kiosk — select repo"
 assert_screen_absent "open-me — select branch"
 printf 'branch escape returns to repo picker: ok\n'
 
+git -C "$HK_ROOT/repos/direct/open-me" remote add upstream "$HK_ROOT/remote.git"
+t send-keys -t "$SESSION" Tab
+wait_screen_contains "open-me — select branch"
+wait_screen_contains "remote-only (remote)" 120
+assert_screen_line_contains_all "remote-only" "(remote)"
+capture
+[ "$(grep -Fc "master (worktree)" "$LAST_SCREEN")" = 1 ] \
+    || fail "local master branch row was not unique"
+if grep -Fq "master (remote)" "$LAST_SCREEN"; then
+    fail "branch present locally and remotely was duplicated"
+fi
+printf 'remote branch streaming and local dedup: ok\n'
+
+t send-keys -t "$SESSION" remote-only
+wait_screen_contains "1 of 4 branches"
+t send-keys -t "$SESSION" Enter
+wait_screen_absent "open-me — select branch" 120
+
+REMOTE_WORKTREE="$HK_ROOT/worktrees/open-me/remote-only"
+[ -d "$REMOTE_WORKTREE" ] || fail "remote-only worktree was not created"
+assert_focused_checkout "$REMOTE_WORKTREE"
+UPSTREAM=$(git -C "$HK_ROOT/repos/direct/open-me" rev-parse --abbrev-ref 'remote-only@{upstream}')
+[ "$UPSTREAM" = "upstream/remote-only" ] \
+    || fail "remote-only did not track upstream/remote-only: $UPSTREAM"
+printf 'remote tracking checkout and focus: ok\n'
+
+h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
+wait_screen_contains "herdr-kiosk — select repo"
 t send-keys -t "$SESSION" C-c
 wait_screen_absent "herdr-kiosk — select repo"
 printf 'e2e: PASS\n'

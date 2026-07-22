@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     ffi::OsString,
     path::{Path, PathBuf},
 };
@@ -209,6 +209,9 @@ pub struct AppState {
     pub repo_filter_generation: u64,
     pub branch_filter_generation: u64,
     pub open_worktrees: Vec<WorktreeInfo>,
+    pub remote_branches: BTreeMap<String, Vec<BranchEntry>>,
+    pub fetching_remote_repo: Option<PathBuf>,
+    pub fetch_warning_remotes: HashSet<String>,
 }
 
 impl AppState {
@@ -230,6 +233,9 @@ impl AppState {
             repo_filter_generation: 0,
             branch_filter_generation: 0,
             open_worktrees: Vec::new(),
+            remote_branches: BTreeMap::new(),
+            fetching_remote_repo: None,
+            fetch_warning_remotes: HashSet::new(),
         }
     }
 
@@ -265,6 +271,43 @@ impl AppState {
         if !message.is_empty() && !self.toasts.iter().any(|toast| toast.message == message) {
             self.toasts.push_back(Toast { kind, message });
         }
+    }
+
+    pub fn reset_remote_branches(&mut self) {
+        self.remote_branches.clear();
+        self.fetching_remote_repo = None;
+        self.fetch_warning_remotes.clear();
+    }
+
+    /// Merge one remote's latest snapshot without allowing task arrival order to
+    /// overwrite another remote or a newer fetch result.
+    pub fn merge_remote_branches(&mut self, remote: String, incoming: Vec<BranchEntry>) {
+        let bucket = self.remote_branches.entry(remote).or_default();
+        let mut known: HashSet<String> = bucket.iter().map(|entry| entry.name.clone()).collect();
+        bucket.extend(
+            incoming
+                .into_iter()
+                .filter(|entry| known.insert(entry.name.clone())),
+        );
+        BranchEntry::sort(bucket);
+
+        let mut merged: Vec<_> = self
+            .branches
+            .iter()
+            .filter(|entry| entry.remote.is_none())
+            .cloned()
+            .collect();
+        let mut names: HashSet<String> = merged.iter().map(|entry| entry.name.clone()).collect();
+        for entries in self.remote_branches.values() {
+            merged.extend(
+                entries
+                    .iter()
+                    .filter(|entry| names.insert(entry.name.clone()))
+                    .cloned(),
+            );
+        }
+        BranchEntry::sort(&mut merged);
+        self.branches = merged;
     }
 
     pub fn canonical_sort(&mut self) {
@@ -676,5 +719,46 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].remote.as_deref(), Some("upstream"));
         assert_eq!(entries[0].name, "feature");
+    }
+
+    #[test]
+    fn remote_merges_are_deduplicated_and_sorted_after_locals() {
+        let mut state = AppState::new(None);
+        state.branches = BranchEntry::build_local(
+            &repo("/repo"),
+            &["z-local".into(), "main".into()],
+            Some("main"),
+            None,
+        );
+        state.merge_remote_branches(
+            "upstream".into(),
+            BranchEntry::build_remote(
+                "upstream",
+                &["z-local".into(), "z-remote".into()],
+                &["z-local".into(), "main".into()],
+            ),
+        );
+        state.merge_remote_branches(
+            "origin".into(),
+            BranchEntry::build_remote(
+                "origin",
+                &["a-remote".into(), "z-remote".into()],
+                &["z-local".into(), "main".into()],
+            ),
+        );
+
+        assert_eq!(
+            state
+                .branches
+                .iter()
+                .map(|entry| (entry.name.as_str(), entry.remote.as_deref()))
+                .collect::<Vec<_>>(),
+            [
+                ("main", None),
+                ("z-local", None),
+                ("a-remote", Some("origin")),
+                ("z-remote", Some("origin")),
+            ]
+        );
     }
 }

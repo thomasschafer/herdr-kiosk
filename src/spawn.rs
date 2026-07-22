@@ -3,7 +3,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     },
     thread,
@@ -13,7 +13,7 @@ use rayon::ThreadPoolBuilder;
 
 use crate::{
     event::AppEvent,
-    git::{GitProvider, Repo, ScanWarning},
+    git::{GitProvider, Repo, ScanWarning, is_local_branch_already_exists},
     herdr::{HerdrError, HerdrProvider, WorktreeCreateRequest, WorktreeOpenTarget},
     state::BranchEntry,
 };
@@ -242,6 +242,122 @@ pub fn spawn_branch_loading(
     });
 }
 
+pub fn spawn_remote_branch_loading(
+    git: &Arc<dyn GitProvider>,
+    sender: &EventSender,
+    repo_path: PathBuf,
+    local_names: Vec<String>,
+) {
+    let git = Arc::clone(git);
+    let sender = sender.clone();
+    thread::spawn(move || {
+        let remotes = match git.list_remotes(&repo_path) {
+            Ok(remotes) => remotes,
+            Err(error) => {
+                sender.send(AppEvent::RemoteBranchLoadFailed {
+                    repo_path,
+                    message: format!("could not list remote branches: {error:#}"),
+                });
+                return;
+            }
+        };
+        for remote in remotes {
+            if sender.is_cancelled() {
+                return;
+            }
+            match git.list_remote_branches_for_remote(&repo_path, &remote) {
+                Ok(remote_names) => {
+                    sender.send(AppEvent::RemoteBranchesLoaded {
+                        repo_path: repo_path.clone(),
+                        branches: BranchEntry::build_remote(&remote, &remote_names, &local_names),
+                        remote,
+                    });
+                }
+                Err(error) => {
+                    sender.send(AppEvent::RemoteBranchLoadFailed {
+                        repo_path: repo_path.clone(),
+                        message: format!("could not list branches for remote {remote}: {error:#}"),
+                    });
+                }
+            }
+        }
+    });
+}
+
+pub fn spawn_git_fetch(
+    git: &Arc<dyn GitProvider>,
+    sender: &EventSender,
+    repo_path: PathBuf,
+    local_names: Vec<String>,
+) {
+    let git = Arc::clone(git);
+    let sender = sender.clone();
+    thread::spawn(move || {
+        let remotes = match git.list_remotes(&repo_path) {
+            Ok(remotes) => remotes,
+            Err(error) => {
+                sender.send(AppEvent::GitFetchCompleted {
+                    remote: None,
+                    branches: Vec::new(),
+                    repo_path,
+                    error: Some(format!("could not list remotes for fetch: {error:#}")),
+                    is_final: true,
+                });
+                return;
+            }
+        };
+        if remotes.is_empty() {
+            sender.send(AppEvent::GitFetchCompleted {
+                remote: None,
+                branches: Vec::new(),
+                repo_path,
+                error: None,
+                is_final: true,
+            });
+            return;
+        }
+
+        let remaining = Arc::new(AtomicUsize::new(remotes.len()));
+        let local_names = Arc::new(local_names);
+        spawn_work_parallel(FETCH_POOL_SIZE, remotes, |remote| {
+            let git = Arc::clone(&git);
+            let sender = sender.clone();
+            let repo_path = repo_path.clone();
+            let local_names = Arc::clone(&local_names);
+            let remaining = Arc::clone(&remaining);
+            move || {
+                let (branches, error) = if sender.is_cancelled() {
+                    (Vec::new(), None)
+                } else {
+                    match git.fetch_remote(&repo_path, &remote) {
+                        Ok(()) => match git.list_remote_branches_for_remote(&repo_path, &remote) {
+                            Ok(remote_names) => (
+                                BranchEntry::build_remote(&remote, &remote_names, &local_names),
+                                None,
+                            ),
+                            Err(error) => (
+                                Vec::new(),
+                                Some(format!(
+                                    "fetch succeeded but branches could not be refreshed: {error:#}"
+                                )),
+                            ),
+                        },
+                        Err(error) => (Vec::new(), Some(error.to_string())),
+                    }
+                };
+                let is_final = remaining.fetch_sub(1, Ordering::AcqRel) == 1;
+                sender.send(AppEvent::GitFetchCompleted {
+                    remote: Some(remote),
+                    branches,
+                    repo_path,
+                    error,
+                    is_final,
+                });
+            }
+        });
+    });
+}
+
 pub fn spawn_open_worktrees(
     provider: &Arc<dyn HerdrProvider>,
     sender: &EventSender,
@@ -309,6 +425,51 @@ pub fn spawn_open_branch(
     });
 }
 
+pub fn spawn_open_remote_branch(
+    git: &Arc<dyn GitProvider>,
+    provider: &Arc<dyn HerdrProvider>,
+    sender: &EventSender,
+    repo_path: PathBuf,
+    branch_name: String,
+    remote: String,
+) {
+    let git = Arc::clone(git);
+    let provider = Arc::clone(provider);
+    let sender = sender.clone();
+    thread::spawn(move || {
+        if let Err(error) = git.create_tracking_branch(&repo_path, &branch_name, &remote)
+            && !is_local_branch_already_exists(&error)
+        {
+            sender.send(AppEvent::BranchOperationFailed {
+                repo_path,
+                message: error.to_string(),
+            });
+            return;
+        }
+
+        let result = provider
+            .worktree_create(&WorktreeCreateRequest {
+                cwd: repo_path.clone(),
+                branch: branch_name,
+                base: None,
+                path: None,
+                focus: true,
+            })
+            .map(|_| ());
+        match result {
+            Ok(()) => {
+                sender.send(AppEvent::RepoOpened);
+            }
+            Err(error) => {
+                sender.send(AppEvent::BranchOperationFailed {
+                    repo_path,
+                    message: friendly_branch_error(&error),
+                });
+            }
+        }
+    });
+}
+
 fn friendly_branch_error(error: &HerdrError) -> String {
     match error {
         HerdrError::WorktreeOperationInProgress(_) => {
@@ -321,9 +482,13 @@ fn friendly_branch_error(error: &HerdrError) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{
+        collections::HashMap,
+        path::{Path, PathBuf},
+        time::Duration,
+    };
 
-    use crate::git::Repo;
+    use crate::git::{Repo, mock::MockGitProvider};
 
     use super::*;
 
@@ -355,5 +520,78 @@ mod tests {
         assert!(!sender.send(AppEvent::GitError("cancelled".into())));
         assert!(rx.recv_timeout(Duration::from_secs(1)).is_ok());
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn remote_branch_loading_streams_each_remote_with_repo_scope() {
+        let git = Arc::new(MockGitProvider {
+            remotes: vec!["origin".into(), "upstream".into()],
+            remote_branches_by_remote: HashMap::from([
+                ("origin".into(), vec!["main".into(), "one".into()]),
+                ("upstream".into(), vec!["two".into()]),
+            ]),
+            ..MockGitProvider::default()
+        }) as Arc<dyn GitProvider>;
+        let (tx, rx) = mpsc::channel();
+        let sender = EventSender::new(tx, Arc::new(AtomicBool::new(false)));
+
+        spawn_remote_branch_loading(&git, &sender, "/repo".into(), vec!["main".into()]);
+
+        let events = [
+            rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        ];
+        assert!(matches!(
+            &events[0],
+            AppEvent::RemoteBranchesLoaded { repo_path, remote, branches }
+                if repo_path == Path::new("/repo")
+                    && remote == "origin"
+                    && branches.iter().map(|branch| branch.name.as_str()).eq(["one"])
+        ));
+        assert!(matches!(
+            &events[1],
+            AppEvent::RemoteBranchesLoaded { repo_path, remote, branches }
+                if repo_path == Path::new("/repo")
+                    && remote == "upstream"
+                    && branches.iter().map(|branch| branch.name.as_str()).eq(["two"])
+        ));
+    }
+
+    #[test]
+    fn git_fetch_streams_completions_and_marks_exactly_one_final() {
+        let git_mock = Arc::new(MockGitProvider {
+            remotes: vec!["origin".into(), "upstream".into()],
+            remote_branches_by_remote: HashMap::from([
+                ("origin".into(), vec!["one".into()]),
+                ("upstream".into(), vec!["two".into()]),
+            ]),
+            ..MockGitProvider::default()
+        });
+        let git: Arc<dyn GitProvider> = git_mock.clone();
+        let (tx, rx) = mpsc::channel();
+        let sender = EventSender::new(tx, Arc::new(AtomicBool::new(false)));
+
+        spawn_git_fetch(&git, &sender, "/repo".into(), Vec::new());
+
+        let events = [
+            rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        ];
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, AppEvent::GitFetchCompleted { is_final: true, .. }))
+                .count(),
+            1
+        );
+        let mut calls = git_mock.fetch_calls.lock().unwrap().clone();
+        calls.sort();
+        assert_eq!(
+            calls,
+            [
+                (PathBuf::from("/repo"), "origin".into()),
+                (PathBuf::from("/repo"), "upstream".into()),
+            ]
+        );
     }
 }

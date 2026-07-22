@@ -4,7 +4,7 @@ mod provider;
 mod repo;
 
 pub use cli::{CliGitProvider, walk_repos};
-pub use provider::GitProvider;
+pub use provider::{GitProvider, LocalBranchAlreadyExists, is_local_branch_already_exists};
 pub use repo::{Repo, RepoScan, ScanWarning, Worktree};
 
 /// Parse `git worktree list --porcelain` output into worktrees.

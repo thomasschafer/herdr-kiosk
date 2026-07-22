@@ -1,12 +1,15 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use anyhow::{Result, bail};
 
-use super::{GitProvider, Repo, RepoScan, ScanWarning, Worktree};
+use super::{GitProvider, LocalBranchAlreadyExists, Repo, RepoScan, ScanWarning, Worktree};
 
 #[derive(Default)]
 pub struct MockGitProvider {
@@ -19,6 +22,7 @@ pub struct MockGitProvider {
     pub remotes: Vec<String>,
     pub default_branch: Option<String>,
     pub failure: Mutex<Option<String>>,
+    pub tracking_already_exists: AtomicBool,
     pub tracking_calls: Mutex<Vec<(PathBuf, String, String)>>,
     pub remove_calls: Mutex<Vec<(PathBuf, PathBuf)>>,
     pub prune_calls: Mutex<Vec<PathBuf>>,
@@ -108,6 +112,9 @@ impl GitProvider for MockGitProvider {
             branch.to_string(),
             remote.to_string(),
         ));
+        if self.tracking_already_exists.swap(false, Ordering::AcqRel) {
+            return Err(LocalBranchAlreadyExists::new(branch).into());
+        }
         Ok(())
     }
 
