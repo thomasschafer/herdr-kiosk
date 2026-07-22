@@ -37,6 +37,8 @@ Product decisions made so far. Add new entries as they're made; don't relitigate
 | D15 | Process | Claude orchestrates/plans/verifies, Codex (gpt-5.6 sol, high reasoning) implements, Tom decides product questions and hand-tests (see §8) |
 | D16 | Version control | Commit each verified chunk and push to `origin main` (github.com/thomasschafer/herdr-kiosk) as we go; no co-author lines. Pause for Tom only when something genuinely needs review |
 | D17 | Performance | Users may have very large repo/branch counts. Correctness first, but weigh allocation, process-spawn, and traversal costs in reviews as a standing concern; pragmatic, not premature |
+| D18 | Help esc | `esc` closes the help overlay, discarding only its overlay-local search query and preserving the underlying picker query |
+| D19 | Editor-on-open | Reverses the research §7 "no layout bootstrapping" stance at Tom's request: after opening/creating a workspace, optionally split a pane and run a command (e.g. `hx`), configured via `[on_open]`. Uses herdr `pane split --direction` + `pane run` |
 | D18 | Help search dismissal | Esc always closes the help overlay, even with a non-empty help query. The overlay owns and discards its query, leaving the underlying picker query untouched |
 
 ## 3. Corrections to the research doc (source-verified against herdr 0.7.4)
@@ -445,7 +447,38 @@ than guessed at, unless trivially reversible.
 
 ## 9. Open questions
 
-- (none currently — add here as they arise; move to §2 when decided)
+- Editor-on-open config shape (D19 below): proceeding with `[on_open] panes = [{ command, direction }]`; Tom may prefer kiosk's flat `split_command`.
+- Ctrl+C semantics during an in-flight worktree create/remove (bug-hunt #4): default = relabel honestly ("operation continues"), not fake cancel. Awaiting Tom's steer.
+- Detached/branchless worktrees (bug-hunt #17): default = document as a v1 limitation.
+- Orphan-worktree cleanup feature (like `kiosk clean`): not building unless Tom wants it.
+- GIF content: default to a tight repo→search→branch→open showcase unless Tom names specific moments.
+
+## 8b. Post-feature-complete work (hardening + polish)
+
+After M9 the plugin was feature-complete; subsequent work is user-testing feedback and
+a deep bug hunt.
+
+- UI polish (commit 91d90dc): base-branch picker keymap fix (was miscategorised as a
+  modal, losing text-edit + list-navigation layers), lowercase chord display,
+  per-view accent colours (magenta repo / cyan branch / green help), fuzzy-searchable
+  help, non-blanking validate/base popup.
+- Wizard/CI fixes (commit 8c8b533): capital-letter input, inline depth entry,
+  ETXTBSY test-flake retry.
+- Deep bug hunt (Codex investigation, 18 findings) resolved across three batches:
+  - Batch A safety (commit 0b33e23): removed recursive-delete footgun; NUL/`-z`
+    path-safe porcelain parsing + UTF-8 rejection; deletion gated on open-state and
+    re-checked at confirm (no routing around herdr); per-visit branch-view generation
+    guard.
+  - Batch B input (commit da67e21): Unicode input everywhere; wizard depth 10/12 fix;
+    shifted-char chord handling; remap-aware dialog/toast hints; selection preserved
+    after navigation; minimal dependency-free OSC read (rejected a termwiz dep in
+    review).
+  - Batch C robustness (commit de6f601): symlink-loop-safe iterative scan with visited
+    set; 30s fetch timeout with child-kill; exact remote-prefix parsing; wizard
+    filesystem-root preservation; new-branch blocked until branches load; atomic
+    pending-delete writes.
+  - Deferred by decision: #4 (ctrl+c semantics), #17 (detached worktrees), orphan
+    cleanup — see §9.
 
 ## 10. Risks and watch items
 
