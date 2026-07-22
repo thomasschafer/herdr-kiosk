@@ -41,6 +41,7 @@ make_repo "$HK_ROOT/repos/alpha/repo-same"
 make_repo "$HK_ROOT/repos/beta/repo-same"
 make_repo "$HK_ROOT/repos/deep/level-one/level-two/nested-repo"
 make_repo "$HK_ROOT/repos/direct/open-me"
+make_repo "$HK_ROOT/repos/UpperCase/open-me-upper"
 git -C "$HK_ROOT/repos/direct/open-me" branch feature
 git -C "$HK_ROOT/repos/direct/open-me" branch plain
 mkdir -p "$HK_ROOT/existing-worktrees"
@@ -82,20 +83,27 @@ h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
 wait_screen_contains "Welcome to herdr-kiosk"
 t send-keys -t "$SESSION" Enter
 wait_screen_contains "Search directories"
-t send-keys -t "$SESSION" "$HK_ROOT/repos/direct"
+t send-keys -t "$SESSION" "$HK_ROOT/repos/"
+t send-keys -t "$SESSION" -l "UpperCase"
+wait_screen_contains "$HK_ROOT/repos/UpperCase"
 t send-keys -t "$SESSION" Enter
-wait_screen_contains "Scan depth"
+wait_screen_contains "Depth"
+assert_screen_contains "Search directories"
+assert_screen_contains "$HK_ROOT/repos/UpperCase"
+assert_screen_contains "No directories added yet"
+t send-keys -t "$SESSION" 2
 t send-keys -t "$SESSION" Enter
 wait_screen_contains "Search directories"
+wait_screen_contains "$HK_ROOT/repos/UpperCase  depth 2"
 t send-keys -t "$SESSION" Enter
 wait_screen_contains "Confirm setup"
 t send-keys -t "$SESSION" Enter
 wait_screen_contains "herdr-kiosk — select repo"
 wait_screen_contains "open-me"
 [ -f "$PLUGIN_CONFIG_DIR/config.toml" ] || fail "wizard did not create config.toml"
-grep -Fq "path = \"$HK_ROOT/repos/direct\"" "$PLUGIN_CONFIG_DIR/config.toml" \
+grep -Fq "path = \"$HK_ROOT/repos/UpperCase\"" "$PLUGIN_CONFIG_DIR/config.toml" \
     || fail "wizard config did not contain fixture search directory"
-grep -Fq "depth = 1" "$PLUGIN_CONFIG_DIR/config.toml" \
+grep -Fq "depth = 2" "$PLUGIN_CONFIG_DIR/config.toml" \
     || fail "wizard config did not contain selected depth"
 t send-keys -t "$SESSION" C-c
 wait_screen_absent "herdr-kiosk — select repo"

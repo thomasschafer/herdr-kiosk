@@ -106,6 +106,17 @@ impl SetupState {
         Ok(())
     }
 
+    pub fn cancel_depth(&mut self) {
+        let SetupStep::Depth { path } = &self.step else {
+            return;
+        };
+        let path = path.clone();
+        self.step = SetupStep::Directories;
+        self.input.text = path;
+        self.input.cursor = self.input.text.len();
+        self.message = None;
+    }
+
     pub fn remove_last(&mut self) -> Option<SetupDir> {
         self.dirs.pop()
     }
@@ -391,6 +402,21 @@ mod tests {
         assert!(state.remove_last().is_some());
         assert!(state.dirs.is_empty());
         assert!(state.begin_depth().is_err());
+    }
+
+    #[test]
+    fn cancelling_depth_restores_the_pending_path_for_editing() {
+        let mut state = SetupState::default();
+        state.continue_from_welcome();
+        state.input.text = "~/Code".into();
+        state.begin_depth().unwrap();
+
+        state.cancel_depth();
+
+        assert_eq!(state.step, SetupStep::Directories);
+        assert_eq!(state.input.text, "~/Code");
+        assert_eq!(state.input.cursor, "~/Code".len());
+        assert!(state.dirs.is_empty());
     }
 
     #[test]

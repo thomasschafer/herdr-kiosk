@@ -138,28 +138,7 @@ fn run_setup_wizard(
                     return Ok(None);
                 }
             }
-            SetupStep::Depth { .. } => match key.code {
-                KeyCode::Enter => {
-                    if let Err(message) = state.commit_depth() {
-                        state.message = Some(message);
-                    }
-                }
-                KeyCode::Esc => {
-                    state.step = SetupStep::Directories;
-                    state.input.clear();
-                    state.message = None;
-                }
-                KeyCode::Backspace => state.input.backspace(),
-                KeyCode::Char(character)
-                    if character.is_ascii_digit() && key.modifiers == KeyModifiers::NONE =>
-                {
-                    if state.input.text == "1" {
-                        state.input.clear();
-                    }
-                    state.input.insert_char(character);
-                }
-                _ => {}
-            },
+            SetupStep::Depth { .. } => handle_depth_key(&mut state, key, home.as_deref()),
             SetupStep::Confirm => match key.code {
                 KeyCode::Enter => {
                     let search_dirs = state.search_dirs();
@@ -215,8 +194,7 @@ fn handle_directory_key(
         KeyCode::Left if !control && !alt => state.input.cursor_left(),
         KeyCode::Right if !control && !alt => state.input.cursor_right(),
         KeyCode::Char(character)
-            if key.modifiers == KeyModifiers::NONE
-                && (character.is_ascii_graphic() || character == ' ') =>
+            if !control && !alt && (character.is_ascii_graphic() || character == ' ') =>
         {
             state.input.insert_char(character);
             state.message = None;
@@ -225,6 +203,30 @@ fn handle_directory_key(
         _ => {}
     }
     false
+}
+
+fn handle_depth_key(state: &mut SetupState, key: KeyEvent, home: Option<&std::path::Path>) {
+    let control = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    match key.code {
+        KeyCode::Enter => {
+            if let Err(message) = state.commit_depth() {
+                state.message = Some(message);
+            }
+        }
+        KeyCode::Esc => {
+            state.cancel_depth();
+            state.update_completions(home);
+        }
+        KeyCode::Backspace => state.input.backspace(),
+        KeyCode::Char(character) if character.is_ascii_digit() && !control && !alt => {
+            if state.input.text == "1" {
+                state.input.clear();
+            }
+            state.input.insert_char(character);
+        }
+        _ => {}
+    }
 }
 
 fn run_no_search_dirs(terminal: &mut DefaultTerminal, path: Option<&PathBuf>) -> Result<()> {
@@ -272,4 +274,43 @@ fn draw_no_search_dirs(frame: &mut Frame, location: &str) {
         .alignment(Alignment::Center),
         area,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wizard_directory_input_accepts_shifted_uppercase_letters() {
+        let mut state = SetupState::default();
+
+        handle_directory_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT),
+            None,
+        );
+
+        assert_eq!(state.input.text, "A");
+    }
+
+    #[test]
+    fn wizard_depth_input_accepts_shift_modifier_and_rejects_control() {
+        let mut state = SetupState::default();
+        state.continue_from_welcome();
+        state.input.text = "/Repo".into();
+        state.begin_depth().unwrap();
+
+        handle_depth_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('2'), KeyModifiers::SHIFT),
+            None,
+        );
+        handle_depth_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('3'), KeyModifiers::CONTROL),
+            None,
+        );
+
+        assert_eq!(state.input.text, "2");
+    }
 }

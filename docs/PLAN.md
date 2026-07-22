@@ -361,6 +361,15 @@ Real-Windows hand-test checklist (compilation and CI unit tests do not cover the
 Windows continues to use `cargo build --release` during install. There is no
 PowerShell prebuilt-fetch path yet; adding one is post-v1 work.
 
+### Post-M9 fixes
+
+- [x] Bound retries for Linux `ETXTBSY` around test-only fake-herdr invocations;
+  production CLI invocation remains unchanged.
+- [x] Wizard text input accepts Shift-modified characters while still rejecting
+  Control/Alt input.
+- [x] Directory depth is selected inline on the Search directories screen, preserving
+  the pending path and Added list; Esc restores the path for editing.
+
 Publishing to herdr.dev/plugins (verified against herdr's marketplace doc; the index
 is automatic and unreviewed):
 

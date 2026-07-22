@@ -638,6 +638,25 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn retry_fake_herdr<T>(mut invoke: impl FnMut() -> Result<T, HerdrError>) -> T {
+        const ATTEMPTS: usize = 100;
+        for attempt in 1..=ATTEMPTS {
+            match invoke() {
+                Ok(value) => return value,
+                Err(HerdrError::Invocation(message))
+                    if attempt < ATTEMPTS
+                        && (message.contains("Text file busy")
+                            || message.contains("os error 26")) =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Err(error) => panic!("fake herdr invocation failed: {error}"),
+            }
+        }
+        unreachable!()
+    }
+
+    #[cfg(unix)]
     #[test]
     fn cli_uses_workspace_list_without_json_flag() {
         let temp = TempDir::new().unwrap();
@@ -646,7 +665,7 @@ mod tests {
         );
         let (binary, args_file) = fake_herdr(&temp, &response);
         let provider = CliHerdrProvider::new(binary);
-        assert_eq!(provider.workspace_list().unwrap().len(), 1);
+        assert_eq!(retry_fake_herdr(|| provider.workspace_list()).len(), 1);
         assert_eq!(
             fs::read_to_string(args_file).unwrap().trim(),
             "workspace list"
@@ -662,7 +681,7 @@ mod tests {
         );
         let (binary, args_file) = fake_herdr(&temp, &response);
         let provider = CliHerdrProvider::new(binary);
-        provider.worktree_list(Path::new("/repo")).unwrap();
+        retry_fake_herdr(|| provider.worktree_list(Path::new("/repo")));
         assert_eq!(
             fs::read_to_string(args_file).unwrap().trim(),
             "worktree list --cwd /repo --json"
@@ -679,13 +698,13 @@ mod tests {
         let path_temp = TempDir::new().unwrap();
         let (binary, args_file) = fake_herdr(&path_temp, &response);
         let provider = CliHerdrProvider::new(binary);
-        provider
-            .worktree_open(
+        retry_fake_herdr(|| {
+            provider.worktree_open(
                 Path::new("/repo"),
                 &WorktreeOpenTarget::Path("/repo".into()),
                 true,
             )
-            .unwrap();
+        });
         assert_eq!(
             fs::read_to_string(args_file).unwrap().trim(),
             "worktree open --cwd /repo --path /repo --focus"
@@ -694,13 +713,13 @@ mod tests {
         let branch_temp = TempDir::new().unwrap();
         let (binary, args_file) = fake_herdr(&branch_temp, &response);
         let provider = CliHerdrProvider::new(binary);
-        provider
-            .worktree_open(
+        retry_fake_herdr(|| {
+            provider.worktree_open(
                 Path::new("/repo"),
                 &WorktreeOpenTarget::Branch("feature".into()),
                 true,
             )
-            .unwrap();
+        });
         assert_eq!(
             fs::read_to_string(args_file).unwrap().trim(),
             "worktree open --cwd /repo --branch feature --focus"
@@ -716,15 +735,15 @@ mod tests {
         let create_temp = TempDir::new().unwrap();
         let (binary, args_file) = fake_herdr(&create_temp, &create_response);
         let provider = CliHerdrProvider::new(binary);
-        provider
-            .worktree_create(&WorktreeCreateRequest {
+        retry_fake_herdr(|| {
+            provider.worktree_create(&WorktreeCreateRequest {
                 cwd: "/repo".into(),
                 branch: "feature".into(),
                 base: Some("main".into()),
                 path: Some("/custom/repo-feature".into()),
                 focus: true,
             })
-            .unwrap();
+        });
         assert_eq!(
             fs::read_to_string(args_file).unwrap().trim(),
             "worktree create --cwd /repo --branch feature --base main --path /custom/repo-feature --focus"
@@ -734,7 +753,7 @@ mod tests {
         let remove_temp = TempDir::new().unwrap();
         let (binary, args_file) = fake_herdr(&remove_temp, remove_response);
         let provider = CliHerdrProvider::new(binary);
-        provider.worktree_remove("w_2", true).unwrap();
+        retry_fake_herdr(|| provider.worktree_remove("w_2", true));
         assert_eq!(
             fs::read_to_string(args_file).unwrap().trim(),
             "worktree remove --workspace w_2 --force"

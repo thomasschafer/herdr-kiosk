@@ -26,8 +26,9 @@ pub fn draw(frame: &mut Frame, state: &SetupState, theme: &Theme, config_path: &
     frame.render_widget(Clear, area);
     match &state.step {
         SetupStep::Welcome => draw_welcome(frame, area, theme, config_path),
-        SetupStep::Directories => draw_directories(frame, area, state, theme),
-        SetupStep::Depth { path } => draw_depth(frame, area, state, theme, path),
+        SetupStep::Directories | SetupStep::Depth { .. } => {
+            draw_directories(frame, area, state, theme);
+        }
         SetupStep::Confirm => draw_confirm(frame, area, state, theme, config_path),
     }
 }
@@ -78,11 +79,18 @@ fn draw_directories(frame: &mut Frame, area: Rect, state: &SetupState, theme: &T
     let block = shell("Search directories", theme);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let completion_height = u16::try_from(state.completions.len().min(5)).unwrap_or(5);
+    let pending_path = match &state.step {
+        SetupStep::Depth { path } => Some(path.as_str()),
+        _ => None,
+    };
+    let auxiliary_height = pending_path.map_or_else(
+        || u16::try_from(state.completions.len().min(5)).unwrap_or(5),
+        |_| 3,
+    );
     let chunks = Layout::vertical([
         Constraint::Length(2),
         Constraint::Length(3),
-        Constraint::Length(completion_height),
+        Constraint::Length(auxiliary_height),
         Constraint::Min(3),
         Constraint::Length(2),
     ])
@@ -101,27 +109,10 @@ fn draw_directories(frame: &mut Frame, area: Rect, state: &SetupState, theme: &T
             border_color: theme.border,
             muted_color: theme.muted,
         },
-        &state.input.text,
-        state.input.cursor,
+        pending_path.unwrap_or(&state.input.text),
+        pending_path.map_or(state.input.cursor, str::len),
     );
-    let completions = state
-        .completions
-        .iter()
-        .take(5)
-        .enumerate()
-        .map(|(index, value)| {
-            let marker = if state.selected_completion == Some(index) {
-                "▸ "
-            } else {
-                "  "
-            };
-            ListItem::new(format!("{marker}{value}"))
-        })
-        .collect::<Vec<_>>();
-    frame.render_widget(
-        List::new(completions).style(Style::default().fg(theme.muted)),
-        chunks[2],
-    );
+    draw_directory_auxiliary(frame, chunks[2], state, theme, pending_path);
     let dirs = if state.dirs.is_empty() {
         vec![ListItem::new(Span::styled(
             "No directories added yet",
@@ -147,10 +138,12 @@ fn draw_directories(frame: &mut Frame, area: Rect, state: &SetupState, theme: &T
         List::new(dirs).block(Block::default().title(" Added ").borders(Borders::TOP)),
         chunks[3],
     );
-    let message = state
-        .message
-        .as_deref()
-        .unwrap_or("Enter add/finish   Tab complete   Ctrl+X remove last   Esc quit");
+    let default_message = if pending_path.is_some() {
+        "Enter add directory   Esc edit path"
+    } else {
+        "Enter add/finish   Tab complete   Ctrl+X remove last   Esc quit"
+    };
+    let message = state.message.as_deref().unwrap_or(default_message);
     frame.render_widget(
         Paragraph::new(message)
             .style(Style::default().fg(if state.message.is_some() {
@@ -163,48 +156,46 @@ fn draw_directories(frame: &mut Frame, area: Rect, state: &SetupState, theme: &T
     );
 }
 
-fn draw_depth(frame: &mut Frame, area: Rect, state: &SetupState, theme: &Theme, path: &str) {
-    let content = centered(64, 12, area);
-    let lines = vec![
-        Line::raw(""),
-        Line::from(vec![
-            Span::raw("Directory: "),
-            Span::styled(
-                path.to_string(),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        Line::raw(""),
-        Line::raw("How many directory levels should be scanned?"),
-        Line::from(Span::styled(
-            "1 is fastest and scans direct children.",
-            Style::default().fg(theme.muted),
-        )),
-        Line::raw(""),
-        Line::from(vec![
-            Span::raw("Depth: "),
-            Span::styled(
-                format!("{}▏", state.input.text),
-                Style::default()
-                    .fg(theme.accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        Line::raw(""),
-        Line::from(vec![
-            Span::styled("Enter", Style::default().fg(theme.hint)),
-            Span::raw(" add directory   "),
-            Span::styled("Esc", Style::default().fg(theme.hint)),
-            Span::raw(" back"),
-        ]),
-    ];
-    frame.render_widget(Clear, content);
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(shell("Scan depth", theme))
-            .alignment(Alignment::Center),
-        content,
-    );
+fn draw_directory_auxiliary(
+    frame: &mut Frame,
+    area: Rect,
+    state: &SetupState,
+    theme: &Theme,
+    pending_path: Option<&str>,
+) {
+    if pending_path.is_some() {
+        super::search_bar::draw(
+            frame,
+            area,
+            &super::search_bar::SearchBarStyle {
+                title: "Depth",
+                placeholder: "1",
+                border_color: theme.accent,
+                muted_color: theme.muted,
+            },
+            &state.input.text,
+            state.input.cursor,
+        );
+    } else {
+        let completions = state
+            .completions
+            .iter()
+            .take(5)
+            .enumerate()
+            .map(|(index, value)| {
+                let marker = if state.selected_completion == Some(index) {
+                    "▸ "
+                } else {
+                    "  "
+                };
+                ListItem::new(format!("{marker}{value}"))
+            })
+            .collect::<Vec<_>>();
+        frame.render_widget(
+            List::new(completions).style(Style::default().fg(theme.muted)),
+            area,
+        );
+    }
 }
 
 fn draw_confirm(frame: &mut Frame, area: Rect, state: &SetupState, theme: &Theme, path: &str) {
