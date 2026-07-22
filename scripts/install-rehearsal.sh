@@ -20,6 +20,20 @@ LAST_SCREEN="$HK_ROOT/last-screen.txt"
 CARGO_PATH=/Users/tomschafer/.cargo/bin:/etc/profiles/per-user/tomschafer/bin:/usr/bin:/bin:/usr/sbin:/sbin
 export PATH="$CARGO_PATH"
 
+# Herdr gets a sandbox HOME, but rustup's cargo shim still needs the invoking
+# user's toolchain homes. Resolve them before h() applies the HOME override and
+# pass through only directories that actually exist.
+INVOKING_HOME=${HOME:-}
+INVOKING_CARGO_HOME=${CARGO_HOME:-"${INVOKING_HOME:+$INVOKING_HOME/.cargo}"}
+INVOKING_RUSTUP_HOME=${RUSTUP_HOME:-"${INVOKING_HOME:+$INVOKING_HOME/.rustup}"}
+unset CARGO_HOME RUSTUP_HOME
+if [ -n "$INVOKING_CARGO_HOME" ] && [ -d "$INVOKING_CARGO_HOME" ]; then
+    export CARGO_HOME="$INVOKING_CARGO_HOME"
+fi
+if [ -n "$INVOKING_RUSTUP_HOME" ] && [ -d "$INVOKING_RUSTUP_HOME" ]; then
+    export RUSTUP_HOME="$INVOKING_RUSTUP_HOME"
+fi
+
 case "$HK_ROOT" in
     /tmp/* | /private/tmp/*) ;;
     *)
