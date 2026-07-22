@@ -38,4 +38,9 @@ platforms = ["windows"]
 command = ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "scripts/open-picker.ps1"]
 
 [[build]]
+platforms = ["linux", "macos"]
+command = ["sh", "scripts/fetch-or-build.sh"]
+
+[[build]]
+platforms = ["windows"]
 command = ["cargo", "build", "--release"]

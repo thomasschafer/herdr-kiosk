@@ -348,25 +348,30 @@ Real-Windows hand-test checklist (compilation and CI unit tests do not cover the
   locale. Also confirm `GIT_TERMINAL_PROMPT=0` prevents interactive fetch prompts.
 
 ### M9 — distribution and publishing
-- [ ] `fetch-or-build.sh`: version-matched prebuilt download + SHA-256 verify, cargo
+- [x] `fetch-or-build.sh`: version-matched prebuilt download + SHA-256 verify, cargo
   fallback, `~/.cargo/env` sourcing, env-overridable paths for hermetic tests.
-- [ ] Release CI: cross-compile matrix (port from kiosk's `.github/`), checksums.
-- [ ] README: install, keybinding setup, config reference, trust note (herdr doesn't
+- [x] Release CI: cross-compile matrix (port from kiosk's `.github/`), checksums.
+- [x] README: install, keybinding setup, config reference, trust note (herdr doesn't
   sandbox plugins), `plugin link` dev workflow, "no `plugin update` in v1 — reinstall
   to refresh" note for users.
+- [x] Hermetic shell tests cover missing assets, checksum mismatch, and a verified
+  prebuilt install; Ubuntu CI runs them.
+- [x] Add an opt-in real-marketplace install rehearsal that reuses the tmux harness.
+
+Windows continues to use `cargo build --release` during install. There is no
+PowerShell prebuilt-fetch path yet; adding one is post-v1 work.
 
 Publishing to herdr.dev/plugins (verified against herdr's marketplace doc; the index
 is automatic and unreviewed):
 
 1. Repo must be public on GitHub at `thomasschafer/herdr-kiosk` with
-   `herdr-plugin.toml` at the root (already true locally). `herdr plugin install
-   thomasschafer/herdr-kiosk` works from that alone — no registry, no submission.
-   The local repo currently has no commits/remote; first push is Tom's call.
+   `herdr-plugin.toml` at the root. `herdr plugin install
+   thomasschafer/herdr-kiosk` works from that alone — no registry or submission.
 2. Install runs `[[build]]` on the user's machine after a confirmation preview, and a
    build failure aborts the install — so publish-readiness means a fresh clone builds
    with nothing but cargo (fetch-or-build makes that fast; plain `cargo build
    --release` is acceptable but slow before prebuilts exist).
-3. Pre-publish verification (harness): in a sandbox HOME, run
+3. Pre-listing verification (harness): in a sandbox HOME, run
    `herdr plugin install thomasschafer/herdr-kiosk --yes` against the real GitHub
    repo and drive the installed (not linked) plugin end to end. Note: installing over
    a locally linked plugin is refused — unlink in the sandbox first.
@@ -381,6 +386,17 @@ is automatic and unreviewed):
    covers setup + keybinding + trust note. Tagged releases: manifest `version` must
    match the release assets fetch-or-build looks for (match is by version, not
    commit).
+
+Remaining go-live steps (Tom's call, in this order):
+
+- [ ] Tag `v0.1.0` to trigger the release workflow.
+- [ ] Confirm the release workflow completes on all five targets.
+- [ ] Verify all five binaries and `SHA256SUMS` are attached and the checksums match.
+- [ ] Run `HK_RUN_INSTALL_REHEARSAL=1 scripts/install-rehearsal.sh` against the public
+  release.
+- [ ] Set the GitHub repository description to “Fuzzy-find Git repos and branches and
+  open them as Herdr workspaces/worktrees”.
+- [ ] Add the `herdr-plugin` GitHub topic only after the rehearsal passes.
 
 ## 8. Working process (D15)
 

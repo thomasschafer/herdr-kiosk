@@ -20,6 +20,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Validate shell scripts
+        if: runner.os == 'Linux'
+        run: bash -n scripts/*.sh
+
+      - name: Test fetch-or-build installer
+        if: runner.os == 'Linux'
+        run: scripts/test-fetch-or-build.sh
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:

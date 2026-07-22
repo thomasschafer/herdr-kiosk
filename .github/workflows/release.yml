@@ -1,0 +1,126 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  guard-version:
+    name: Guard release version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Require tag, Cargo, and manifest versions to match
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_version=${GITHUB_REF_NAME#v}
+          cargo_version=$(sed -n '/^\[package\]$/,/^\[/{s/^version = "\([^"]*\)"$/\1/p;}' Cargo.toml | head -n 1)
+          manifest_version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' herdr-plugin.toml)
+          if [ -z "$tag_version" ] || [ -z "$cargo_version" ] || [ -z "$manifest_version" ]; then
+            echo "Could not parse tag, Cargo.toml, and herdr-plugin.toml versions" >&2
+            exit 1
+          fi
+          if [ "$tag_version" != "$cargo_version" ] || [ "$tag_version" != "$manifest_version" ]; then
+            echo "Version mismatch: tag=$tag_version Cargo.toml=$cargo_version herdr-plugin.toml=$manifest_version" >&2
+            exit 1
+          fi
+          echo "version=$tag_version" >>"$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: guard-version
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --locked --release --target ${{ matrix.target }}
+
+      - name: Stage release asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=${{ needs.guard-version.outputs.version }}
+          target=${{ matrix.target }}
+          extension=
+          if [ "${{ runner.os }}" = Windows ]; then
+            extension=.exe
+          fi
+          asset="herdr-kiosk-v${version}-${target}${extension}"
+          mkdir -p release-assets
+          cp "target/${target}/release/herdr-kiosk${extension}" "release-assets/${asset}"
+
+      - name: Upload release asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: release-assets/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    needs: [guard-version, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v5
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: release-assets
+        shell: bash
+        run: sha256sum herdr-kiosk-v* >SHA256SUMS
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          gh release create "$GITHUB_REF_NAME" release-assets/* \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --verify-tag
