@@ -139,7 +139,10 @@ pub struct OnOpenConfig {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-/// User configuration loaded from the plugin's `config.toml`.
+/// The plugin reads `config.toml` from its config directory. Run
+/// `herdr plugin config-dir thomasschafer.herdr-kiosk` to locate that directory.
+/// All sections are optional, and the defaults are shown below alongside curated
+/// examples for settings that benefit from one.
 pub struct Config {
     /// Directories searched recursively for Git repositories. Entries can be simple
     /// strings such as `"~/Code"` or inline tables such as

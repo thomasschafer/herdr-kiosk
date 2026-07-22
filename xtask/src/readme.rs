@@ -81,6 +81,7 @@ fn render_config_field(
             "KeysConfig" => render_keys(docs),
             _ => {
                 push_distinct_doc(docs, &field_doc, &required_doc(&nested.attrs, &type_name)?);
+                render_curated_example(docs, &name);
                 render_struct_fields(docs, nested, model, default)?;
             }
         }
@@ -89,9 +90,22 @@ fn render_config_field(
 
     writeln!(docs, "#### `{name}`\n")?;
     push_doc(docs, &field_doc);
+    render_curated_example(docs, &name);
     render_collection_schema(docs, field, model)?;
     render_default(docs, default)?;
     Ok(())
+}
+
+fn render_curated_example(docs: &mut String, name: &str) {
+    match name {
+        "search_dirs" => docs.push_str(
+            "Example:\n\n```toml\nsearch_dirs = [\n  \"~/Code\",\n  { path = \"~/Work\", depth = 2 },\n]\n```\n\n",
+        ),
+        "on_open" => docs.push_str(
+            "Example:\n\n```toml\n[on_open]\npanes = [\n  { command = \"hx\", direction = \"right\" },\n]\n```\n\n",
+        ),
+        _ => {}
+    }
 }
 
 fn render_struct_fields(

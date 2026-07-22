@@ -52,13 +52,25 @@ bindings for the current view.
 ## Configuration
 
 <!-- CONFIG:START -->
-User configuration loaded from the plugin's `config.toml`.
+The plugin reads `config.toml` from its config directory. Run
+`herdr plugin config-dir thomasschafer.herdr-kiosk` to locate that directory.
+All sections are optional, and the defaults are shown below alongside curated
+examples for settings that benefit from one.
 
 #### `search_dirs`
 
 Directories searched recursively for Git repositories. Entries can be simple
 strings such as `"~/Code"` or inline tables such as
 `{ path = "~/Work", depth = 3 }`, and both forms can be mixed.
+
+Example:
+
+```toml
+search_dirs = [
+  "~/Code",
+  { path = "~/Work", depth = 2 },
+]
+```
 
 A repository search root, written either as a path string or an inline table.
 
@@ -97,6 +109,15 @@ open = "green"
 Configure command panes created after opening a new workspace.
 
 The section is optional and contains no pane definitions by default.
+
+Example:
+
+```toml
+[on_open]
+panes = [
+  { command = "hx", direction = "right" },
+]
+```
 
 #### `panes`
 
