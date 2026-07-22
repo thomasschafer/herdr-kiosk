@@ -250,22 +250,24 @@ capture_loop &
 CAPTURE_PID=$!
 sleep 0.1
 sleep 1.2
-type_slow app
-wait_screen_contains "2 of 8 repos"
-sleep 1.2
-send Escape
-sleep 0.5
-type_slow kiosk
+type_slow web
 wait_screen_contains "1 of 8 repos"
 sleep 1.2
-kill "$CAPTURE_PID" 2>/dev/null || true
-wait "$CAPTURE_PID" 2>/dev/null || true
+send Enter
+wait_screen_absent "herdr-kiosk — select repo"
+wait_screen_contains "web-app"
+sleep 1.8
+
+h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
+wait_screen_contains "herdr-kiosk — select repo"
+wait_screen_contains "8 of 8 repos"
+sleep 1.2
+type_slow herdr
+wait_screen_contains "1 of 8 repos"
+sleep 1.2
 send Tab
 wait_screen_contains "5 of 5 branches"
 wait_screen_contains "experiment/sidebar (remote)"
-capture_loop &
-CAPTURE_PID=$!
-sleep 0.1
 sleep 1.8
 type_slow docs
 wait_screen_contains "1 of 5 branches"
@@ -273,14 +275,16 @@ sleep 1.2
 send Enter
 wait_screen_absent "herdr-kiosk — select branch"
 wait_path_exists "$HK_ROOT/worktrees/herdr-kiosk/docs-readme-demo"
+wait_screen_contains "web-app"
+wait_screen_contains "docs/readme-demo"
 sleep 1.8
 
 t kill-server >/dev/null 2>&1 || true
 wait "$CAPTURE_PID" 2>/dev/null || true
 
 /usr/bin/python3 "$PROJECT_ROOT/scripts/gif/build_cast.py" "$FRAMES" "$CAST" "$COLS" "$ROWS"
-"$AGG_BIN" --theme "$AGG_THEME" --font-size 13 --fps-cap 15 \
-    --last-frame-duration 1.2 --quiet \
+"$AGG_BIN" --theme "$AGG_THEME" --font-size 16 --fps-cap 15 \
+    --last-frame-duration 1.8 --quiet \
     "$CAST" "$RENDERED_GIF"
 mkdir -p "$PROJECT_ROOT/media"
 mv "$RENDERED_GIF" "$PROJECT_ROOT/media/preview.gif"
