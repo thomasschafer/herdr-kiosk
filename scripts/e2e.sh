@@ -8,7 +8,7 @@ HK_HOME_DIR="$HK_ROOT/home"
 TMUX_SOCKET="$HK_ROOT/tmux.sock"
 SESSION=hk-m7
 LAST_SCREEN="$HK_ROOT/last-screen.txt"
-TMUX_BIN=${TMUX:-$(command -v tmux || true)}
+TMUX_BIN=${HK_TMUX:-$(command -v tmux || true)}
 CARGO_PATH=/Users/tomschafer/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin
 export PATH="$CARGO_PATH"
 

@@ -5,6 +5,7 @@ PROJECT_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 HK_ROOT=${HK_GIF_HOME:-/tmp/hk-gif}
 HERDR_BIN=${HERDR:-"$PROJECT_ROOT/../herdr/target/release/herdr"}
 HK_HOME_DIR="$HK_ROOT/home"
+HERDR_WRAPPER="$HK_ROOT/herdr-macchiato"
 TMUX_SOCKET="$HK_ROOT/tmux.sock"
 SESSION=hk-gif
 LAST_SCREEN="$HK_ROOT/last-screen.txt"
@@ -168,6 +169,14 @@ teal = "#8bd5ca"
 peach = "#f5a97f"
 EOF
 
+cat >"$HERDR_WRAPPER" <<EOF
+#!/bin/sh
+printf '\\033]11;#24273a\\033\\\\'
+printf '\\033]10;#cad3f5\\033\\\\'
+exec env -u NO_COLOR HOME="$HK_HOME_DIR" "$HERDR_BIN"
+EOF
+chmod +x "$HERDR_WRAPPER"
+
 cat >"$HK_HOME_DIR/.zshrc" <<'EOF'
 autoload -Uz add-zsh-hook
 herdr_kiosk_prompt() {
@@ -227,7 +236,7 @@ EOF
 
 printf 'Starting Herdr and recording demo...\n'
 t new-session -d -s "$SESSION" -x "$COLS" -y "$ROWS" \
-    "env HOME='$HK_HOME_DIR' '$HERDR_BIN'"
+    "exec '$HERDR_WRAPPER'"
 sleep 2
 send Enter
 sleep 0.5
