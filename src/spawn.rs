@@ -198,12 +198,16 @@ pub fn spawn_open_repo(
             true,
         ) {
             Ok(response) => {
-                let warning = apply_on_open(
-                    provider.as_ref(),
-                    &on_open,
-                    &response.root_pane.pane_id,
-                    &response.worktree.path,
-                );
+                let warning = if response.already_open {
+                    None
+                } else {
+                    apply_on_open(
+                        provider.as_ref(),
+                        &on_open,
+                        &response.root_pane.pane_id,
+                        &response.worktree.path,
+                    )
+                };
                 sender.send(AppEvent::RepoOpened { warning });
             }
             Err(error) => {
@@ -427,8 +431,16 @@ pub fn spawn_open_branch(
                     &WorktreeOpenTarget::Branch(branch_name.clone()),
                     true,
                 )
-                .map(|response| (response.root_pane, response.worktree))
+                .map(|response| {
+                    (
+                        response.root_pane,
+                        response.worktree,
+                        !response.already_open,
+                    )
+                })
         } else {
+            // Herdr create responses cannot distinguish creation from a race that focused a
+            // checkout added after enrichment, so that rare case may re-run on_open in v1.
             provider
                 .worktree_create(&WorktreeCreateRequest {
                     cwd: repo_path.clone(),
@@ -437,17 +449,21 @@ pub fn spawn_open_branch(
                     path: None,
                     focus: true,
                 })
-                .map(|response| (response.root_pane, response.worktree))
+                .map(|response| (response.root_pane, response.worktree, true))
         };
 
         match result {
-            Ok((root_pane, worktree)) => {
-                let warning = apply_on_open(
-                    provider.as_ref(),
-                    &on_open,
-                    &root_pane.pane_id,
-                    &worktree.path,
-                );
+            Ok((root_pane, worktree, run_on_open)) => {
+                let warning = if run_on_open {
+                    apply_on_open(
+                        provider.as_ref(),
+                        &on_open,
+                        &root_pane.pane_id,
+                        &worktree.path,
+                    )
+                } else {
+                    None
+                };
                 sender.send(AppEvent::RepoOpened { warning });
             }
             Err(error) => {
@@ -820,6 +836,126 @@ mod tests {
         };
         let ratio = request.ratio.expect("expected configured ratio");
         assert!((ratio - 0.65).abs() < f32::EPSILON);
+    }
+
+    fn worktree_open_response(already_open: bool) -> WorktreeOpenResponse {
+        WorktreeOpenResponse {
+            workspace: WorkspaceInfo {
+                workspace_id: "w_1".into(),
+                number: 1,
+                label: "repo".into(),
+                focused: true,
+                pane_count: 1,
+                tab_count: 1,
+                active_tab_id: "w_1:1".into(),
+                agent_status: AgentStatus::Idle,
+                tokens: HashMap::new(),
+                worktree: None,
+            },
+            root_pane: PaneInfo {
+                pane_id: "p_root".into(),
+            },
+            worktree: WorktreeInfo {
+                path: "/repo".into(),
+                branch: Some("main".into()),
+                is_bare: false,
+                is_detached: false,
+                is_prunable: false,
+                is_linked_worktree: false,
+                open_workspace_id: Some("w_1".into()),
+                label: "repo".into(),
+            },
+            already_open,
+        }
+    }
+
+    fn queue_successful_on_open(mock: &MockHerdrProvider) {
+        mock.pane_split_results
+            .lock()
+            .unwrap()
+            .extend(["p_2", "p_3"].map(|pane_id| {
+                Ok(PaneSplitResponse {
+                    pane_id: pane_id.into(),
+                })
+            }));
+        mock.pane_run_results
+            .lock()
+            .unwrap()
+            .extend([Ok(PaneRunResponse), Ok(PaneRunResponse)]);
+    }
+
+    fn pane_call_count(mock: &MockHerdrProvider) -> usize {
+        mock.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|call| matches!(call, HerdrCall::PaneSplit(_) | HerdrCall::PaneRun { .. }))
+            .count()
+    }
+
+    #[test]
+    fn repo_open_applies_on_open_only_for_a_new_workspace() {
+        for already_open in [false, true] {
+            let mock = Arc::new(MockHerdrProvider::default());
+            mock.worktree_open_results
+                .lock()
+                .unwrap()
+                .push_back(Ok(worktree_open_response(already_open)));
+            if !already_open {
+                queue_successful_on_open(&mock);
+            }
+            let provider: Arc<dyn HerdrProvider> = mock.clone();
+            let (tx, rx) = mpsc::channel();
+            let sender = EventSender::new(tx, Arc::new(AtomicBool::new(false)));
+
+            spawn_open_repo(&provider, &sender, "/repo".into(), on_open_config());
+
+            assert!(matches!(
+                rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+                AppEvent::RepoOpened { warning: None }
+            ));
+            assert_eq!(
+                pane_call_count(&mock),
+                if already_open { 0 } else { 4 },
+                "already_open={already_open}"
+            );
+        }
+    }
+
+    #[test]
+    fn branch_open_applies_on_open_only_for_a_new_workspace() {
+        for already_open in [false, true] {
+            let mock = Arc::new(MockHerdrProvider::default());
+            mock.worktree_open_results
+                .lock()
+                .unwrap()
+                .push_back(Ok(worktree_open_response(already_open)));
+            if !already_open {
+                queue_successful_on_open(&mock);
+            }
+            let provider: Arc<dyn HerdrProvider> = mock.clone();
+            let (tx, rx) = mpsc::channel();
+            let sender = EventSender::new(tx, Arc::new(AtomicBool::new(false)));
+
+            spawn_open_branch(
+                &provider,
+                &sender,
+                "/repo".into(),
+                "main".into(),
+                true,
+                on_open_config(),
+            );
+
+            assert!(matches!(
+                rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+                AppEvent::RepoOpened { warning: None }
+            ));
+            assert_eq!(
+                pane_call_count(&mock),
+                if already_open { 0 } else { 4 },
+                "already_open={already_open}"
+            );
+        }
     }
 
     #[test]

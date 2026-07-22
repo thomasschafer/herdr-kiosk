@@ -111,7 +111,7 @@ wait_screen_absent "herdr-kiosk — select repo"
 h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
 wait_screen_contains "herdr-kiosk — select repo"
 assert_screen_absent "Welcome to herdr-kiosk"
-assert_screen_contains "open-me"
+wait_screen_contains "open-me"
 t send-keys -t "$SESSION" C-c
 wait_screen_absent "herdr-kiosk — select repo"
 printf 'first-run wizard writes config, continues, and does not reappear: ok\n'
@@ -213,8 +213,27 @@ if len(panes) != 2:
 if sum(bool(pane.get("focused")) for pane in panes) != 1:
     raise SystemExit("expected exactly one focused pane")
 ' || fail "on_open pane count or focus was incorrect"
+
+rm -- "$ON_OPEN_SENTINEL"
+h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
+wait_screen_contains "herdr-kiosk — select repo"
+t send-keys -t "$SESSION" open-me
+wait_screen_contains "1 of 4 repos"
+t send-keys -t "$SESSION" Enter
+wait_screen_absent "herdr-kiosk — select repo" 120
+sleep 0.2
+[ ! -e "$ON_OPEN_SENTINEL" ] \
+    || fail "on_open command ran again when refocusing the repository"
+h pane list --workspace "$OPEN_WORKSPACE_ID" | /usr/bin/python3 -c '
+import json
+import sys
+
+panes = json.load(sys.stdin)["result"]["panes"]
+if len(panes) != 2:
+    raise SystemExit(f"expected 2 panes after reopen, got {len(panes)}")
+' || fail "on_open split was duplicated when refocusing the repository"
 write_picker_config
-printf 'on_open split, command, popup teardown, and focus: ok\n'
+printf 'on_open split, command, popup teardown, focus, and reopen idempotence: ok\n'
 
 h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
 wait_screen_contains "herdr-kiosk — select repo"
