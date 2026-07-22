@@ -13,11 +13,13 @@ CAST="$HK_ROOT/preview.cast"
 RENDERED_GIF="$HK_ROOT/preview.gif"
 COLS=120
 ROWS=32
-CARGO_PATH=/Users/tomschafer/.cargo/bin:/etc/profiles/per-user/tomschafer/bin:/usr/bin:/bin:/usr/sbin:/sbin
+PINNED_PATH=/Users/tomschafer/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin
+RUNTIME_PATH=/etc/profiles/per-user/tomschafer/bin:$PINNED_PATH
 TMUX_BIN=/etc/profiles/per-user/tomschafer/bin/tmux
 AGG_BIN=/opt/homebrew/bin/agg
 FFPROBE_BIN=/opt/homebrew/bin/ffprobe
-export PATH="$CARGO_PATH"
+AGG_THEME=24273a,cad3f5,494d64,ed8796,a6da95,eed49f,8aadf4,c6a0f6,8bd5ca,b8c0e0,5b6078,ed8796,a6da95,eed49f,8aadf4,f5bde6,8bd5ca,a5adcb
+export PATH="$RUNTIME_PATH"
 
 case "$HK_ROOT" in
     /tmp/* | /private/tmp/*) ;;
@@ -143,6 +145,40 @@ mkdir -p "$HK_HOME_DIR/.config/herdr" "$HK_ROOT/repos" "$HK_ROOT/worktrees" "$FR
 cat >"$HK_HOME_DIR/.config/herdr/config.toml" <<EOF
 [worktrees]
 directory = "$HK_ROOT/worktrees"
+
+[theme]
+name = "catppuccin"
+EOF
+
+cat >"$HK_HOME_DIR/.zshrc" <<'EOF'
+autoload -Uz add-zsh-hook
+herdr_kiosk_prompt() {
+    local branch
+    branch=$(git branch --show-current 2>/dev/null)
+    PROMPT='%F{magenta}%1~%f'
+    if [ -n "$branch" ]; then
+        PROMPT+=" %F{cyan}${branch}%f"
+    fi
+    PROMPT+=' %F{green}❯%f '
+}
+add-zsh-hook precmd herdr_kiosk_prompt
+EOF
+
+cat >"$HK_HOME_DIR/.bashrc" <<'EOF'
+herdr_kiosk_prompt() {
+    local branch
+    branch=$(git branch --show-current 2>/dev/null)
+    PS1='\[\e[35m\]\W\[\e[0m\]'
+    if [ -n "$branch" ]; then
+        PS1+=" \[\e[36m\]${branch}\[\e[0m\]"
+    fi
+    PS1+=' \[\e[32m\]❯\[\e[0m\] '
+}
+PROMPT_COMMAND=herdr_kiosk_prompt
+EOF
+
+cat >"$HK_HOME_DIR/.bash_profile" <<'EOF'
+. "$HOME/.bashrc"
 EOF
 
 for repo in dotfiles web-app api-server notes herdr-kiosk infra design-system mobile-app; do
@@ -163,7 +199,7 @@ git -C "$HK_ROOT/remote-seed" push -q origin master experiment/sidebar
 git -C "$BRANCH_REPO" remote add origin "$REMOTE"
 
 printf 'Building plugin release binary...\n'
-(cd "$PROJECT_ROOT" && env PATH="$CARGO_PATH" cargo build --release --quiet)
+(cd "$PROJECT_ROOT" && env PATH="$PINNED_PATH" cargo build --release --quiet)
 h plugin link "$PROJECT_ROOT" >/dev/null
 PLUGIN_CONFIG_DIR=$(h plugin config-dir thomasschafer.herdr-kiosk)
 mkdir -p "$PLUGIN_CONFIG_DIR"
@@ -216,7 +252,8 @@ t kill-server >/dev/null 2>&1 || true
 wait "$CAPTURE_PID" 2>/dev/null || true
 
 /usr/bin/python3 "$PROJECT_ROOT/scripts/gif/build_cast.py" "$FRAMES" "$CAST" "$COLS" "$ROWS"
-"$AGG_BIN" --font-size 13 --fps-cap 15 --last-frame-duration 1.2 --quiet \
+"$AGG_BIN" --theme "$AGG_THEME" --font-size 13 --fps-cap 15 \
+    --last-frame-duration 1.2 --quiet \
     "$CAST" "$RENDERED_GIF"
 mkdir -p "$PROJECT_ROOT/media"
 mv "$RENDERED_GIF" "$PROJECT_ROOT/media/preview.gif"

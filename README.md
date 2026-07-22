@@ -111,27 +111,55 @@ panes = [
 ]
 ```
 
-Keybindings are layered. Add entries under any of `[keys.general]`,
-`[keys.text_edit]`, `[keys.list_navigation]`, `[keys.modal]`,
-`[keys.repo_select]`, or `[keys.branch_select]`. A mode-specific binding wins over
-a shared binding. Chords use `C-`/`Ctrl-`, `A-`/`Alt-`/`M-`, and `S-`/`Shift-`
-modifiers with a character or one of `enter`, `esc`, `tab`, `backspace`, `delete`,
-`up`, `down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`, and `space`.
+### Key bindings
+
+Bindings are layered, and each binding belongs in the section shown below. The
+repository, branch, and base-branch lists use the general, text-edit, and
+list-navigation layers. Repository and branch lists then add their matching view
+layer. The searchable base-branch list and confirmation dialogs use the modal
+layer; dialogs do not use the text-edit or list-navigation layers. A view or modal
+binding wins when it uses the same key as a shared binding.
+
+| Default key | Action | Config section | Action name | Applies in |
+| --- | --- | --- | --- | --- |
+| `ctrl+c` | Quit the picker | `[keys.general]` | `quit` | All modes |
+| `ctrl+h` | Show active bindings | `[keys.general]` | `help` | Interactive views |
+| `ctrl+x` | Dismiss the visible notification | `[keys.general]` | `dismiss_toast` | All modes with a notification |
+| `esc` | Clear the search query | `[keys.text_edit]` | `clear` | List views unless overridden below |
+| `backspace` | Delete the previous character | `[keys.text_edit]` | `backspace` | All list views |
+| `alt+backspace`, `ctrl+w` | Delete the previous word | `[keys.text_edit]` | `delete_word` | All list views |
+| `←` | Move the cursor left | `[keys.text_edit]` | `cursor_left` | All list views |
+| `→` | Move the cursor right | `[keys.text_edit]` | `cursor_right` | All list views |
+| `↑`, `ctrl+p` | Move selection up | `[keys.list_navigation]` | `move_up` | All list views |
+| `↓`, `ctrl+n` | Move selection down | `[keys.list_navigation]` | `move_down` | All list views |
+| `enter` | Confirm the selection | `[keys.modal]` | `open` | Base-branch list and dialogs |
+| `esc` | Go back or cancel | `[keys.modal]` | `back` | Base-branch list and dialogs |
+| `enter` | Open the main checkout | `[keys.repo_select]` | `open` | Repository list |
+| `tab` | Show repository branches | `[keys.repo_select]` | `branches_view` | Repository list |
+| `q` | Quit the picker | `[keys.repo_select]` | `quit` | Repository list when the query is empty |
+| `enter` | Open or create the selected checkout | `[keys.branch_select]` | `open` | Branch list |
+| `esc` | Return to repositories | `[keys.branch_select]` | `back` | Branch list |
+| `ctrl+o` | Create a new branch | `[keys.branch_select]` | `new_branch` | Branch list |
+| `ctrl+x` | Delete the selected checkout | `[keys.branch_select]` | `delete` | Branch list |
+
+For example, this moves “create a new branch” from `ctrl+o` to `ctrl+b`. User
+entries are merged with the defaults, so the `noop` entry is needed only to remove
+the old binding; all unrelated defaults remain in place.
 
 ```toml
-[keys.repo_select]
-"C-j" = "open"
-
 [keys.branch_select]
 "C-b" = "new_branch"
 "C-o" = "noop"
 ```
 
-Available action names are `noop`, `quit`, `help`, `dismiss_toast`, `move_up`,
-`move_down`, `open`, `branches_view`, `back`, `new_branch`, `delete`, `clear`,
-`backspace`, `delete_word`, `cursor_left`, and `cursor_right`. The aliases `none`,
-`unbound`, `show_help`, `enter_repo`, `go_back`, `delete_worktree`, and
-`clear_query` are also accepted.
+Chords use `C-`/`Ctrl-`, `A-`/`Alt-`/`M-`, and `S-`/`Shift-` modifiers with a
+character or one of `enter`, `esc`, `tab`, `backspace`, `delete`, `up`, `down`,
+`left`, `right`, `home`, `end`, `pageup`, `pagedown`, and `space`. Canonical action
+names are `noop`, `quit`, `help`, `dismiss_toast`, `move_up`, `move_down`, `open`,
+`branches_view`, `back`, `new_branch`, `delete`, `clear`, `backspace`,
+`delete_word`, `cursor_left`, and `cursor_right`. The aliases `none`, `unbound`,
+`show_help`, `enter_repo`, `go_back`, `delete_worktree`, and `clear_query` are also
+accepted.
 
 The theme uses terminal palette colors rather than RGB values. Every field is
 optional; these are the defaults:

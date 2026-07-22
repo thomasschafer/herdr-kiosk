@@ -1617,7 +1617,7 @@ fn draw(
 
 fn loading_hint(keys: &KeysConfig) -> Option<String> {
     keys.first_key(BindingMode::Modal, Command::Quit)
-        .map(|key| format!("{key} to cancel"))
+        .map(|key| format!("{key} to close (operation continues)"))
 }
 
 fn delete_dialog_hints(keys: &KeysConfig) -> (Option<String>, Option<String>) {
@@ -1883,7 +1883,10 @@ mod tests {
             "[general]\n\"C-c\" = \"noop\"\n\"C-q\" = \"quit\"\n[modal]\nenter = \"noop\"\nesc = \"noop\"\n\"C-y\" = \"open\"\n\"C-g\" = \"back\"",
         )
         .unwrap();
-        assert_eq!(loading_hint(&keys).as_deref(), Some("ctrl+q to cancel"));
+        assert_eq!(
+            loading_hint(&keys).as_deref(),
+            Some("ctrl+q to close (operation continues)")
+        );
         assert_eq!(
             delete_dialog_hints(&keys),
             (Some("ctrl+y".into()), Some("ctrl+g".into()))
