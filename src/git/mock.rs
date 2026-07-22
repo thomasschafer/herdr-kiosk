@@ -10,7 +10,8 @@ use std::{
 use anyhow::{Result, bail};
 
 use super::{
-    DirtyWorktreeRequiresForce, GitProvider, LocalBranchAlreadyExists, Repo, ScanWarning, Worktree,
+    DirtyWorktreeRequiresForce, GitProvider, Listed, LocalBranchAlreadyExists, Repo, ScanWarning,
+    Worktree,
 };
 
 #[derive(Default)]
@@ -66,31 +67,33 @@ impl GitProvider for MockGitProvider {
         Ok(self.scan_warnings.clone())
     }
 
-    fn list_branches(&self, _repo_path: &Path) -> Result<Vec<String>> {
+    fn list_branches(&self, _repo_path: &Path) -> Result<Listed<String>> {
         self.check_failure()?;
-        Ok(self.branches.clone())
+        Ok(Listed::new(self.branches.clone(), false))
     }
 
     fn list_remote_branches_for_remote(
         &self,
         _repo_path: &Path,
         remote: &str,
-    ) -> Result<Vec<String>> {
+    ) -> Result<Listed<String>> {
         self.check_failure()?;
-        Ok(self
-            .remote_branches_by_remote
-            .get(remote)
-            .cloned()
-            .unwrap_or_else(|| self.remote_branches.clone()))
+        Ok(Listed::new(
+            self.remote_branches_by_remote
+                .get(remote)
+                .cloned()
+                .unwrap_or_else(|| self.remote_branches.clone()),
+            false,
+        ))
     }
 
-    fn list_worktrees(&self, repo_path: &Path) -> Result<Vec<Worktree>> {
+    fn list_worktrees(&self, repo_path: &Path) -> Result<Listed<Worktree>> {
         self.check_failure()?;
         self.list_worktree_calls
             .lock()
             .unwrap()
             .push(repo_path.to_path_buf());
-        Ok(self.worktrees.clone())
+        Ok(Listed::new(self.worktrees.clone(), false))
     }
 
     fn list_remotes(&self, _repo_path: &Path) -> Result<Vec<String>> {

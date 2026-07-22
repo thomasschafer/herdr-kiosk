@@ -31,6 +31,10 @@ pub enum HerdrCall {
         pane_id: String,
         command: String,
     },
+    NotificationShow {
+        title: String,
+        body: String,
+    },
 }
 
 #[derive(Default)]
@@ -43,6 +47,7 @@ pub struct MockHerdrProvider {
     pub workspace_list_results: Mutex<VecDeque<Result<Vec<WorkspaceInfo>, HerdrError>>>,
     pub pane_split_results: Mutex<VecDeque<Result<PaneSplitResponse, HerdrError>>>,
     pub pane_run_results: Mutex<VecDeque<Result<PaneRunResponse, HerdrError>>>,
+    pub notification_show_results: Mutex<VecDeque<Result<(), HerdrError>>>,
 }
 
 fn next<T>(queue: &Mutex<VecDeque<Result<T, HerdrError>>>, method: &str) -> Result<T, HerdrError> {
@@ -117,6 +122,17 @@ impl HerdrProvider for MockHerdrProvider {
             command: command.into(),
         });
         next(&self.pane_run_results, "pane_run")
+    }
+
+    fn notification_show(&self, title: &str, body: &str) -> Result<(), HerdrError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(HerdrCall::NotificationShow {
+                title: title.into(),
+                body: body.into(),
+            });
+        next(&self.notification_show_results, "notification_show")
     }
 }
 

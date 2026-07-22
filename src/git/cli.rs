@@ -11,8 +11,8 @@ use std::{
 use anyhow::{Context, Result, bail};
 
 use super::{
-    DirtyWorktreeRequiresForce, GitProvider, LocalBranchAlreadyExists, Repo, ScanWarning, Worktree,
-    parse_worktree_porcelain,
+    DirtyWorktreeRequiresForce, GitProvider, Listed, LocalBranchAlreadyExists, Repo, ScanWarning,
+    Worktree, parse_worktree_porcelain,
 };
 
 const GIT_DIR_ENTRY: &str = ".git";
@@ -42,16 +42,16 @@ impl GitProvider for CliGitProvider {
         })
     }
 
-    fn list_branches(&self, repo_path: &Path) -> Result<Vec<String>> {
+    fn list_branches(&self, repo_path: &Path) -> Result<Listed<String>> {
         let output = run_git(repo_path, ["branch", "--format=%(refname:short)"])?;
-        Ok(lines(&output.stdout))
+        Ok(utf8_lines(&output.stdout))
     }
 
     fn list_remote_branches_for_remote(
         &self,
         repo_path: &Path,
         remote: &str,
-    ) -> Result<Vec<String>> {
+    ) -> Result<Listed<String>> {
         let namespace = format!("refs/remotes/{remote}/");
         let output = run_git(
             repo_path,
@@ -64,10 +64,10 @@ impl GitProvider for CliGitProvider {
         Ok(parse_remote_branches_for_remote(&output.stdout, remote))
     }
 
-    fn list_worktrees(&self, repo_path: &Path) -> Result<Vec<Worktree>> {
+    fn list_worktrees(&self, repo_path: &Path) -> Result<Listed<Worktree>> {
         let output = run_git(repo_path, ["worktree", "list", "--porcelain", "-z"])?;
         let worktrees = parse_worktree_porcelain(&output.stdout)?;
-        if worktrees.is_empty() {
+        if worktrees.items.is_empty() {
             bail!(
                 "git worktree list returned no worktrees for {}",
                 repo_path.display()
@@ -454,9 +454,28 @@ fn lines(bytes: &[u8]) -> Vec<String> {
         .collect()
 }
 
-fn parse_remote_branches_for_remote(bytes: &[u8], remote: &str) -> Vec<String> {
+fn utf8_lines(bytes: &[u8]) -> Listed<String> {
+    let mut items = Vec::new();
+    let mut skipped_unsupported_refs = false;
+    for line in bytes.split(|byte| *byte == b'\n') {
+        match std::str::from_utf8(line) {
+            Ok(line) => {
+                let line = line.trim();
+                if !line.is_empty() {
+                    items.push(line.to_string());
+                }
+            }
+            Err(_) => skipped_unsupported_refs = true,
+        }
+    }
+    Listed::new(items, skipped_unsupported_refs)
+}
+
+fn parse_remote_branches_for_remote(bytes: &[u8], remote: &str) -> Listed<String> {
     let prefix = format!("{remote}/");
-    lines(bytes)
+    let lines = utf8_lines(bytes);
+    let items = lines
+        .items
         .into_iter()
         .filter_map(|line| {
             let (refname, symref) = line.split_once('\0').unwrap_or((&line, ""));
@@ -466,7 +485,8 @@ fn parse_remote_branches_for_remote(bytes: &[u8], remote: &str) -> Vec<String> {
                 .flatten()
                 .map(str::to_string)
         })
-        .collect()
+        .collect();
+    Listed::new(items, lines.skipped_unsupported_refs)
 }
 
 #[cfg(test)]
@@ -629,7 +649,8 @@ mod tests {
         assert_eq!(
             provider
                 .list_remote_branches_for_remote(&source, "upstream")
-                .unwrap(),
+                .unwrap()
+                .items,
             ["main"]
         );
     }
@@ -712,9 +733,24 @@ mod tests {
                        other/branch\0\n";
 
         assert_eq!(
-            parse_remote_branches_for_remote(output, "team/origin"),
+            parse_remote_branches_for_remote(output, "team/origin").items,
             ["feature", "topic/nested"]
         );
+    }
+
+    #[test]
+    fn branch_parser_skips_non_utf8_refs_and_reports_them_once() {
+        let listed = utf8_lines(b"main\ninvalid-\xff\nfeature\n");
+
+        assert_eq!(listed.items, ["main", "feature"]);
+        assert!(listed.skipped_unsupported_refs);
+
+        let remote = parse_remote_branches_for_remote(
+            b"origin/main\0\norigin/invalid-\xff\0\norigin/feature\0\n",
+            "origin",
+        );
+        assert_eq!(remote.items, ["main", "feature"]);
+        assert!(remote.skipped_unsupported_refs);
     }
 
     #[test]

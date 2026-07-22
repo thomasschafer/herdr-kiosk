@@ -174,8 +174,8 @@ pub fn run(
             process_app_event(app_event, state, &mut changes);
         }
 
-        if changes.workspace_opened {
-            break RunOutcome::Opened;
+        if let Some(outcome) = apply_exit_effects(&mut changes, herdr) {
+            break outcome;
         }
 
         if changes.repos_changed {
@@ -249,6 +249,7 @@ struct TickChanges {
     branches_changed: bool,
     collision_pass: bool,
     workspace_opened: bool,
+    open_warning: Option<String>,
     pinned_branch_selection: Option<BranchId>,
     start_remote_loading: Option<(PathBuf, u64, Vec<String>)>,
     refresh_branch: Option<Repo>,
@@ -363,6 +364,7 @@ fn process_app_event(event: AppEvent, state: &mut AppState, changes: &mut TickCh
             generation,
             branches,
             worktrees,
+            skipped_unsupported_refs,
         } if branch_view_generation_matches(state, &repo_path, generation) => {
             if let Some(entry) = state
                 .repos
@@ -399,16 +401,19 @@ fn process_app_event(event: AppEvent, state: &mut AppState, changes: &mut TickCh
                     generation: loaded_generation,
                 } if loaded_repo == &repo_path && *loaded_generation == generation
             );
+            warn_unsupported_refs(state, generation, skipped_unsupported_refs);
         }
         AppEvent::RemoteBranchesLoaded {
             repo_path,
             generation,
             remote,
             branches,
+            skipped_unsupported_refs,
         } if branch_context_generation_matches(state, &repo_path, generation) => {
             merge_remote_snapshot(state, changes, remote, branches);
             apply_branch_open_indicators(state);
             changes.branches_changed = true;
+            warn_unsupported_refs(state, generation, skipped_unsupported_refs);
         }
         AppEvent::RemoteBranchLoadFailed {
             repo_path,
@@ -424,6 +429,7 @@ fn process_app_event(event: AppEvent, state: &mut AppState, changes: &mut TickCh
             generation,
             error,
             is_final,
+            skipped_unsupported_refs,
         } if branch_context_generation_matches(state, &repo_path, generation) => {
             if let Some(remote) = remote {
                 merge_remote_snapshot(state, changes, remote.clone(), branches);
@@ -443,6 +449,7 @@ fn process_app_event(event: AppEvent, state: &mut AppState, changes: &mut TickCh
             if is_final && state.fetching_remote_repo.as_deref() == Some(repo_path.as_path()) {
                 state.fetching_remote_repo = None;
             }
+            warn_unsupported_refs(state, generation, skipped_unsupported_refs);
         }
         AppEvent::BranchLoadFailed {
             repo_path,
@@ -480,9 +487,7 @@ fn process_app_event(event: AppEvent, state: &mut AppState, changes: &mut TickCh
             state.push_toast(ToastKind::Error, message);
         }
         AppEvent::RepoOpened { warning } => {
-            if let Some(warning) = warning {
-                state.push_toast(ToastKind::Warning, warning);
-            }
+            changes.open_warning = warning;
             changes.workspace_opened = true;
         }
         AppEvent::RepoOpenFailed(message)
@@ -651,6 +656,32 @@ fn process_app_event(event: AppEvent, state: &mut AppState, changes: &mut TickCh
             state.push_toast(ToastKind::Warning, message);
         }
         _ => {}
+    }
+}
+
+fn apply_exit_effects(
+    changes: &mut TickChanges,
+    herdr: Option<&Arc<dyn HerdrProvider>>,
+) -> Option<RunOutcome> {
+    if !changes.workspace_opened {
+        return None;
+    }
+    if let Some(warning) = changes.open_warning.take() {
+        if let Some(provider) = herdr {
+            if let Err(error) = provider.notification_show("herdr-kiosk", &warning) {
+                eprintln!("herdr-kiosk: {warning} (notification failed: {error})");
+            }
+        } else {
+            eprintln!("herdr-kiosk: {warning}");
+        }
+    }
+    Some(RunOutcome::Opened)
+}
+
+fn warn_unsupported_refs(state: &mut AppState, generation: u64, skipped: bool) {
+    if skipped && state.unsupported_ref_warning_generation != Some(generation) {
+        state.unsupported_ref_warning_generation = Some(generation);
+        state.push_toast(ToastKind::Warning, crate::git::UNSUPPORTED_REF_WARNING);
     }
 }
 
@@ -1781,9 +1812,8 @@ mod tests {
     use crate::{
         git::{Repo, Worktree, mock::MockGitProvider},
         herdr::{
-            AgentStatus, HerdrError, HerdrProvider, PaneInfo, WorkspaceInfo,
-            WorktreeCreateResponse, WorktreeInfo, WorktreeListResponse, WorktreeOpenResponse,
-            WorktreeRemoveResponse, WorktreeSourceInfo,
+            HerdrError, HerdrProvider, OpenedWorktree, WorktreeCreateResponse, WorktreeInfo,
+            WorktreeListResponse, WorktreeOpenResponse, WorktreeRemoveResponse,
             mock::{HerdrCall, MockHerdrProvider},
         },
         state::{BranchEntry, BranchId},
@@ -2231,51 +2261,38 @@ mod tests {
         assert!(rendered.contains("Validating branch name…"));
     }
 
-    fn workspace() -> WorkspaceInfo {
-        WorkspaceInfo {
-            workspace_id: "w_1".into(),
-            number: 1,
-            label: "repo".into(),
-            focused: true,
-            pane_count: 1,
-            tab_count: 1,
-            active_tab_id: "w_1:1".into(),
-            agent_status: AgentStatus::Idle,
-            tokens: HashMap::new(),
-            worktree: None,
-        }
-    }
-
     fn worktree() -> WorktreeInfo {
         WorktreeInfo {
             path: "/repo-feature".into(),
             branch: Some("feature".into()),
-            is_bare: false,
-            is_detached: false,
-            is_prunable: false,
-            is_linked_worktree: true,
             open_workspace_id: Some("w_1".into()),
-            label: "repo feature".into(),
         }
     }
 
-    fn root_pane() -> PaneInfo {
-        PaneInfo {
-            pane_id: "p_root".into(),
+    fn opened_worktree() -> OpenedWorktree {
+        OpenedWorktree {
+            root_pane_id: "p_root".into(),
+            path: "/repo-feature".into(),
+        }
+    }
+
+    fn open_response(already_open: bool) -> WorktreeOpenResponse {
+        WorktreeOpenResponse {
+            opened: Some(opened_worktree()),
+            already_open: Some(already_open),
+            warning: None,
+        }
+    }
+
+    fn create_response() -> WorktreeCreateResponse {
+        WorktreeCreateResponse {
+            opened: Some(opened_worktree()),
+            warning: None,
         }
     }
 
     fn worktree_list_response(worktrees: Vec<WorktreeInfo>) -> WorktreeListResponse {
-        WorktreeListResponse {
-            source: WorktreeSourceInfo {
-                repo_key: "repo".into(),
-                repo_name: "repo".into(),
-                repo_root: "/repo".into(),
-                source_checkout_path: "/repo".into(),
-                source_workspace_id: None,
-            },
-            worktrees,
-        }
+        WorktreeListResponse { worktrees }
     }
 
     fn sender() -> (EventSender, mpsc::Receiver<AppEvent>) {
@@ -2375,12 +2392,7 @@ mod tests {
         mock.worktree_open_results
             .lock()
             .unwrap()
-            .push_back(Ok(WorktreeOpenResponse {
-                workspace: workspace(),
-                root_pane: root_pane(),
-                worktree: worktree(),
-                already_open: false,
-            }));
+            .push_back(Ok(open_response(false)));
         let provider: Arc<dyn HerdrProvider> = mock.clone();
         let (sender, rx) = sender();
         let mut state = state_with_branch(true);
@@ -2405,9 +2417,15 @@ mod tests {
     }
 
     #[test]
-    fn on_open_warning_toasts_without_cancelling_open_success() {
+    fn on_open_warning_emits_notification_exit_effect_without_cancelling_open_success() {
         let mut state = state_with_repo();
         let mut changes = TickChanges::default();
+        let mock = Arc::new(MockHerdrProvider::default());
+        mock.notification_show_results
+            .lock()
+            .unwrap()
+            .push_back(Ok(()));
+        let provider: Arc<dyn HerdrProvider> = mock.clone();
 
         process_app_event(
             AppEvent::RepoOpened {
@@ -2418,9 +2436,17 @@ mod tests {
         );
 
         assert!(changes.workspace_opened);
-        assert!(state.toasts.front().is_some_and(|toast| {
-            toast.kind == ToastKind::Warning && toast.message.starts_with("on_open: ")
-        }));
+        assert_eq!(
+            apply_exit_effects(&mut changes, Some(&provider)),
+            Some(RunOutcome::Opened)
+        );
+        assert_eq!(
+            *mock.calls.lock().unwrap(),
+            [HerdrCall::NotificationShow {
+                title: "herdr-kiosk".into(),
+                body: "on_open: pane 1 run failed".into(),
+            }]
+        );
     }
 
     #[test]
@@ -2429,11 +2455,7 @@ mod tests {
         mock.worktree_create_results
             .lock()
             .unwrap()
-            .push_back(Ok(WorktreeCreateResponse {
-                workspace: workspace(),
-                root_pane: root_pane(),
-                worktree: worktree(),
-            }));
+            .push_back(Ok(create_response()));
         let provider: Arc<dyn HerdrProvider> = mock.clone();
         let (sender, rx) = sender();
         let mut state = state_with_branch(false);
@@ -2472,12 +2494,7 @@ mod tests {
         mock.worktree_open_results
             .lock()
             .unwrap()
-            .push_back(Ok(WorktreeOpenResponse {
-                workspace: workspace(),
-                root_pane: root_pane(),
-                worktree: worktree(),
-                already_open: true,
-            }));
+            .push_back(Ok(open_response(true)));
         let provider: Arc<dyn HerdrProvider> = mock.clone();
         let (sender, rx) = sender();
         let mut state = state_with_branch(false);
@@ -2515,11 +2532,7 @@ mod tests {
         mock.worktree_create_results
             .lock()
             .unwrap()
-            .push_back(Ok(WorktreeCreateResponse {
-                workspace: workspace(),
-                root_pane: root_pane(),
-                worktree: worktree(),
-            }));
+            .push_back(Ok(create_response()));
         let provider: Arc<dyn HerdrProvider> = mock.clone();
         let (sender, rx) = sender();
         let mut state = state_with_branch(true);
@@ -2584,11 +2597,7 @@ mod tests {
             .worktree_create_results
             .lock()
             .unwrap()
-            .push_back(Ok(WorktreeCreateResponse {
-                workspace: workspace(),
-                root_pane: root_pane(),
-                worktree: worktree(),
-            }));
+            .push_back(Ok(create_response()));
         let herdr: Arc<dyn HerdrProvider> = herdr_mock.clone();
         let (sender, rx) = sender();
         let mut state = state_with_branch(false);
@@ -2656,11 +2665,7 @@ mod tests {
                 .worktree_create_results
                 .lock()
                 .unwrap()
-                .push_back(Ok(WorktreeCreateResponse {
-                    workspace: workspace(),
-                    root_pane: root_pane(),
-                    worktree: worktree(),
-                }));
+                .push_back(Ok(create_response()));
             let herdr: Arc<dyn HerdrProvider> = herdr_mock;
             let (sender, rx) = sender();
             let mut state = state_with_branch(false);
@@ -2785,6 +2790,7 @@ mod tests {
                 generation: state.branch_view_generation,
                 error: None,
                 is_final: false,
+                skipped_unsupported_refs: false,
             },
             &mut state,
             &mut changes,
@@ -2839,6 +2845,7 @@ mod tests {
                     &["feature".into(), "fix".into()],
                     &["main".into()],
                 ),
+                skipped_unsupported_refs: false,
             },
             &mut state,
             &mut changes,
@@ -2864,6 +2871,7 @@ mod tests {
                 generation: state.branch_view_generation,
                 remote: "origin".into(),
                 branches: remote_branch.clone(),
+                skipped_unsupported_refs: false,
             },
             &mut state,
             &mut changes,
@@ -2876,6 +2884,7 @@ mod tests {
                 generation: state.branch_view_generation,
                 error: Some("boom".into()),
                 is_final: true,
+                skipped_unsupported_refs: false,
             },
             &mut state,
             &mut changes,
@@ -2888,6 +2897,47 @@ mod tests {
         );
         assert!(state.toasts.is_empty());
         assert!(!changes.branches_changed);
+    }
+
+    #[test]
+    fn unsupported_ref_warning_is_emitted_once_without_blanking_valid_branches() {
+        let mut state = state_with_branch(false);
+        let generation = state.branch_view_generation;
+        let mut changes = TickChanges::default();
+        let valid = state.branches.clone();
+
+        process_app_event(
+            AppEvent::BranchesLoaded {
+                repo_path: "/repo".into(),
+                generation,
+                branches: valid,
+                worktrees: Vec::new(),
+                skipped_unsupported_refs: true,
+            },
+            &mut state,
+            &mut changes,
+        );
+        process_app_event(
+            AppEvent::RemoteBranchesLoaded {
+                repo_path: "/repo".into(),
+                generation,
+                remote: "origin".into(),
+                branches: Vec::new(),
+                skipped_unsupported_refs: true,
+            },
+            &mut state,
+            &mut changes,
+        );
+
+        assert_eq!(state.branches[0].name, "feature");
+        assert_eq!(
+            state
+                .toasts
+                .iter()
+                .filter(|toast| toast.message == crate::git::UNSUPPORTED_REF_WARNING)
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -2916,12 +2966,14 @@ mod tests {
                 generation: 1,
                 branches: vec![stale_branch],
                 worktrees: Vec::new(),
+                skipped_unsupported_refs: false,
             },
             AppEvent::RemoteBranchesLoaded {
                 repo_path: "/repo".into(),
                 generation: 1,
                 remote: "origin".into(),
                 branches: stale_remote.clone(),
+                skipped_unsupported_refs: false,
             },
             AppEvent::GitFetchCompleted {
                 remote: Some("origin".into()),
@@ -2930,6 +2982,7 @@ mod tests {
                 generation: 1,
                 error: Some("stale fetch".into()),
                 is_final: true,
+                skipped_unsupported_refs: false,
             },
             AppEvent::OpenWorktreesLoaded {
                 repo_path: "/repo".into(),
@@ -2972,6 +3025,7 @@ mod tests {
                     generation: state.branch_view_generation,
                     error: Some(message.into()),
                     is_final: false,
+                    skipped_unsupported_refs: false,
                 },
                 &mut state,
                 &mut TickChanges::default(),
@@ -2995,6 +3049,7 @@ mod tests {
                 generation: state.branch_view_generation,
                 error: None,
                 is_final: true,
+                skipped_unsupported_refs: false,
             },
             &mut state,
             &mut TickChanges::default(),
@@ -3164,11 +3219,7 @@ mod tests {
             .worktree_create_results
             .lock()
             .unwrap()
-            .push_back(Ok(WorktreeCreateResponse {
-                workspace: workspace(),
-                root_pane: root_pane(),
-                worktree: worktree(),
-            }));
+            .push_back(Ok(create_response()));
         let herdr: Arc<dyn HerdrProvider> = herdr_mock.clone();
         let (sender, rx) = sender();
         let mut state = state_with_branch(false);
@@ -3205,12 +3256,8 @@ mod tests {
         assert!(request.focus);
     }
 
-    fn remove_response(forced: bool) -> WorktreeRemoveResponse {
-        WorktreeRemoveResponse {
-            workspace_id: "w_1".into(),
-            path: "/repo-feature".into(),
-            forced,
-        }
+    fn remove_response(_forced: bool) -> WorktreeRemoveResponse {
+        WorktreeRemoveResponse { warning: None }
     }
 
     #[test]

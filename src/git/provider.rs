@@ -2,7 +2,7 @@ use std::{error::Error, fmt, path::Path};
 
 use anyhow::Result;
 
-use super::{Repo, ScanWarning, Worktree};
+use super::{Listed, Repo, ScanWarning, Worktree};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalBranchAlreadyExists {
@@ -52,13 +52,13 @@ pub trait GitProvider: Send + Sync {
         is_cancelled: &dyn Fn() -> bool,
         on_found: &dyn Fn(Repo),
     ) -> Result<Vec<ScanWarning>>;
-    fn list_branches(&self, repo_path: &Path) -> Result<Vec<String>>;
+    fn list_branches(&self, repo_path: &Path) -> Result<Listed<String>>;
     fn list_remote_branches_for_remote(
         &self,
         repo_path: &Path,
         remote: &str,
-    ) -> Result<Vec<String>>;
-    fn list_worktrees(&self, repo_path: &Path) -> Result<Vec<Worktree>>;
+    ) -> Result<Listed<String>>;
+    fn list_worktrees(&self, repo_path: &Path) -> Result<Listed<Worktree>>;
     fn list_remotes(&self, repo_path: &Path) -> Result<Vec<String>>;
     fn fetch_remote(&self, repo_path: &Path, remote: &str) -> Result<()>;
     fn create_tracking_branch(&self, repo_path: &Path, branch: &str, remote: &str) -> Result<()>;

@@ -19,7 +19,7 @@ use crate::{
         is_local_branch_already_exists,
     },
     herdr::{
-        HerdrError, HerdrProvider, PaneInfo, PaneSplitRequest, WorktreeCreateRequest, WorktreeInfo,
+        HerdrError, HerdrProvider, OpenedWorktree, PaneSplitRequest, WorktreeCreateRequest,
         WorktreeOpenTarget,
     },
     state::BranchEntry,
@@ -164,16 +164,19 @@ pub fn spawn_open_repo(
             true,
         ) {
             Ok(response) => {
-                let warning = if response.already_open {
-                    None
-                } else {
-                    apply_on_open(
-                        provider.as_ref(),
-                        &on_open,
-                        &response.root_pane.pane_id,
-                        &response.worktree.path,
-                    )
-                };
+                let on_open_warning = response
+                    .opened
+                    .as_ref()
+                    .filter(|_| response.already_open == Some(false))
+                    .and_then(|opened| {
+                        apply_on_open(
+                            provider.as_ref(),
+                            &on_open,
+                            &opened.root_pane_id,
+                            &opened.path,
+                        )
+                    });
+                let warning = combine_warnings(response.warning, on_open_warning);
                 sender.send(AppEvent::RepoOpened { warning });
             }
             Err(error) => {
@@ -196,24 +199,30 @@ pub fn spawn_branch_loading(
         let repo_path = repo.path.clone();
         let result = (|| {
             let local_names = git.list_branches(&repo.path)?;
-            let default_branch = git.default_branch(&repo.path, &local_names)?;
-            repo.worktrees = git.list_worktrees(&repo.path)?;
+            let default_branch = git.default_branch(&repo.path, &local_names.items)?;
+            let worktrees = git.list_worktrees(&repo.path)?;
+            repo.worktrees = worktrees.items;
             let branches = BranchEntry::build_local(
                 &repo,
-                &local_names,
+                &local_names.items,
                 default_branch.as_deref(),
                 cwd.as_deref(),
             );
-            Ok::<_, anyhow::Error>((branches, std::mem::take(&mut repo.worktrees)))
+            Ok::<_, anyhow::Error>((
+                branches,
+                std::mem::take(&mut repo.worktrees),
+                local_names.skipped_unsupported_refs || worktrees.skipped_unsupported_refs,
+            ))
         })();
 
         match result {
-            Ok((branches, worktrees)) => {
+            Ok((branches, worktrees, skipped_unsupported_refs)) => {
                 sender.send(AppEvent::BranchesLoaded {
                     repo_path,
                     generation,
                     branches,
                     worktrees,
+                    skipped_unsupported_refs,
                 });
             }
             Err(error) => {
@@ -257,7 +266,12 @@ pub fn spawn_remote_branch_loading(
                     sender.send(AppEvent::RemoteBranchesLoaded {
                         repo_path: repo_path.clone(),
                         generation,
-                        branches: BranchEntry::build_remote(&remote, &remote_names, &local_names),
+                        branches: BranchEntry::build_remote(
+                            &remote,
+                            &remote_names.items,
+                            &local_names,
+                        ),
+                        skipped_unsupported_refs: remote_names.skipped_unsupported_refs,
                         remote,
                     });
                 }
@@ -293,6 +307,7 @@ pub fn spawn_git_fetch(
                     generation,
                     error: Some(format!("could not list remotes for fetch: {error:#}")),
                     is_final: true,
+                    skipped_unsupported_refs: false,
                 });
                 return;
             }
@@ -305,6 +320,7 @@ pub fn spawn_git_fetch(
                 generation,
                 error: None,
                 is_final: true,
+                skipped_unsupported_refs: false,
             });
             return;
         }
@@ -318,23 +334,29 @@ pub fn spawn_git_fetch(
             let local_names = Arc::clone(&local_names);
             let remaining = Arc::clone(&remaining);
             move || {
-                let (branches, error) = if sender.is_cancelled() {
-                    (Vec::new(), None)
+                let (branches, error, skipped_unsupported_refs) = if sender.is_cancelled() {
+                    (Vec::new(), None, false)
                 } else {
                     match git.fetch_remote(&repo_path, &remote) {
                         Ok(()) => match git.list_remote_branches_for_remote(&repo_path, &remote) {
                             Ok(remote_names) => (
-                                BranchEntry::build_remote(&remote, &remote_names, &local_names),
+                                BranchEntry::build_remote(
+                                    &remote,
+                                    &remote_names.items,
+                                    &local_names,
+                                ),
                                 None,
+                                remote_names.skipped_unsupported_refs,
                             ),
                             Err(error) => (
                                 Vec::new(),
                                 Some(format!(
                                     "fetch succeeded but branches could not be refreshed: {error:#}"
                                 )),
+                                false,
                             ),
                         },
-                        Err(error) => (Vec::new(), Some(error.to_string())),
+                        Err(error) => (Vec::new(), Some(error.to_string()), false),
                     }
                 };
                 let is_final = remaining.fetch_sub(1, Ordering::AcqRel) == 1;
@@ -345,6 +367,7 @@ pub fn spawn_git_fetch(
                     generation,
                     error,
                     is_final,
+                    skipped_unsupported_refs,
                 });
             }
         });
@@ -396,17 +419,20 @@ pub fn spawn_open_branch(
         let result = open_branch_with_retry(provider.as_ref(), &repo_path, &branch_name, route);
 
         match result {
-            Ok((root_pane, worktree, run_on_open)) => {
-                let warning = if run_on_open {
-                    apply_on_open(
-                        provider.as_ref(),
-                        &on_open,
-                        &root_pane.pane_id,
-                        &worktree.path,
-                    )
+            Ok((opened, run_on_open, response_warning)) => {
+                let on_open_warning = if run_on_open {
+                    opened.as_ref().and_then(|opened| {
+                        apply_on_open(
+                            provider.as_ref(),
+                            &on_open,
+                            &opened.root_pane_id,
+                            &opened.path,
+                        )
+                    })
                 } else {
                     None
                 };
+                let warning = combine_warnings(response_warning, on_open_warning);
                 sender.send(AppEvent::RepoOpened { warning });
             }
             Err(error) => {
@@ -468,12 +494,15 @@ pub fn spawn_create_new_branch(
             focus: true,
         }) {
             Ok(response) => {
-                let warning = apply_on_open(
-                    provider.as_ref(),
-                    &on_open,
-                    &response.root_pane.pane_id,
-                    &response.worktree.path,
-                );
+                let on_open_warning = response.opened.as_ref().and_then(|opened| {
+                    apply_on_open(
+                        provider.as_ref(),
+                        &on_open,
+                        &opened.root_pane_id,
+                        &opened.path,
+                    )
+                });
+                let warning = combine_warnings(response.warning, on_open_warning);
                 sender.send(AppEvent::RepoOpened { warning });
             }
             Err(error) => {
@@ -503,13 +532,12 @@ pub fn spawn_worktree_removal(
     thread::spawn(move || {
         let outcome = if let Some(workspace_id) = open_workspace_id {
             match herdr {
-                Some(provider) => provider
-                    .worktree_remove(&workspace_id, force)
-                    .map(|_| ())
-                    .map_or_else(
-                        |error| removal_error(RemoveError::Herdr(error), force),
-                        |()| WorktreeRemovalOutcome::Removed { warning: None },
-                    ),
+                Some(provider) => provider.worktree_remove(&workspace_id, force).map_or_else(
+                    |error| removal_error(RemoveError::Herdr(error), force),
+                    |response| WorktreeRemovalOutcome::Removed {
+                        warning: response.warning,
+                    },
+                ),
                 None => WorktreeRemovalOutcome::Failed("not running inside herdr".into()),
             }
         } else {
@@ -581,17 +609,20 @@ pub fn spawn_open_remote_branch(
             BranchOpenRoute::Create,
         );
         match result {
-            Ok((root_pane, worktree, run_on_open)) => {
-                let warning = run_on_open
+            Ok((opened, run_on_open, response_warning)) => {
+                let on_open_warning = run_on_open
                     .then(|| {
-                        apply_on_open(
-                            provider.as_ref(),
-                            &on_open,
-                            &root_pane.pane_id,
-                            &worktree.path,
-                        )
+                        opened.as_ref().and_then(|opened| {
+                            apply_on_open(
+                                provider.as_ref(),
+                                &on_open,
+                                &opened.root_pane_id,
+                                &opened.path,
+                            )
+                        })
                     })
                     .flatten();
+                let warning = combine_warnings(response_warning, on_open_warning);
                 sender.send(AppEvent::RepoOpened { warning });
             }
             Err(error) => {
@@ -618,7 +649,7 @@ fn open_branch_with_retry(
     repo_path: &Path,
     branch_name: &str,
     route: BranchOpenRoute,
-) -> Result<(PaneInfo, WorktreeInfo, bool), HerdrError> {
+) -> Result<(Option<OpenedWorktree>, bool, Option<String>), HerdrError> {
     match run_branch_route(provider, repo_path, branch_name, route) {
         Ok(opened) => Ok(opened),
         Err(error) if is_wrong_route_failure(route, &error) => {
@@ -647,7 +678,7 @@ fn run_branch_route(
     repo_path: &Path,
     branch_name: &str,
     route: BranchOpenRoute,
-) -> Result<(PaneInfo, WorktreeInfo, bool), HerdrError> {
+) -> Result<(Option<OpenedWorktree>, bool, Option<String>), HerdrError> {
     match route {
         BranchOpenRoute::Open => provider
             .worktree_open(
@@ -656,11 +687,8 @@ fn run_branch_route(
                 true,
             )
             .map(|response| {
-                (
-                    response.root_pane,
-                    response.worktree,
-                    !response.already_open,
-                )
+                let run_on_open = response.already_open == Some(false);
+                (response.opened, run_on_open, response.warning)
             }),
         BranchOpenRoute::Create => provider
             .worktree_create(&WorktreeCreateRequest {
@@ -670,7 +698,7 @@ fn run_branch_route(
                 path: None,
                 focus: true,
             })
-            .map(|response| (response.root_pane, response.worktree, true)),
+            .map(|response| (response.opened, true, response.warning)),
     }
 }
 
@@ -715,6 +743,14 @@ fn apply_on_open(
     (!errors.is_empty()).then(|| format!("on_open: {}", errors.join("; ")))
 }
 
+fn combine_warnings(first: Option<String>, second: Option<String>) -> Option<String> {
+    match (first, second) {
+        (Some(first), Some(second)) => Some(format!("{first}; {second}")),
+        (Some(warning), None) | (None, Some(warning)) => Some(warning),
+        (None, None) => None,
+    }
+}
+
 fn friendly_branch_error(error: &HerdrError) -> String {
     match error {
         HerdrError::WorktreeOperationInProgress(_) => {
@@ -737,8 +773,7 @@ mod tests {
         config::{OnOpenPaneConfig, OnOpenPaneDirection},
         git::{Repo, Worktree, mock::MockGitProvider},
         herdr::{
-            AgentStatus, PaneInfo, PaneRunResponse, PaneSplitResponse, WorkspaceInfo, WorktreeInfo,
-            WorktreeOpenResponse,
+            OpenedWorktree, PaneRunResponse, PaneSplitResponse, WorktreeOpenResponse,
             mock::{HerdrCall, MockHerdrProvider},
         },
     };
@@ -847,6 +882,7 @@ mod tests {
             generation,
             branches,
             worktrees,
+            ..
         } = rx.recv_timeout(Duration::from_secs(1)).unwrap()
         else {
             panic!("branches were not loaded")
@@ -964,32 +1000,12 @@ mod tests {
 
     fn worktree_open_response(already_open: bool) -> WorktreeOpenResponse {
         WorktreeOpenResponse {
-            workspace: WorkspaceInfo {
-                workspace_id: "w_1".into(),
-                number: 1,
-                label: "repo".into(),
-                focused: true,
-                pane_count: 1,
-                tab_count: 1,
-                active_tab_id: "w_1:1".into(),
-                agent_status: AgentStatus::Idle,
-                tokens: HashMap::new(),
-                worktree: None,
-            },
-            root_pane: PaneInfo {
-                pane_id: "p_root".into(),
-            },
-            worktree: WorktreeInfo {
+            opened: Some(OpenedWorktree {
+                root_pane_id: "p_root".into(),
                 path: "/repo".into(),
-                branch: Some("main".into()),
-                is_bare: false,
-                is_detached: false,
-                is_prunable: false,
-                is_linked_worktree: false,
-                open_workspace_id: Some("w_1".into()),
-                label: "repo".into(),
-            },
-            already_open,
+            }),
+            already_open: Some(already_open),
+            warning: None,
         }
     }
 
@@ -1088,34 +1104,7 @@ mod tests {
         mock.worktree_open_results
             .lock()
             .unwrap()
-            .push_back(Ok(WorktreeOpenResponse {
-                workspace: WorkspaceInfo {
-                    workspace_id: "w_1".into(),
-                    number: 1,
-                    label: "repo".into(),
-                    focused: true,
-                    pane_count: 1,
-                    tab_count: 1,
-                    active_tab_id: "w_1:1".into(),
-                    agent_status: AgentStatus::Idle,
-                    tokens: HashMap::new(),
-                    worktree: None,
-                },
-                root_pane: PaneInfo {
-                    pane_id: "p_root".into(),
-                },
-                worktree: WorktreeInfo {
-                    path: "/repo".into(),
-                    branch: Some("main".into()),
-                    is_bare: false,
-                    is_detached: false,
-                    is_prunable: false,
-                    is_linked_worktree: false,
-                    open_workspace_id: Some("w_1".into()),
-                    label: "repo".into(),
-                },
-                already_open: false,
-            }));
+            .push_back(Ok(worktree_open_response(false)));
         mock.pane_split_results.lock().unwrap().extend([
             Err(HerdrError::Other {
                 code: "pane_split_failed".into(),
@@ -1170,7 +1159,7 @@ mod tests {
         ];
         assert!(matches!(
             &events[0],
-            AppEvent::RemoteBranchesLoaded { repo_path, generation, remote, branches }
+            AppEvent::RemoteBranchesLoaded { repo_path, generation, remote, branches, .. }
                 if repo_path == Path::new("/repo")
                     && *generation == 7
                     && remote == "origin"
@@ -1178,7 +1167,7 @@ mod tests {
         ));
         assert!(matches!(
             &events[1],
-            AppEvent::RemoteBranchesLoaded { repo_path, generation, remote, branches }
+            AppEvent::RemoteBranchesLoaded { repo_path, generation, remote, branches, .. }
                 if repo_path == Path::new("/repo")
                     && *generation == 7
                     && remote == "upstream"

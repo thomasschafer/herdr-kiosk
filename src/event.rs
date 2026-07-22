@@ -57,6 +57,7 @@ pub enum AppEvent {
         generation: u64,
         branches: Vec<BranchEntry>,
         worktrees: Vec<Worktree>,
+        skipped_unsupported_refs: bool,
     },
     BranchLoadFailed {
         repo_path: PathBuf,
@@ -68,6 +69,7 @@ pub enum AppEvent {
         generation: u64,
         remote: String,
         branches: Vec<BranchEntry>,
+        skipped_unsupported_refs: bool,
     },
     RemoteBranchLoadFailed {
         repo_path: PathBuf,
@@ -81,6 +83,7 @@ pub enum AppEvent {
         generation: u64,
         error: Option<String>,
         is_final: bool,
+        skipped_unsupported_refs: bool,
     },
     BranchNameValidated {
         repo_path: PathBuf,

@@ -10,17 +10,46 @@ pub use provider::{
 };
 pub use repo::{Repo, ScanWarning, Worktree};
 
-use anyhow::{Context, Result};
+#[cfg(not(unix))]
+use anyhow::Context;
+use anyhow::Result;
 
 #[cfg(unix)]
 use std::os::unix::ffi::OsStringExt;
 use std::{ffi::OsString, path::PathBuf};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listed<T> {
+    pub items: Vec<T>,
+    pub skipped_unsupported_refs: bool,
+}
+
+impl<T> Listed<T> {
+    pub(crate) fn new(items: Vec<T>, skipped_unsupported_refs: bool) -> Self {
+        Self {
+            items,
+            skipped_unsupported_refs,
+        }
+    }
+}
+
+impl<T> std::ops::Deref for Listed<T> {
+    type Target = [T];
+
+    fn deref(&self) -> &Self::Target {
+        &self.items
+    }
+}
+
+pub const UNSUPPORTED_REF_WARNING: &str =
+    "Some Git refs were skipped because non-UTF-8 ref names are unsupported.";
+
 /// Parse `git worktree list --porcelain -z` output into worktrees.
-pub fn parse_worktree_porcelain(output: &[u8]) -> Result<Vec<Worktree>> {
+pub fn parse_worktree_porcelain(output: &[u8]) -> Result<Listed<Worktree>> {
     let mut worktrees = Vec::new();
     let mut current_path = None;
     let mut current_branch = None;
+    let mut skipped_unsupported_refs = false;
 
     for field in output.split(|byte| *byte == 0) {
         if let Some(path) = field.strip_prefix(b"worktree ") {
@@ -37,11 +66,12 @@ pub fn parse_worktree_porcelain(output: &[u8]) -> Result<Vec<Worktree>> {
                 });
             }
         } else if let Some(branch) = field.strip_prefix(b"branch refs/heads/") {
-            current_branch = Some(
-                std::str::from_utf8(branch)
-                    .context("git returned a non-UTF-8 branch name")?
-                    .to_string(),
-            );
+            if let Ok(branch) = std::str::from_utf8(branch) {
+                current_branch = Some(branch.to_string());
+            } else {
+                current_branch = None;
+                skipped_unsupported_refs = true;
+            }
         } else if field.is_empty() {
             if let Some(path) = current_path.take() {
                 worktrees.push(Worktree {
@@ -60,7 +90,7 @@ pub fn parse_worktree_porcelain(output: &[u8]) -> Result<Vec<Worktree>> {
         });
     }
 
-    Ok(worktrees)
+    Ok(Listed::new(worktrees, skipped_unsupported_refs))
 }
 
 #[cfg(test)]
@@ -110,5 +140,17 @@ mod tests {
             PathBuf::from("/home/user/project\nfeature")
         );
         assert_eq!(worktrees[0].branch.as_deref(), Some("feature"));
+    }
+
+    #[test]
+    fn non_utf8_checked_out_branch_does_not_reject_worktree_listing() {
+        let listed = parse_worktree_porcelain(
+            b"worktree /repo\0HEAD abc123\0branch refs/heads/invalid-\xff\0\0",
+        )
+        .unwrap();
+
+        assert_eq!(listed.items.len(), 1);
+        assert!(listed.items[0].branch.is_none());
+        assert!(listed.skipped_unsupported_refs);
     }
 }

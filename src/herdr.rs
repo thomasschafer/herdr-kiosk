@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     fmt,
     path::{Path, PathBuf},
     process::Command,
@@ -11,86 +10,48 @@ use crate::config::OnOpenPaneDirection;
 
 pub mod mock;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentStatus {
-    Idle,
-    Working,
-    Blocked,
-    Done,
-    #[serde(other)]
-    Unknown,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct WorkspaceWorktreeInfo {
-    pub repo_key: String,
-    pub repo_name: String,
     pub repo_root: String,
-    pub checkout_path: String,
-    pub is_linked_worktree: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct WorkspaceInfo {
-    pub workspace_id: String,
-    pub number: usize,
-    pub label: String,
-    pub focused: bool,
-    pub pane_count: usize,
-    pub tab_count: usize,
-    pub active_tab_id: String,
-    pub agent_status: AgentStatus,
-    #[serde(default)]
-    pub tokens: HashMap<String, String>,
     #[serde(default)]
     pub worktree: Option<WorkspaceWorktreeInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct WorktreeSourceInfo {
-    pub repo_key: String,
-    pub repo_name: String,
-    pub repo_root: String,
-    pub source_checkout_path: String,
-    #[serde(default)]
-    pub source_workspace_id: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[allow(clippy::struct_excessive_bools)]
 pub struct WorktreeInfo {
     pub path: String,
     #[serde(default)]
     pub branch: Option<String>,
-    pub is_bare: bool,
-    pub is_detached: bool,
-    pub is_prunable: bool,
-    pub is_linked_worktree: bool,
     #[serde(default)]
     pub open_workspace_id: Option<String>,
-    pub label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeListResponse {
-    pub source: WorktreeSourceInfo,
     pub worktrees: Vec<WorktreeInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeCreateResponse {
-    pub workspace: WorkspaceInfo,
-    pub root_pane: PaneInfo,
-    pub worktree: WorktreeInfo,
+    pub opened: Option<OpenedWorktree>,
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeOpenResponse {
-    pub workspace: WorkspaceInfo,
-    pub root_pane: PaneInfo,
-    pub worktree: WorktreeInfo,
-    pub already_open: bool,
+    pub opened: Option<OpenedWorktree>,
+    pub already_open: Option<bool>,
+    pub warning: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenedWorktree {
+    pub root_pane_id: String,
+    pub path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -117,9 +78,7 @@ pub struct PaneRunResponse;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeRemoveResponse {
-    pub workspace_id: String,
-    pub path: String,
-    pub forced: bool,
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -216,6 +175,7 @@ pub trait HerdrProvider: Send + Sync {
     fn workspace_list(&self) -> Result<Vec<WorkspaceInfo>, HerdrError>;
     fn pane_split(&self, request: &PaneSplitRequest) -> Result<PaneSplitResponse, HerdrError>;
     fn pane_run(&self, pane_id: &str, command: &str) -> Result<PaneRunResponse, HerdrError>;
+    fn notification_show(&self, title: &str, body: &str) -> Result<(), HerdrError>;
 }
 
 #[derive(Debug, Clone)]
@@ -231,6 +191,29 @@ impl CliHerdrProvider {
     }
 
     fn invoke<T: DeserializeOwned>(&self, args: &[String]) -> Result<T, HerdrError> {
+        let output = self.invoke_output(args)?;
+        let envelope: SuccessEnvelope<T> =
+            serde_json::from_slice(&output).map_err(|error| invalid_response(&error, &output))?;
+        Ok(envelope.result)
+    }
+
+    fn invoke_side_effect<T: DeserializeOwned>(
+        &self,
+        args: &[String],
+    ) -> Result<(Option<T>, Option<String>), HerdrError> {
+        let output = self.invoke_output(args)?;
+        match serde_json::from_slice::<SuccessEnvelope<T>>(&output) {
+            Ok(envelope) => Ok((Some(envelope.result), None)),
+            Err(error) => Ok((
+                None,
+                Some(format!(
+                    "herdr completed the operation, but returned an unexpected response: {error}"
+                )),
+            )),
+        }
+    }
+
+    fn invoke_output(&self, args: &[String]) -> Result<Vec<u8>, HerdrError> {
         let output = Command::new(&self.binary_path)
             .args(args)
             .output()
@@ -257,14 +240,7 @@ impl CliHerdrProvider {
             )));
         }
 
-        let envelope: SuccessEnvelope<T> =
-            serde_json::from_slice(&output.stdout).map_err(|error| {
-                HerdrError::InvalidResponse(format!(
-                    "{error}; stdout was {:?}",
-                    String::from_utf8_lossy(&output.stdout).trim()
-                ))
-            })?;
-        Ok(envelope.result)
+        Ok(output.stdout)
     }
 }
 
@@ -294,19 +270,25 @@ impl HerdrProvider for CliHerdrProvider {
         }
         args.push(if focus { "--focus" } else { "--no-focus" }.into());
 
-        match self.invoke::<WorktreeOpenResult>(&args)? {
+        let (result, warning) = self.invoke_side_effect::<WorktreeOpenResult>(&args)?;
+        let (opened, already_open) = result.map_or((None, None), |result| match result {
             WorktreeOpenResult::WorktreeOpened {
-                workspace,
                 root_pane,
                 worktree,
                 already_open,
-            } => Ok(WorktreeOpenResponse {
-                workspace,
-                root_pane,
-                worktree,
-                already_open,
-            }),
-        }
+            } => (
+                Some(OpenedWorktree {
+                    root_pane_id: root_pane.pane_id,
+                    path: worktree.path,
+                }),
+                Some(already_open),
+            ),
+        });
+        Ok(WorktreeOpenResponse {
+            opened,
+            already_open,
+            warning,
+        })
     }
 
     fn worktree_create(
@@ -340,17 +322,17 @@ impl HerdrProvider for CliHerdrProvider {
             .into(),
         );
 
-        match self.invoke::<WorktreeCreateResult>(&args)? {
+        let (result, warning) = self.invoke_side_effect::<WorktreeCreateResult>(&args)?;
+        let opened = result.map(|result| match result {
             WorktreeCreateResult::WorktreeCreated {
-                workspace,
                 root_pane,
                 worktree,
-            } => Ok(WorktreeCreateResponse {
-                workspace,
-                root_pane,
-                worktree,
-            }),
-        }
+            } => OpenedWorktree {
+                root_pane_id: root_pane.pane_id,
+                path: worktree.path,
+            },
+        });
+        Ok(WorktreeCreateResponse { opened, warning })
     }
 
     fn worktree_remove(
@@ -368,17 +350,8 @@ impl HerdrProvider for CliHerdrProvider {
         if force {
             args.push("--force".into());
         }
-        match self.invoke::<WorktreeRemoveResult>(&args)? {
-            WorktreeRemoveResult::WorktreeRemoved {
-                workspace_id,
-                path,
-                forced,
-            } => Ok(WorktreeRemoveResponse {
-                workspace_id,
-                path,
-                forced,
-            }),
-        }
+        let (_, warning) = self.invoke_side_effect::<WorktreeRemoveResult>(&args)?;
+        Ok(WorktreeRemoveResponse { warning })
     }
 
     fn worktree_list(&self, cwd: &Path) -> Result<WorktreeListResponse, HerdrError> {
@@ -391,8 +364,8 @@ impl HerdrProvider for CliHerdrProvider {
             "--json".into(),
         ];
         match self.invoke::<WorktreeListResult>(&args)? {
-            WorktreeListResult::WorktreeList { source, worktrees } => {
-                Ok(WorktreeListResponse { source, worktrees })
+            WorktreeListResult::WorktreeList { worktrees } => {
+                Ok(WorktreeListResponse { worktrees })
             }
         }
     }
@@ -450,6 +423,19 @@ impl HerdrProvider for CliHerdrProvider {
             PaneRunResult::Ok {} => Ok(PaneRunResponse),
         }
     }
+
+    fn notification_show(&self, title: &str, body: &str) -> Result<(), HerdrError> {
+        require_nonempty("notification title", title)?;
+        require_nonempty("notification body", body)?;
+        self.invoke_output(&[
+            "notification".into(),
+            "show".into(),
+            title.into(),
+            "--body".into(),
+            body.into(),
+        ])?;
+        Ok(())
+    }
 }
 
 #[derive(Deserialize)]
@@ -477,19 +463,15 @@ enum WorkspaceListResult {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum WorktreeListResult {
-    WorktreeList {
-        source: WorktreeSourceInfo,
-        worktrees: Vec<WorktreeInfo>,
-    },
+    WorktreeList { worktrees: Vec<WorktreeInfo> },
 }
 
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum WorktreeCreateResult {
     WorktreeCreated {
-        workspace: WorkspaceInfo,
         root_pane: PaneInfo,
-        worktree: WorktreeInfo,
+        worktree: WorktreePath,
     },
 }
 
@@ -497,9 +479,8 @@ enum WorktreeCreateResult {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum WorktreeOpenResult {
     WorktreeOpened {
-        workspace: WorkspaceInfo,
         root_pane: PaneInfo,
-        worktree: WorktreeInfo,
+        worktree: WorktreePath,
         already_open: bool,
     },
 }
@@ -519,11 +500,12 @@ enum PaneRunResult {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum WorktreeRemoveResult {
-    WorktreeRemoved {
-        workspace_id: String,
-        path: String,
-        forced: bool,
-    },
+    WorktreeRemoved {},
+}
+
+#[derive(Deserialize)]
+struct WorktreePath {
+    path: String,
 }
 
 fn require_absolute(name: &str, path: &Path) -> Result<(), HerdrError> {
@@ -553,6 +535,13 @@ fn path_arg(name: &str, path: &Path) -> Result<String, HerdrError> {
             "{name} is not valid UTF-8 and cannot be passed to herdr"
         ))
     })
+}
+
+fn invalid_response(error: &serde_json::Error, output: &[u8]) -> HerdrError {
+    HerdrError::InvalidResponse(format!(
+        "{error}; stdout was {:?}",
+        String::from_utf8_lossy(output).trim()
+    ))
 }
 
 fn parse_error_envelope(bytes: &[u8]) -> Option<HerdrError> {
@@ -627,22 +616,9 @@ mod tests {
             workspaces[1]
                 .worktree
                 .as_ref()
-                .map(|worktree| worktree.checkout_path.as_str()),
-            Some("/worktrees/repo/feature")
+                .map(|worktree| worktree.repo_root.as_str()),
+            Some("/repo")
         );
-    }
-
-    #[test]
-    fn unknown_agent_status_maps_to_unknown() {
-        let future_workspace = WORKSPACE.replace(
-            r#""agent_status":"unknown""#,
-            r#""agent_status":"some_future_status""#,
-        );
-        let json = format!(
-            r#"{{"id":"cli:workspace:list","result":{{"type":"workspace_list","workspaces":[{future_workspace}]}}}}"#
-        );
-        let WorkspaceListResult::WorkspaceList { workspaces } = parse_success(&json);
-        assert_eq!(workspaces[0].agent_status, AgentStatus::Unknown);
     }
 
     #[test]
@@ -650,8 +626,7 @@ mod tests {
         let json = format!(
             r#"{{"id":"cli:worktree:list","result":{{"type":"worktree_list","source":{{"repo_key":"/repo/.git","repo_name":"repo","repo_root":"/repo","source_checkout_path":"/repo"}},"worktrees":[{WORKTREE_CLOSED},{WORKTREE_OPEN}]}}}}"#
         );
-        let WorktreeListResult::WorktreeList { source, worktrees } = parse_success(&json);
-        assert_eq!(source.repo_root, "/repo");
+        let WorktreeListResult::WorktreeList { worktrees } = parse_success(&json);
         assert!(worktrees[0].open_workspace_id.is_none());
         assert_eq!(worktrees[1].open_workspace_id.as_deref(), Some("w_2"));
     }
@@ -661,13 +636,8 @@ mod tests {
         let created = format!(
             r#"{{"id":"create","result":{{"type":"worktree_created","workspace":{WORKSPACE_WITH_WORKTREE},"tab":{{}},"root_pane":{ROOT_PANE},"worktree":{WORKTREE_OPEN}}}}}"#
         );
-        let WorktreeCreateResult::WorktreeCreated {
-            workspace,
-            worktree,
-            ..
-        } = parse_success(&created);
-        assert_eq!(workspace.workspace_id, "w_2");
-        assert_eq!(worktree.branch.as_deref(), Some("feature"));
+        let WorktreeCreateResult::WorktreeCreated { worktree, .. } = parse_success(&created);
+        assert_eq!(worktree.path, "/worktrees/repo/feature");
 
         let opened = format!(
             r#"{{"id":"open","result":{{"type":"worktree_opened","workspace":{WORKSPACE_WITH_WORKTREE},"tab":{{}},"root_pane":{ROOT_PANE},"worktree":{WORKTREE_OPEN},"already_open":true}}}}"#
@@ -676,8 +646,10 @@ mod tests {
         assert!(already_open);
 
         let removed = r#"{"id":"remove","result":{"type":"worktree_removed","workspace_id":"w_2","path":"/worktrees/repo/feature","forced":true}}"#;
-        let WorktreeRemoveResult::WorktreeRemoved { forced, .. } = parse_success(removed);
-        assert!(forced);
+        assert!(matches!(
+            parse_success(removed),
+            WorktreeRemoveResult::WorktreeRemoved {}
+        ));
     }
 
     #[test]
@@ -857,6 +829,96 @@ mod tests {
         assert_eq!(
             fs::read_to_string(args_file).unwrap().trim(),
             "worktree remove --workspace w_2 --force"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn side_effect_responses_ignore_unused_and_future_fields() {
+        let temp = TempDir::new().unwrap();
+        let response = r#"{"result":{"type":"worktree_opened","root_pane":{"pane_id":"p_root","future_pane_field":1},"worktree":{"path":"/repo","renamed_label":"repo"},"already_open":false,"future_result_field":true}}"#;
+        let (binary, _) = fake_herdr(&temp, response);
+        let provider = CliHerdrProvider::new(binary);
+
+        let opened = retry_fake_herdr(|| {
+            provider.worktree_open(
+                Path::new("/repo"),
+                &WorktreeOpenTarget::Path("/repo".into()),
+                true,
+            )
+        });
+
+        assert_eq!(opened.opened.unwrap().path, "/repo");
+        assert_eq!(opened.already_open, Some(false));
+        assert!(opened.warning.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn undecodable_success_is_soft_success_but_error_envelope_stays_failure() {
+        let success_temp = TempDir::new().unwrap();
+        let (binary, _) = fake_herdr(
+            &success_temp,
+            r#"{"result":{"type":"worktree_created","workspace_id":"w_1"}}"#,
+        );
+        let provider = CliHerdrProvider::new(binary);
+        let response = retry_fake_herdr(|| {
+            provider.worktree_create(&WorktreeCreateRequest {
+                cwd: "/repo".into(),
+                branch: "feature".into(),
+                base: None,
+                path: None,
+                focus: true,
+            })
+        });
+        assert!(response.opened.is_none());
+        assert!(response.warning.as_deref().is_some_and(|warning| {
+            warning.contains("completed the operation") && warning.contains("unexpected response")
+        }));
+
+        let error_temp = TempDir::new().unwrap();
+        let (binary, _) = fake_herdr(
+            &error_temp,
+            r#"{"error":{"code":"worktree_create_failed","message":"disk full"}}"#,
+        );
+        let provider = CliHerdrProvider::new(binary);
+        let error = provider
+            .worktree_create(&WorktreeCreateRequest {
+                cwd: "/repo".into(),
+                branch: "feature".into(),
+                base: None,
+                path: None,
+                focus: true,
+            })
+            .unwrap_err();
+        assert_eq!(error, HerdrError::WorktreeCreateFailed("disk full".into()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_succeeds_without_now_unused_response_fields() {
+        let temp = TempDir::new().unwrap();
+        let (binary, _) = fake_herdr(
+            &temp,
+            r#"{"result":{"type":"worktree_removed","future_field":true}}"#,
+        );
+        let provider = CliHerdrProvider::new(binary);
+
+        let response = retry_fake_herdr(|| provider.worktree_remove("w_1", false));
+        assert!(response.warning.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_builds_exact_notification_call_without_decoding_its_response() {
+        let temp = TempDir::new().unwrap();
+        let (binary, args_file) = fake_herdr(&temp, "future non-json response");
+        let provider = CliHerdrProvider::new(binary);
+
+        retry_fake_herdr(|| provider.notification_show("herdr-kiosk", "on_open failed"));
+        assert_eq!(
+            fs::read_to_string(args_file).unwrap().trim(),
+            "notification show herdr-kiosk --body on_open failed"
         );
     }
 

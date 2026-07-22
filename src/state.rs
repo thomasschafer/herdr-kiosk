@@ -307,6 +307,7 @@ pub struct AppState {
     pub remote_branches: BTreeMap<String, Vec<BranchEntry>>,
     pub fetching_remote_repo: Option<PathBuf>,
     pub fetch_warning_remotes: HashSet<String>,
+    pub unsupported_ref_warning_generation: Option<u64>,
     pub base_filter_generation: u64,
     pub help_filter_generation: u64,
     pub pending_worktree_deletes: Vec<PendingWorktreeDelete>,
@@ -340,6 +341,7 @@ impl AppState {
             remote_branches: BTreeMap::new(),
             fetching_remote_repo: None,
             fetch_warning_remotes: HashSet::new(),
+            unsupported_ref_warning_generation: None,
             base_filter_generation: 0,
             help_filter_generation: 0,
             pending_worktree_deletes: Vec::new(),
@@ -972,12 +974,7 @@ mod tests {
             entry.apply_open_worktrees(&[WorktreeInfo {
                 path: "/repo-feature".into(),
                 branch: Some("feature".into()),
-                is_bare: false,
-                is_detached: false,
-                is_prunable: false,
-                is_linked_worktree: true,
                 open_workspace_id: Some("w_2".into()),
-                label: "repo".into(),
             }]);
         }
         let feature = entries
