@@ -13,6 +13,9 @@ test:
 e2e:
     ./scripts/e2e.sh
 
+gif:
+    ./scripts/gif/record.sh
+
 link: build
     "{{HERDR}}" plugin link "{{justfile_directory()}}"
 

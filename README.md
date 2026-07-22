@@ -3,6 +3,8 @@
 Fuzzy-find Git repositories and branches, then open them as Herdr workspaces and
 worktrees.
 
+![Demo of fuzzy-finding a repository and branch, then opening its Herdr worktree](media/preview.gif)
+
 ## Install
 
 Install from the public GitHub repository:
