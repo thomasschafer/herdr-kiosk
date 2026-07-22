@@ -1091,6 +1091,7 @@ fn apply_repo_filter_result(
     matches: &[(FilterKey, i64)],
     selected: Option<&FilterKey>,
 ) {
+    let current = state.selected_repo().map(|entry| entry.repo.path.clone());
     let indices: HashMap<_, _> = state
         .repos
         .iter()
@@ -1104,11 +1105,13 @@ fn apply_repo_filter_result(
             FilterKey::Branch(_) | FilterKey::Base(_) | FilterKey::Help(_) => None,
         })
         .collect();
-    state.repo_list.selected = selected
-        .and_then(|key| match key {
-            FilterKey::Repo(path) => Some(path),
-            FilterKey::Branch(_) | FilterKey::Base(_) | FilterKey::Help(_) => None,
-        })
+    let requested = selected.and_then(|key| match key {
+        FilterKey::Repo(path) => Some(path.clone()),
+        FilterKey::Branch(_) | FilterKey::Base(_) | FilterKey::Help(_) => None,
+    });
+    state.repo_list.selected = current
+        .or(requested)
+        .as_ref()
         .and_then(|path| {
             state
                 .repo_list
@@ -1125,6 +1128,7 @@ fn apply_branch_filter_result(
     matches: &[(FilterKey, i64)],
     selected: Option<&FilterKey>,
 ) {
+    let current = state.selected_branch().map(|branch| branch.name.clone());
     let indices: HashMap<_, _> = state
         .branches
         .iter()
@@ -1138,11 +1142,13 @@ fn apply_branch_filter_result(
             FilterKey::Repo(_) | FilterKey::Base(_) | FilterKey::Help(_) => None,
         })
         .collect();
-    state.branch_list.selected = selected
-        .and_then(|key| match key {
-            FilterKey::Branch(name) => Some(name),
-            FilterKey::Repo(_) | FilterKey::Base(_) | FilterKey::Help(_) => None,
-        })
+    let requested = selected.and_then(|key| match key {
+        FilterKey::Branch(name) => Some(name.clone()),
+        FilterKey::Repo(_) | FilterKey::Base(_) | FilterKey::Help(_) => None,
+    });
+    state.branch_list.selected = current
+        .or(requested)
+        .as_ref()
         .and_then(|name| {
             state
                 .branch_list
@@ -1162,6 +1168,12 @@ fn apply_base_filter_result(
     let Mode::SelectBaseBranch { flow, .. } = &mut state.mode else {
         return;
     };
+    let current = flow
+        .list
+        .selected
+        .and_then(|selected| flow.list.filtered.get(selected))
+        .and_then(|(index, _)| flow.bases.get(*index))
+        .cloned();
     let indices: HashMap<_, _> = flow
         .bases
         .iter()
@@ -1175,11 +1187,13 @@ fn apply_base_filter_result(
             FilterKey::Repo(_) | FilterKey::Branch(_) | FilterKey::Help(_) => None,
         })
         .collect();
-    flow.list.selected = selected
-        .and_then(|key| match key {
-            FilterKey::Base(name) => Some(name),
-            FilterKey::Repo(_) | FilterKey::Branch(_) | FilterKey::Help(_) => None,
-        })
+    let requested = selected.and_then(|key| match key {
+        FilterKey::Base(name) => Some(name.clone()),
+        FilterKey::Repo(_) | FilterKey::Branch(_) | FilterKey::Help(_) => None,
+    });
+    flow.list.selected = current
+        .or(requested)
+        .as_ref()
         .and_then(|name| {
             flow.list
                 .filtered
@@ -1198,6 +1212,11 @@ fn apply_help_filter_result(
     let Some(overlay) = &mut state.help_overlay else {
         return;
     };
+    let current = overlay
+        .list
+        .selected
+        .and_then(|selected| overlay.list.filtered.get(selected))
+        .map(|(index, _)| *index);
     let scores = matches
         .iter()
         .filter_map(|(key, score)| match key {
@@ -1210,11 +1229,12 @@ fn apply_help_filter_result(
     overlay.list.filtered = (0..overlay.rows.len())
         .filter_map(|index| scores.get(&index).map(|score| (index, *score)))
         .collect();
-    overlay.list.selected = selected
-        .and_then(|key| match key {
-            FilterKey::Help(index) => Some(*index),
-            FilterKey::Repo(_) | FilterKey::Branch(_) | FilterKey::Base(_) => None,
-        })
+    let requested = selected.and_then(|key| match key {
+        FilterKey::Help(index) => Some(*index),
+        FilterKey::Repo(_) | FilterKey::Branch(_) | FilterKey::Base(_) => None,
+    });
+    overlay.list.selected = current
+        .or(requested)
         .and_then(|selected| {
             overlay
                 .list
@@ -1530,22 +1550,19 @@ fn draw(
             Constraint::Fill(1),
         ])
         .areas(frame.area());
-        frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(Span::styled(
-                    format!("{spinner} {message}"),
-                    Style::default()
-                        .fg(theme.accent)
-                        .add_modifier(Modifier::BOLD),
-                )),
-                Line::from(Span::styled(
-                    "ctrl+c to cancel",
-                    Style::default().fg(theme.muted),
-                )),
-            ])
-            .alignment(Alignment::Center),
-            area,
-        );
+        let mut lines = vec![Line::from(Span::styled(
+            format!("{spinner} {message}"),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ))];
+        if let Some(hint) = loading_hint(keys) {
+            lines.push(Line::from(Span::styled(
+                hint,
+                Style::default().fg(theme.muted),
+            )));
+        }
+        frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), area);
         return;
     }
 
@@ -1565,7 +1582,7 @@ fn draw(
         }
         Mode::ConfirmWorktreeDelete { target, .. } => {
             components::branch_picker::draw(frame, main_area, state, theme, spinner_start);
-            draw_delete_dialog(frame, main_area, target, theme, spinner_start);
+            draw_delete_dialog(frame, main_area, target, theme, keys, spinner_start);
         }
         Mode::Loading { .. } => {
             unreachable!("loading mode returned above")
@@ -1577,11 +1594,25 @@ fn draw(
         Paragraph::new(Line::from(footer)).alignment(Alignment::Center),
         footer_area,
     );
-    components::error_toast::draw(frame, frame.area(), state, theme);
+    components::error_toast::draw(frame, frame.area(), state, theme, keys);
     let toast_visible = !state.toasts.is_empty();
     if let Some(overlay) = &mut state.help_overlay {
         components::help::draw(frame, frame.area(), overlay, toast_visible, theme);
     }
+}
+
+fn loading_hint(keys: &KeysConfig) -> Option<String> {
+    keys.first_key(BindingMode::Modal, Command::Quit)
+        .map(|key| format!("{key} to cancel"))
+}
+
+fn delete_dialog_hints(keys: &KeysConfig) -> (Option<String>, Option<String>) {
+    (
+        keys.first_key(BindingMode::Modal, Command::Open)
+            .map(|key| key.to_string()),
+        keys.first_key(BindingMode::Modal, Command::Back)
+            .map(|key| key.to_string()),
+    )
 }
 
 fn footer_spans<'a>(
@@ -1649,6 +1680,7 @@ fn draw_delete_dialog(
     area: ratatui::layout::Rect,
     target: &DeleteWorktreeTarget,
     theme: &Theme,
+    keys: &KeysConfig,
     spinner_start: Instant,
 ) {
     let mut lines = if target.force {
@@ -1684,12 +1716,22 @@ fn draw_delete_dialog(
             Style::default().fg(theme.secondary),
         )));
     } else {
-        lines.push(Line::from(vec![
-            Span::styled("enter", Style::default().fg(theme.hint)),
-            Span::raw(" confirm / "),
-            Span::styled("esc", Style::default().fg(theme.hint)),
-            Span::raw(" cancel"),
-        ]));
+        let (confirm, cancel) = delete_dialog_hints(keys);
+        let mut hints = Vec::new();
+        if let Some(confirm) = confirm {
+            hints.push(Span::styled(confirm, Style::default().fg(theme.hint)));
+            hints.push(Span::raw(" confirm"));
+        }
+        if let Some(cancel) = cancel {
+            if !hints.is_empty() {
+                hints.push(Span::raw(" / "));
+            }
+            hints.push(Span::styled(cancel, Style::default().fg(theme.hint)));
+            hints.push(Span::raw(" cancel"));
+        }
+        if !hints.is_empty() {
+            lines.push(Line::from(hints));
+        }
     }
     components::dialog::Dialog::new(" Confirm delete ", lines, theme.secondary).render(frame, area);
 }
@@ -1822,6 +1864,120 @@ mod tests {
     }
 
     #[test]
+    fn modal_hints_follow_effective_remapped_bindings() {
+        let keys = toml::from_str::<KeysConfig>(
+            "[general]\n\"C-c\" = \"noop\"\n\"C-q\" = \"quit\"\n[modal]\nenter = \"noop\"\nesc = \"noop\"\n\"C-y\" = \"open\"\n\"C-g\" = \"back\"",
+        )
+        .unwrap();
+        assert_eq!(loading_hint(&keys).as_deref(), Some("ctrl+q to cancel"));
+        assert_eq!(
+            delete_dialog_hints(&keys),
+            (Some("ctrl+y".into()), Some("ctrl+g".into()))
+        );
+    }
+
+    #[test]
+    fn current_logical_selection_survives_current_generation_filter_results() {
+        let mut repo_state = AppState::new(None);
+        repo_state.repos = ["alpha", "beta", "gamma"]
+            .into_iter()
+            .map(|name| {
+                RepoEntry::new(Repo {
+                    name: name.into(),
+                    path: PathBuf::from(format!("/{name}")),
+                    worktrees: Vec::new(),
+                })
+            })
+            .collect();
+        repo_state.repo_list = SearchableList::new(3);
+        repo_state.repo_list.selected = Some(1);
+        repo_state.repo_filter_generation = 7;
+        process_app_event(
+            AppEvent::FilterCompleted {
+                target: FilterTarget::Repos,
+                generation: 7,
+                matches: vec![
+                    (FilterKey::Repo("/gamma".into()), 3),
+                    (FilterKey::Repo("/beta".into()), 2),
+                    (FilterKey::Repo("/alpha".into()), 1),
+                ],
+                selected: None,
+            },
+            &mut repo_state,
+            &mut TickChanges::default(),
+        );
+        assert_eq!(repo_state.selected_repo().unwrap().repo.name, "beta");
+
+        let mut branch_state = state_with_branch(false);
+        branch_state.branches = ["alpha", "beta", "gamma"]
+            .into_iter()
+            .map(|name| BranchEntry {
+                name: name.into(),
+                worktree_path: None,
+                is_current: false,
+                is_default: false,
+                remote: None,
+                open_workspace_id: None,
+            })
+            .collect();
+        branch_state.branch_list = SearchableList::new(3);
+        branch_state.branch_list.selected = Some(1);
+        branch_state.branch_filter_generation = 9;
+        process_app_event(
+            AppEvent::FilterCompleted {
+                target: FilterTarget::Branches,
+                generation: 9,
+                matches: vec![
+                    (FilterKey::Branch("gamma".into()), 3),
+                    (FilterKey::Branch("beta".into()), 2),
+                    (FilterKey::Branch("alpha".into()), 1),
+                ],
+                selected: None,
+            },
+            &mut branch_state,
+            &mut TickChanges::default(),
+        );
+        assert_eq!(branch_state.selected_branch().unwrap().name, "beta");
+
+        let mut base_state = state_with_branch(false);
+        base_state.mode = Mode::SelectBaseBranch {
+            context: BranchContext {
+                repo_path: "/repo".into(),
+                repo_name: "repo".into(),
+            },
+            flow: BaseBranchSelection {
+                new_name: "new".into(),
+                bases: vec!["alpha".into(), "beta".into(), "gamma".into()],
+                list: SearchableList::new(3),
+            },
+        };
+        if let Mode::SelectBaseBranch { flow, .. } = &mut base_state.mode {
+            flow.list.selected = Some(1);
+        }
+        base_state.base_filter_generation = 11;
+        process_app_event(
+            AppEvent::FilterCompleted {
+                target: FilterTarget::Bases,
+                generation: 11,
+                matches: vec![
+                    (FilterKey::Base("gamma".into()), 3),
+                    (FilterKey::Base("beta".into()), 2),
+                    (FilterKey::Base("alpha".into()), 1),
+                ],
+                selected: None,
+            },
+            &mut base_state,
+            &mut TickChanges::default(),
+        );
+        let Mode::SelectBaseBranch { flow, .. } = &base_state.mode else {
+            unreachable!()
+        };
+        let selected = flow.list.selected.unwrap();
+        let index = flow.list.filtered[selected].0;
+        assert_eq!(flow.bases[index], "beta");
+    }
+
+    #[test]
     fn base_picker_text_actions_edit_only_the_base_query() {
         let mut state = state_with_branch(false);
         state.branch_list.input.text = "underlying".into();
@@ -1860,6 +2016,95 @@ mod tests {
         };
         assert_eq!(flow.list.input.text, "one x");
         assert_eq!(state.branch_list.input.text, "underlying");
+    }
+
+    #[test]
+    fn unicode_actions_edit_repo_and_new_branch_queries() {
+        let git = Arc::new(MockGitProvider::default()) as Arc<dyn GitProvider>;
+        let (sender, _rx) = sender();
+        let worker = FilterWorker::spawn(sender.clone());
+        let keys = KeysConfig::default();
+        let mut state = state_with_repo();
+        process_action(
+            Action::Insert('é'),
+            &mut state,
+            &git,
+            None,
+            &sender,
+            &worker,
+            &keys,
+        );
+        assert_eq!(state.repo_list.input.text, "é");
+
+        state.mode = Mode::BranchSelect(BranchContext {
+            repo_path: "/repo".into(),
+            repo_name: "repo".into(),
+        });
+        process_action(
+            Action::Insert('界'),
+            &mut state,
+            &git,
+            None,
+            &sender,
+            &worker,
+            &keys,
+        );
+        assert_eq!(state.branch_list.input.text, "界");
+    }
+
+    #[test]
+    fn navigation_after_typing_wins_over_the_pending_filter_selection() {
+        let git = Arc::new(MockGitProvider::default()) as Arc<dyn GitProvider>;
+        let (sender, _rx) = sender();
+        let worker = FilterWorker::spawn(sender.clone());
+        let keys = KeysConfig::default();
+        let mut state = state_with_branch(false);
+        state.branches = ["alpha", "beta", "gamma"]
+            .into_iter()
+            .map(|name| BranchEntry {
+                name: name.into(),
+                worktree_path: None,
+                is_current: false,
+                is_default: false,
+                remote: None,
+                open_workspace_id: None,
+            })
+            .collect();
+        state.branch_list = SearchableList::new(3);
+        process_action(
+            Action::Insert('a'),
+            &mut state,
+            &git,
+            None,
+            &sender,
+            &worker,
+            &keys,
+        );
+        process_action(
+            Action::MoveSelection(1),
+            &mut state,
+            &git,
+            None,
+            &sender,
+            &worker,
+            &keys,
+        );
+        let generation = state.branch_filter_generation;
+        process_app_event(
+            AppEvent::FilterCompleted {
+                target: FilterTarget::Branches,
+                generation,
+                matches: vec![
+                    (FilterKey::Branch("alpha".into()), 3),
+                    (FilterKey::Branch("beta".into()), 2),
+                    (FilterKey::Branch("gamma".into()), 1),
+                ],
+                selected: None,
+            },
+            &mut state,
+            &mut TickChanges::default(),
+        );
+        assert_eq!(state.selected_branch().unwrap().name, "beta");
     }
 
     fn state_with_repo() -> AppState {

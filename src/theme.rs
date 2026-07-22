@@ -76,10 +76,10 @@ impl Theme {
 }
 
 pub fn parse_osc11_reply(reply: &str) -> Option<(u8, u8, u8)> {
-    let payload = reply
-        .split("]11;")
-        .nth(1)?
-        .trim_end_matches(['\u{7}', '\u{1b}', '\\']);
+    let payload = reply.strip_prefix("\u{1b}]11;")?;
+    let payload = payload
+        .strip_suffix('\u{7}')
+        .or_else(|| payload.strip_suffix("\u{1b}\\"))?;
     if let Some(hex) = payload.strip_prefix('#') {
         if hex.len() != 6 {
             return None;
@@ -106,6 +106,29 @@ pub fn parse_osc11_reply(reply: &str) -> Option<(u8, u8, u8)> {
         parse_channel(channels.next()?)?,
     );
     channels.next().is_none().then_some(color)
+}
+
+#[cfg(any(unix, test))]
+fn osc11_reply_range(bytes: &[u8]) -> Option<std::ops::Range<usize>> {
+    const PREFIX: &[u8] = b"\x1b]11;";
+    let start = bytes
+        .windows(PREFIX.len())
+        .position(|window| window == PREFIX)?;
+    let payload = start + PREFIX.len();
+    let bel = bytes[payload..]
+        .iter()
+        .position(|byte| *byte == b'\x07')
+        .map(|offset| (payload + offset, 1));
+    let string_terminator = bytes[payload..]
+        .windows(2)
+        .position(|window| window == b"\x1b\\")
+        .map(|offset| (payload + offset, 2));
+    let terminator = match (bel, string_terminator) {
+        (Some(left), Some(right)) => Some(if left.0 < right.0 { left } else { right }),
+        (Some(terminator), None) | (None, Some(terminator)) => Some(terminator),
+        (None, None) => None,
+    };
+    terminator.map(|(end, terminator_len)| start..end + terminator_len)
 }
 
 pub fn infer_background_tone((red, green, blue): (u8, u8, u8)) -> BackgroundTone {
@@ -138,8 +161,9 @@ pub fn query_background_tone(timeout: Duration) -> Option<BackgroundTone> {
         return None;
     }
     let _guard = RawModeGuard;
-    stdout.write_all(b"\x1b]11;?\x07").ok()?;
-    stdout.flush().ok()?;
+    if stdout.write_all(b"\x1b]11;?\x07").is_err() || stdout.flush().is_err() {
+        return None;
+    }
 
     let start = Instant::now();
     let mut bytes = Vec::with_capacity(64);
@@ -156,18 +180,23 @@ pub fn query_background_tone(timeout: Duration) -> Option<BackgroundTone> {
         if unsafe { libc::poll(&raw mut descriptor, 1, millis) } <= 0 {
             break;
         }
-        let mut chunk = [0_u8; 64];
-        let count = input.read(&mut chunk).ok()?;
+        let mut byte = [0_u8; 1];
+        let Ok(count) = input.read(&mut byte) else {
+            break;
+        };
         if count == 0 {
             break;
         }
-        bytes.extend_from_slice(&chunk[..count]);
-        if bytes.contains(&b'\x07') || bytes.windows(2).any(|window| window == b"\x1b\\") {
+        bytes.push(byte[0]);
+        // A byte arriving before the terminator is necessarily consumed; reading one at a time
+        // leaves every byte after the OSC reply untouched for crossterm.
+        if osc11_reply_range(&bytes).is_some() {
             break;
         }
     }
-    let reply = String::from_utf8(bytes).ok()?;
-    parse_osc11_reply(&reply).map(infer_background_tone)
+    let range = osc11_reply_range(&bytes)?;
+    let reply = std::str::from_utf8(&bytes[range]).ok()?;
+    parse_osc11_reply(reply).map(infer_background_tone)
 }
 
 #[cfg(not(unix))]
@@ -230,6 +259,16 @@ mod tests {
         );
         assert_eq!(parse_osc11_reply("\u{1b}]11;rgb:gg/00/00\u{7}"), None);
         assert_eq!(parse_osc11_reply("unrelated"), None);
+    }
+
+    #[test]
+    fn osc11_range_stops_before_trailing_input() {
+        let input = b"x\x1b]11;rgb:ffff/0000/8000\x07\xe7\x95\x8c";
+        let range = osc11_reply_range(input).unwrap();
+        assert_eq!(&input[range], b"\x1b]11;rgb:ffff/0000/8000\x07");
+        let input = b"\x1b]11;#102030\x1b\\x\x07";
+        let range = osc11_reply_range(input).unwrap();
+        assert_eq!(&input[range], b"\x1b]11;#102030\x1b\\");
     }
 
     #[test]

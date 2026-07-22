@@ -22,9 +22,22 @@ impl KeyChord {
         } else {
             (event.code, event.modifiers)
         };
-        if matches!(code, KeyCode::Char(_)) {
-            modifiers.remove(KeyModifiers::SHIFT);
-        }
+        let code = match code {
+            KeyCode::Char(character)
+                if modifiers.contains(KeyModifiers::SHIFT) && character.is_ascii_alphabetic() =>
+            {
+                KeyCode::Char(character.to_ascii_uppercase())
+            }
+            KeyCode::Char(character) => {
+                modifiers.remove(KeyModifiers::SHIFT);
+                KeyCode::Char(if character.is_ascii_alphabetic() {
+                    character.to_ascii_lowercase()
+                } else {
+                    character
+                })
+            }
+            code => code,
+        };
         Self { code, modifiers }
     }
 }
@@ -36,7 +49,11 @@ impl FromStr for KeyChord {
         if value.is_empty() {
             return Err("missing key chord".into());
         }
-        let mut tokens = value.split('-').collect::<Vec<_>>();
+        let delimiter = value
+            .split_once('+')
+            .filter(|(first, _)| is_modifier_token(first))
+            .map_or('-', |_| '+');
+        let mut tokens = value.split(delimiter).collect::<Vec<_>>();
         let key = tokens.pop().ok_or("missing key code")?;
         let mut modifiers = KeyModifiers::NONE;
         for token in tokens {
@@ -70,9 +87,15 @@ impl FromStr for KeyChord {
             _ if key.chars().count() == 1 => {
                 let mut character = key.chars().next().expect("one character");
                 if modifiers.contains(KeyModifiers::SHIFT) {
+                    if !character.is_ascii_alphabetic() {
+                        return Err(format!(
+                            "shift modifier cannot be used with non-letter key '{key}'; bind the resulting character directly"
+                        ));
+                    }
                     character = character.to_ascii_uppercase();
-                    modifiers.remove(KeyModifiers::SHIFT);
-                } else if modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+                } else if character.is_ascii_alphabetic()
+                    || modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                {
                     character = character.to_ascii_lowercase();
                 }
                 KeyCode::Char(character)
@@ -81,6 +104,13 @@ impl FromStr for KeyChord {
         };
         Ok(Self { code, modifiers })
     }
+}
+
+fn is_modifier_token(token: &str) -> bool {
+    matches!(
+        token.to_ascii_lowercase().as_str(),
+        "c" | "ctrl" | "control" | "a" | "alt" | "m" | "s" | "shift"
+    )
 }
 
 impl fmt::Display for KeyChord {
@@ -498,6 +528,14 @@ mod tests {
             "shift+tab"
         );
         assert_eq!("space".parse::<KeyChord>().unwrap().to_string(), "space");
+        let shifted = "S-a".parse::<KeyChord>().unwrap();
+        assert_eq!(shifted.to_string(), "shift+a");
+        assert_eq!(
+            shifted,
+            KeyChord::from_event(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT))
+        );
+        assert_eq!(shifted.to_string().parse::<KeyChord>().unwrap(), shifted);
+        assert_eq!("A".parse::<KeyChord>().unwrap(), "a".parse().unwrap());
     }
 
     #[test]
@@ -512,6 +550,11 @@ mod tests {
                 .unwrap_err()
                 .to_string();
         assert!(bad_action.contains("unknown key action"));
+        let shifted_number =
+            toml::from_str::<KeysConfig>("[repo_select]\n\"S-1\" = \"branches_view\"")
+                .unwrap_err()
+                .to_string();
+        assert!(shifted_number.contains("bind the resulting character directly"));
     }
 
     #[test]

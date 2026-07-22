@@ -91,10 +91,10 @@ wait_screen_contains "Depth"
 assert_screen_contains "Search directories"
 assert_screen_contains "$HK_ROOT/repos/UpperCase"
 assert_screen_contains "No directories added yet"
-t send-keys -t "$SESSION" 2
+t send-keys -t "$SESSION" 1 0
 t send-keys -t "$SESSION" Enter
 wait_screen_contains "Search directories"
-wait_screen_contains "$HK_ROOT/repos/UpperCase  depth 2"
+wait_screen_contains "$HK_ROOT/repos/UpperCase  depth 10"
 t send-keys -t "$SESSION" Enter
 wait_screen_contains "Confirm setup"
 t send-keys -t "$SESSION" Enter
@@ -103,7 +103,7 @@ wait_screen_contains "open-me"
 [ -f "$PLUGIN_CONFIG_DIR/config.toml" ] || fail "wizard did not create config.toml"
 grep -Fq "path = \"$HK_ROOT/repos/UpperCase\"" "$PLUGIN_CONFIG_DIR/config.toml" \
     || fail "wizard config did not contain fixture search directory"
-grep -Fq "depth = 2" "$PLUGIN_CONFIG_DIR/config.toml" \
+grep -Fq "depth = 10" "$PLUGIN_CONFIG_DIR/config.toml" \
     || fail "wizard config did not contain selected depth"
 t send-keys -t "$SESSION" C-c
 wait_screen_absent "herdr-kiosk — select repo"
@@ -146,6 +146,12 @@ assert_screen_contains "nested-repo"
 assert_screen_contains "open-me"
 wait_screen_absent "scanning…"
 printf 'discovery and collision display: ok\n'
+
+t send-keys -t "$SESSION" -l "é界"
+wait_screen_contains "é界"
+t send-keys -t "$SESSION" Escape
+wait_screen_contains "4 of 4 repos"
+printf 'unicode picker input: ok\n'
 
 t send-keys -t "$SESSION" nested
 wait_screen_contains "1 of 4 repos"

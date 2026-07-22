@@ -31,6 +31,7 @@ pub struct SetupState {
     pub selected_completion: Option<usize>,
     pub dirs: Vec<SetupDir>,
     pub message: Option<String>,
+    pub depth_default_pristine: bool,
 }
 
 impl Default for SetupState {
@@ -42,6 +43,7 @@ impl Default for SetupState {
             selected_completion: None,
             dirs: Vec::new(),
             message: None,
+            depth_default_pristine: false,
         }
     }
 }
@@ -70,6 +72,7 @@ impl SetupState {
         self.step = SetupStep::Depth { path };
         self.input.text = "1".into();
         self.input.cursor = 1;
+        self.depth_default_pristine = true;
         self.completions.clear();
         self.selected_completion = None;
         Ok(())
@@ -103,6 +106,7 @@ impl SetupState {
         self.step = SetupStep::Directories;
         self.input.clear();
         self.message = None;
+        self.depth_default_pristine = false;
         Ok(())
     }
 
@@ -115,6 +119,7 @@ impl SetupState {
         self.input.text = path;
         self.input.cursor = self.input.text.len();
         self.message = None;
+        self.depth_default_pristine = false;
     }
 
     pub fn remove_last(&mut self) -> Option<SetupDir> {

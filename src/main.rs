@@ -193,9 +193,7 @@ fn handle_directory_key(
         }
         KeyCode::Left if !control && !alt => state.input.cursor_left(),
         KeyCode::Right if !control && !alt => state.input.cursor_right(),
-        KeyCode::Char(character)
-            if !control && !alt && (character.is_ascii_graphic() || character == ' ') =>
-        {
+        KeyCode::Char(character) if !control && !alt && !character.is_control() => {
             state.input.insert_char(character);
             state.message = None;
             state.update_completions(home);
@@ -218,11 +216,15 @@ fn handle_depth_key(state: &mut SetupState, key: KeyEvent, home: Option<&std::pa
             state.cancel_depth();
             state.update_completions(home);
         }
-        KeyCode::Backspace => state.input.backspace(),
+        KeyCode::Backspace => {
+            state.depth_default_pristine = false;
+            state.input.backspace();
+        }
         KeyCode::Char(character) if character.is_ascii_digit() && !control && !alt => {
-            if state.input.text == "1" {
+            if state.depth_default_pristine {
                 state.input.clear();
             }
+            state.depth_default_pristine = false;
             state.input.insert_char(character);
         }
         _ => {}
@@ -236,8 +238,10 @@ fn run_no_search_dirs(terminal: &mut DefaultTerminal, path: Option<&PathBuf>) ->
     );
     loop {
         terminal.draw(|frame| draw_no_search_dirs(frame, &location))?;
-        if let Event::Key(key) = ct_event::read()?
-            && key.kind == KeyEventKind::Press
+        let Event::Key(key) = ct_event::read()? else {
+            continue;
+        };
+        if key.kind == KeyEventKind::Press
             && (matches!(key.code, KeyCode::Esc | KeyCode::Char('q'))
                 || key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
         {
@@ -294,6 +298,19 @@ mod tests {
     }
 
     #[test]
+    fn wizard_directory_input_accepts_unicode() {
+        let mut state = SetupState::default();
+        for character in ['é', '界'] {
+            handle_directory_key(
+                &mut state,
+                KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE),
+                None,
+            );
+        }
+        assert_eq!(state.input.text, "é界");
+    }
+
+    #[test]
     fn wizard_depth_input_accepts_shift_modifier_and_rejects_control() {
         let mut state = SetupState::default();
         state.continue_from_welcome();
@@ -311,6 +328,47 @@ mod tests {
             None,
         );
 
+        assert_eq!(state.input.text, "2");
+    }
+
+    #[test]
+    fn wizard_depth_replaces_the_default_only_on_the_first_edit() {
+        for (digits, expected) in [("10", "10"), ("12", "12"), ("2", "2")] {
+            let mut state = SetupState::default();
+            state.continue_from_welcome();
+            state.input.text = "/repo".into();
+            state.input.cursor = state.input.text.len();
+            state.begin_depth().unwrap();
+            for digit in digits.chars() {
+                handle_depth_key(
+                    &mut state,
+                    KeyEvent::new(KeyCode::Char(digit), KeyModifiers::NONE),
+                    None,
+                );
+            }
+            assert_eq!(state.input.text, expected);
+        }
+    }
+
+    #[test]
+    fn backspace_removes_the_pristine_depth_default_once() {
+        let mut state = SetupState::default();
+        state.continue_from_welcome();
+        state.input.text = "/repo".into();
+        state.input.cursor = state.input.text.len();
+        state.begin_depth().unwrap();
+        handle_depth_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+            None,
+        );
+        assert!(state.input.text.is_empty());
+        assert!(!state.depth_default_pristine);
+        handle_depth_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE),
+            None,
+        );
         assert_eq!(state.input.text, "2");
     }
 }

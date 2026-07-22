@@ -19,8 +19,10 @@ pub fn resolve_action(key: KeyEvent, state: &AppState, keys: &KeysConfig) -> Opt
             return Some(action);
         }
         if let KeyCode::Char(character) = chord.code
-            && chord.modifiers == KeyModifiers::NONE
-            && (character.is_ascii_graphic() || character == ' ')
+            && !chord
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            && !character.is_control()
         {
             return Some(Action::Insert(character));
         }
@@ -52,8 +54,10 @@ pub fn resolve_action(key: KeyEvent, state: &AppState, keys: &KeysConfig) -> Opt
         return command_to_action(command, state);
     }
     if let KeyCode::Char(character) = chord.code
-        && chord.modifiers == KeyModifiers::NONE
-        && (character.is_ascii_graphic() || character == ' ')
+        && !chord
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        && !character.is_control()
         && matches!(
             state.mode,
             Mode::RepoSelect | Mode::BranchSelect(_) | Mode::SelectBaseBranch { .. }
@@ -185,6 +189,34 @@ mod tests {
                 &keys
             ),
             Some(Action::ShowHelp)
+        );
+    }
+
+    #[test]
+    fn unicode_text_is_insertable_in_picker_and_branch_name_queries() {
+        let keys = KeysConfig::default();
+        let mut state = AppState::new(None);
+        assert_eq!(
+            resolve_action(key(KeyCode::Char('é'), KeyModifiers::NONE), &state, &keys),
+            Some(Action::Insert('é'))
+        );
+        state.mode = Mode::BranchSelect(BranchContext {
+            repo_path: "/repo".into(),
+            repo_name: "repo".into(),
+        });
+        assert_eq!(
+            resolve_action(key(KeyCode::Char('界'), KeyModifiers::NONE), &state, &keys),
+            Some(Action::Insert('界'))
+        );
+    }
+
+    #[test]
+    fn configured_command_letters_still_precede_text_insertion() {
+        let state = AppState::new(None);
+        let keys = toml::from_str::<KeysConfig>("[repo_select]\nx = \"branches_view\"").unwrap();
+        assert_eq!(
+            resolve_action(key(KeyCode::Char('x'), KeyModifiers::NONE), &state, &keys),
+            Some(Action::OpenBranches)
         );
     }
 
