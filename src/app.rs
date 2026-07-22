@@ -25,7 +25,7 @@ use ratatui::{
 use crate::{
     components,
     config::keys::{BindingMode, Command, KeysConfig},
-    event::{AppEvent, FilterKey, FilterTarget, WorktreeRemovalOutcome},
+    event::{AppEvent, BranchOperationFailure, FilterKey, FilterTarget, WorktreeRemovalOutcome},
     git::{GitProvider, Repo},
     herdr::HerdrProvider,
     keyboard::Action,
@@ -37,8 +37,9 @@ use crate::{
         spawn_workspace_list, spawn_worktree_removal,
     },
     state::{
-        AppState, BaseBranchSelection, BranchContext, DeleteWorktreeTarget, Mode, NewBranchRoute,
-        OpenWorktreeLoadState, RepoEntry, SearchableList, ToastKind, collision_disambiguators,
+        AppState, BaseBranchSelection, BranchContext, BranchId, DeleteWorktreeTarget, Mode,
+        NewBranchRoute, OpenWorktreeLoadState, RepoEntry, SearchableList, ToastKind,
+        collision_disambiguators,
     },
     theme::Theme,
 };
@@ -248,7 +249,7 @@ struct TickChanges {
     branches_changed: bool,
     collision_pass: bool,
     workspace_opened: bool,
-    pinned_branch_selection: Option<String>,
+    pinned_branch_selection: Option<BranchId>,
     start_remote_loading: Option<(PathBuf, u64, Vec<String>)>,
     refresh_branch: Option<Repo>,
     resume_pending_deletes: bool,
@@ -372,6 +373,9 @@ fn process_app_event(event: AppEvent, state: &mut AppState, changes: &mut TickCh
             }
             state.branches = branches;
             state.remote_branches.clear();
+            if let Some(selection) = state.pending_branch_selection.take() {
+                changes.pinned_branch_selection = Some(selection);
+            }
             apply_branch_open_indicators(state);
             state.loading_branches = false;
             if state.reconcile_pending_worktree_deletes(&repo_path) {
@@ -487,7 +491,7 @@ fn process_app_event(event: AppEvent, state: &mut AppState, changes: &mut TickCh
             state.mode = Mode::RepoSelect;
             state.push_toast(ToastKind::Error, message);
         }
-        AppEvent::BranchOperationFailed { repo_path, message }
+        AppEvent::BranchOperationFailed { repo_path, failure }
             if branch_context_matches(state, &repo_path)
                 && matches!(
                     state.mode,
@@ -499,6 +503,37 @@ fn process_app_event(event: AppEvent, state: &mut AppState, changes: &mut TickCh
         {
             let context = state.branch_context().cloned().unwrap();
             state.mode = Mode::BranchSelect(context);
+            let message = match failure {
+                BranchOperationFailure::Failed(message) => message,
+                BranchOperationFailure::LocalBranchAvailable {
+                    branch_name,
+                    tracking_created,
+                    message,
+                } => {
+                    let selection = BranchId::Local(branch_name.clone());
+                    state.promote_remote_branch_to_local(&branch_name);
+                    state.branch_list.input.clear();
+                    state.pending_branch_selection = Some(selection.clone());
+                    changes.pinned_branch_selection = Some(selection);
+                    changes.branches_changed = true;
+                    state.loading_branches = true;
+                    state.reset_remote_branches();
+                    changes.refresh_branch = state
+                        .repos
+                        .iter()
+                        .find(|entry| entry.repo.path == repo_path)
+                        .map(|entry| entry.repo.clone());
+                    if tracking_created {
+                        format!(
+                            "Tracking branch {branch_name} was created, but its checkout could not be opened: {message}"
+                        )
+                    } else {
+                        format!(
+                            "Local branch {branch_name} now exists, but its checkout could not be opened: {message}"
+                        )
+                    }
+                }
+            };
             state.push_toast(ToastKind::Error, message);
         }
         AppEvent::WorktreeRemovalFinished {
@@ -903,7 +938,8 @@ fn refresh_delete_target_open_state(state: &mut AppState) {
 
 fn pin_branch_selection(state: &AppState, changes: &mut TickChanges) {
     if changes.pinned_branch_selection.is_none() {
-        changes.pinned_branch_selection = state.selected_branch().map(|branch| branch.name.clone());
+        changes.pinned_branch_selection =
+            state.selected_branch().map(crate::state::BranchEntry::id);
     }
 }
 
@@ -913,7 +949,7 @@ fn merge_remote_snapshot(
     remote: String,
     branches: Vec<crate::state::BranchEntry>,
 ) {
-    let selected = state.selected_branch().map(|branch| branch.name.clone());
+    let selected = state.selected_branch().map(crate::state::BranchEntry::id);
     pin_branch_selection(state, changes);
     let visible = state
         .branch_list
@@ -923,7 +959,7 @@ fn merge_remote_snapshot(
             state
                 .branches
                 .get(*index)
-                .map(|branch| (branch.name.clone(), *score))
+                .map(|branch| (branch.id(), *score))
         })
         .collect::<Vec<_>>();
 
@@ -932,20 +968,20 @@ fn merge_remote_snapshot(
         .branches
         .iter()
         .enumerate()
-        .map(|(index, branch)| (branch.name.as_str(), index))
+        .map(|(index, branch)| (branch.id(), index))
         .collect();
     state.branch_list.filtered = visible
         .iter()
-        .filter_map(|(name, score)| indices.get(name.as_str()).map(|index| (*index, *score)))
+        .filter_map(|(id, score)| indices.get(id).map(|index| (*index, *score)))
         .collect();
     state.branch_list.selected = selected
-        .as_deref()
-        .and_then(|name| {
+        .as_ref()
+        .and_then(|id| {
             state
                 .branch_list
                 .filtered
                 .iter()
-                .position(|(index, _)| state.branches[*index].name == name)
+                .position(|(index, _)| state.branches[*index].id() == *id)
         })
         .or_else(|| (!state.branch_list.filtered.is_empty()).then_some(0));
 }
@@ -982,22 +1018,22 @@ fn queue_repo_filter(state: &mut AppState, worker: &FilterWorker, preserve_selec
     });
 }
 
-fn queue_branch_filter(state: &mut AppState, worker: &FilterWorker, selected_name: Option<String>) {
+fn queue_branch_filter(state: &mut AppState, worker: &FilterWorker, selected_id: Option<BranchId>) {
     state.branch_filter_generation = state.branch_filter_generation.wrapping_add(1);
     if state.branch_list.input.text.is_empty() {
         state.branch_list.filtered = (0..state.branches.len()).map(|index| (index, 0)).collect();
         if state.branches.is_empty() {
             state.branch_list.selected = None;
         } else {
-            state.branch_list.selected = selected_name
-                .as_deref()
-                .and_then(|name| state.branches.iter().position(|branch| branch.name == name))
+            state.branch_list.selected = selected_id
+                .as_ref()
+                .and_then(|id| state.branches.iter().position(|branch| branch.id() == *id))
                 .or(Some(0));
         }
         state.branch_list.scroll_offset = 0;
         return;
     }
-    let selected = selected_name.map(FilterKey::Branch);
+    let selected = selected_id.map(FilterKey::Branch);
     worker.request(FilterRequest {
         target: FilterTarget::Branches,
         generation: state.branch_filter_generation,
@@ -1006,8 +1042,8 @@ fn queue_branch_filter(state: &mut AppState, worker: &FilterWorker, selected_nam
             .branches
             .iter()
             .map(|branch| FilterItem {
-                key: FilterKey::Branch(branch.name.clone()),
-                text: branch.name.clone(),
+                key: FilterKey::Branch(branch.id()),
+                text: branch.display_name(),
             })
             .collect(),
         selected,
@@ -1118,33 +1154,33 @@ fn apply_branch_filter_result(
     matches: &[(FilterKey, i64)],
     selected: Option<&FilterKey>,
 ) {
-    let current = state.selected_branch().map(|branch| branch.name.clone());
+    let current = state.selected_branch().map(crate::state::BranchEntry::id);
     let indices: HashMap<_, _> = state
         .branches
         .iter()
         .enumerate()
-        .map(|(index, branch)| (branch.name.as_str(), index))
+        .map(|(index, branch)| (branch.id(), index))
         .collect();
     state.branch_list.filtered = matches
         .iter()
         .filter_map(|(key, score)| match key {
-            FilterKey::Branch(name) => indices.get(name.as_str()).map(|index| (*index, *score)),
+            FilterKey::Branch(id) => indices.get(id).map(|index| (*index, *score)),
             FilterKey::Repo(_) | FilterKey::Base(_) | FilterKey::Help(_) => None,
         })
         .collect();
     let requested = selected.and_then(|key| match key {
-        FilterKey::Branch(name) => Some(name.clone()),
+        FilterKey::Branch(id) => Some(id.clone()),
         FilterKey::Repo(_) | FilterKey::Base(_) | FilterKey::Help(_) => None,
     });
     state.branch_list.selected = current
         .or(requested)
         .as_ref()
-        .and_then(|name| {
+        .and_then(|id| {
             state
                 .branch_list
                 .filtered
                 .iter()
-                .position(|(index, _)| state.branches[*index].name == *name)
+                .position(|(index, _)| state.branches[*index].id() == *id)
         })
         .or_else(|| (!state.branch_list.filtered.is_empty()).then_some(0));
     state.branch_list.scroll_offset = 0;
@@ -1746,10 +1782,11 @@ mod tests {
         git::{Repo, Worktree, mock::MockGitProvider},
         herdr::{
             AgentStatus, HerdrError, HerdrProvider, PaneInfo, WorkspaceInfo,
-            WorktreeCreateResponse, WorktreeInfo, WorktreeOpenResponse, WorktreeRemoveResponse,
+            WorktreeCreateResponse, WorktreeInfo, WorktreeListResponse, WorktreeOpenResponse,
+            WorktreeRemoveResponse, WorktreeSourceInfo,
             mock::{HerdrCall, MockHerdrProvider},
         },
-        state::BranchEntry,
+        state::{BranchEntry, BranchId},
     };
     use ratatui::{Terminal, backend::TestBackend};
 
@@ -1770,7 +1807,8 @@ mod tests {
             .iter()
             .map(|(key, _)| match key {
                 FilterKey::Repo(path) => path.file_name().unwrap().to_string_lossy().into_owned(),
-                FilterKey::Branch(name) | FilterKey::Base(name) => name.clone(),
+                FilterKey::Branch(id) => id.display_name(),
+                FilterKey::Base(name) => name.clone(),
                 FilterKey::Help(index) => index.to_string(),
             })
             .collect()
@@ -1813,6 +1851,22 @@ mod tests {
             )),
             ["repo"]
         );
+    }
+
+    #[test]
+    fn fuzzy_search_matches_remote_qualified_branch_display() {
+        let id = BranchId::Remote {
+            remote: "upstream".into(),
+            name: "feature".into(),
+        };
+        let items = vec![FilterItem {
+            key: FilterKey::Branch(id.clone()),
+            text: id.display_name(),
+        }];
+
+        let matches = fuzzy_filter("upstream", &items, &SkimMatcherV2::default());
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].0, FilterKey::Branch(id));
     }
 
     #[test]
@@ -2211,6 +2265,19 @@ mod tests {
         }
     }
 
+    fn worktree_list_response(worktrees: Vec<WorktreeInfo>) -> WorktreeListResponse {
+        WorktreeListResponse {
+            source: WorktreeSourceInfo {
+                repo_key: "repo".into(),
+                repo_name: "repo".into(),
+                repo_root: "/repo".into(),
+                source_checkout_path: "/repo".into(),
+                source_workspace_id: None,
+            },
+            worktrees,
+        }
+    }
+
     fn sender() -> (EventSender, mpsc::Receiver<AppEvent>) {
         let (tx, rx) = mpsc::channel();
         (EventSender::new(tx, Arc::new(AtomicBool::new(false))), rx)
@@ -2393,6 +2460,84 @@ mod tests {
     }
 
     #[test]
+    fn stale_create_route_refreshes_worktrees_and_retries_open_once() {
+        let mock = Arc::new(MockHerdrProvider::default());
+        mock.worktree_create_results.lock().unwrap().push_back(Err(
+            HerdrError::WorktreeCreateFailed("feature is already checked out".into()),
+        ));
+        mock.worktree_list_results
+            .lock()
+            .unwrap()
+            .push_back(Ok(worktree_list_response(vec![worktree()])));
+        mock.worktree_open_results
+            .lock()
+            .unwrap()
+            .push_back(Ok(WorktreeOpenResponse {
+                workspace: workspace(),
+                root_pane: root_pane(),
+                worktree: worktree(),
+                already_open: true,
+            }));
+        let provider: Arc<dyn HerdrProvider> = mock.clone();
+        let (sender, rx) = sender();
+        let mut state = state_with_branch(false);
+
+        begin_open_selected_branch(&mut state, &git_provider(), Some(&provider), &sender);
+        let event = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let mut changes = TickChanges::default();
+        process_app_event(event, &mut state, &mut changes);
+
+        assert!(changes.workspace_opened);
+        let calls = mock.calls.lock().unwrap();
+        assert_eq!(calls.len(), 3);
+        assert!(matches!(calls[0], HerdrCall::WorktreeCreate(_)));
+        assert!(matches!(calls[1], HerdrCall::WorktreeList { .. }));
+        assert!(matches!(
+            &calls[2],
+            HerdrCall::WorktreeOpen {
+                target: crate::herdr::WorktreeOpenTarget::Branch(branch),
+                ..
+            } if branch == "feature"
+        ));
+    }
+
+    #[test]
+    fn stale_open_route_refreshes_worktrees_and_retries_create_once() {
+        let mock = Arc::new(MockHerdrProvider::default());
+        mock.worktree_open_results
+            .lock()
+            .unwrap()
+            .push_back(Err(HerdrError::WorktreeNotFound("feature vanished".into())));
+        mock.worktree_list_results
+            .lock()
+            .unwrap()
+            .push_back(Ok(worktree_list_response(Vec::new())));
+        mock.worktree_create_results
+            .lock()
+            .unwrap()
+            .push_back(Ok(WorktreeCreateResponse {
+                workspace: workspace(),
+                root_pane: root_pane(),
+                worktree: worktree(),
+            }));
+        let provider: Arc<dyn HerdrProvider> = mock.clone();
+        let (sender, rx) = sender();
+        let mut state = state_with_branch(true);
+
+        begin_open_selected_branch(&mut state, &git_provider(), Some(&provider), &sender);
+        let event = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let mut changes = TickChanges::default();
+        process_app_event(event, &mut state, &mut changes);
+
+        assert!(changes.workspace_opened);
+        let calls = mock.calls.lock().unwrap();
+        assert_eq!(calls.len(), 3);
+        assert!(matches!(calls[0], HerdrCall::WorktreeOpen { .. }));
+        assert!(matches!(calls[1], HerdrCall::WorktreeList { .. }));
+        assert!(matches!(calls[2], HerdrCall::WorktreeCreate(_)));
+    }
+
+    #[test]
     fn open_failure_returns_to_branch_view() {
         let mock = Arc::new(MockHerdrProvider::default());
         mock.worktree_open_results
@@ -2502,6 +2647,117 @@ mod tests {
     }
 
     #[test]
+    fn same_named_remote_rows_track_the_selected_remote() {
+        for (selected, expected_remote) in [(0, "origin"), (1, "upstream")] {
+            let git_mock = Arc::new(MockGitProvider::default());
+            let git: Arc<dyn GitProvider> = git_mock.clone();
+            let herdr_mock = Arc::new(MockHerdrProvider::default());
+            herdr_mock
+                .worktree_create_results
+                .lock()
+                .unwrap()
+                .push_back(Ok(WorktreeCreateResponse {
+                    workspace: workspace(),
+                    root_pane: root_pane(),
+                    worktree: worktree(),
+                }));
+            let herdr: Arc<dyn HerdrProvider> = herdr_mock;
+            let (sender, rx) = sender();
+            let mut state = state_with_branch(false);
+            state.branches = ["origin", "upstream"]
+                .map(|remote| BranchEntry::build_remote(remote, &["feature".into()], &[]))
+                .into_iter()
+                .flatten()
+                .collect();
+            state.branch_list = SearchableList::new(2);
+            state.branch_list.selected = Some(selected);
+
+            begin_open_selected_branch(&mut state, &git, Some(&herdr), &sender);
+            assert!(matches!(
+                rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+                AppEvent::RepoOpened { .. }
+            ));
+            assert_eq!(
+                *git_mock.tracking_calls.lock().unwrap(),
+                [(
+                    PathBuf::from("/repo"),
+                    "feature".into(),
+                    expected_remote.into()
+                )]
+            );
+        }
+    }
+
+    #[test]
+    fn tracking_success_then_create_failure_reconciles_to_selected_local_branch() {
+        let git_mock = Arc::new(MockGitProvider {
+            branches: vec!["feature".into()],
+            ..MockGitProvider::default()
+        });
+        let git: Arc<dyn GitProvider> = git_mock;
+        let herdr_mock = Arc::new(MockHerdrProvider::default());
+        herdr_mock
+            .worktree_create_results
+            .lock()
+            .unwrap()
+            .push_back(Err(HerdrError::WorktreeCreateFailed("disk full".into())));
+        let herdr: Arc<dyn HerdrProvider> = herdr_mock;
+        let (sender, rx) = sender();
+        let worker = FilterWorker::spawn(sender.clone());
+        let mut state = state_with_branch(false);
+        state.branches[0].remote = Some("upstream".into());
+        state.branch_list.input.text = "upstream/feature".into();
+        state.branch_list.input.cursor = state.branch_list.input.text.len();
+
+        begin_open_selected_branch(&mut state, &git, Some(&herdr), &sender);
+        let event = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let mut changes = TickChanges::default();
+        process_app_event(event, &mut state, &mut changes);
+
+        assert!(matches!(state.mode, Mode::BranchSelect(_)));
+        assert!(state.branch_list.input.text.is_empty());
+        assert_eq!(
+            state.selected_branch().unwrap().id(),
+            BranchId::Local("feature".into())
+        );
+        assert!(state.branches.iter().all(|branch| branch.remote.is_none()));
+        assert!(state.toasts.front().is_some_and(|toast| {
+            toast.kind == ToastKind::Error
+                && toast
+                    .message
+                    .contains("Tracking branch feature was created")
+                && toast.message.contains("disk full")
+        }));
+        assert_eq!(
+            changes.pinned_branch_selection,
+            Some(BranchId::Local("feature".into()))
+        );
+
+        let repo = changes.refresh_branch.take().expect("branch refresh");
+        spawn_branch_loading(
+            &git,
+            &sender,
+            repo,
+            state.current_cwd.clone(),
+            state.branch_view_generation,
+        );
+        let refreshed = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let mut refreshed_changes = TickChanges::default();
+        process_app_event(refreshed, &mut state, &mut refreshed_changes);
+        queue_branch_filter(
+            &mut state,
+            &worker,
+            refreshed_changes.pinned_branch_selection.take(),
+        );
+
+        assert_eq!(
+            state.selected_branch().unwrap().id(),
+            BranchId::Local("feature".into())
+        );
+        assert!(state.selected_branch().unwrap().remote.is_none());
+    }
+
+    #[test]
     fn remote_merge_reapplies_filter_and_preserves_selection() {
         let (sender, rx) = sender();
         let worker = FilterWorker::spawn(sender);
@@ -2546,6 +2802,53 @@ mod tests {
         assert_eq!(state.branch_list.input.text, "feature");
         assert_eq!(state.branch_list.filtered.len(), 3);
         assert_eq!(state.selected_branch().unwrap().name, "z-feature");
+    }
+
+    #[test]
+    fn streamed_remote_update_preserves_same_named_remote_selection_by_identity() {
+        let (sender, rx) = sender();
+        let worker = FilterWorker::spawn(sender);
+        let mut state = state_with_branch(false);
+        state.branches[0].name = "main".into();
+        state.merge_remote_branches(
+            "origin".into(),
+            BranchEntry::build_remote("origin", &["feature".into()], &["main".into()]),
+        );
+        state.merge_remote_branches(
+            "upstream".into(),
+            BranchEntry::build_remote("upstream", &["feature".into()], &["main".into()]),
+        );
+        state.branch_list.input.text = "feature".into();
+        state.branch_list.input.cursor = 7;
+        state.branch_list.filtered = vec![(1, 0), (2, 0)];
+        state.branch_list.selected = Some(1);
+        let expected = BranchId::Remote {
+            remote: "upstream".into(),
+            name: "feature".into(),
+        };
+        assert_eq!(state.selected_branch().unwrap().id(), expected);
+        let mut changes = TickChanges::default();
+
+        process_app_event(
+            AppEvent::RemoteBranchesLoaded {
+                repo_path: "/repo".into(),
+                generation: state.branch_view_generation,
+                remote: "origin".into(),
+                branches: BranchEntry::build_remote(
+                    "origin",
+                    &["feature".into(), "fix".into()],
+                    &["main".into()],
+                ),
+            },
+            &mut state,
+            &mut changes,
+        );
+        assert_eq!(state.selected_branch().unwrap().id(), expected);
+        queue_branch_filter(&mut state, &worker, changes.pinned_branch_selection.take());
+        let event = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        process_app_event(event, &mut state, &mut TickChanges::default());
+
+        assert_eq!(state.selected_branch().unwrap().id(), expected);
     }
 
     #[test]

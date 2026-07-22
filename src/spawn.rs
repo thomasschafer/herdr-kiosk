@@ -1,6 +1,6 @@
 use std::{
     collections::VecDeque,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -13,13 +13,14 @@ use rayon::ThreadPoolBuilder;
 
 use crate::{
     config::OnOpenConfig,
-    event::{AppEvent, WorktreeRemovalOutcome},
+    event::{AppEvent, BranchOperationFailure, WorktreeRemovalOutcome},
     git::{
         GitProvider, Repo, ScanWarning, is_dirty_worktree_requires_force,
         is_local_branch_already_exists,
     },
     herdr::{
-        HerdrError, HerdrProvider, PaneSplitRequest, WorktreeCreateRequest, WorktreeOpenTarget,
+        HerdrError, HerdrProvider, PaneInfo, PaneSplitRequest, WorktreeCreateRequest, WorktreeInfo,
+        WorktreeOpenTarget,
     },
     state::BranchEntry,
 };
@@ -387,33 +388,12 @@ pub fn spawn_open_branch(
     let provider = Arc::clone(provider);
     let sender = sender.clone();
     thread::spawn(move || {
-        let result = if has_worktree {
-            provider
-                .worktree_open(
-                    &repo_path,
-                    &WorktreeOpenTarget::Branch(branch_name.clone()),
-                    true,
-                )
-                .map(|response| {
-                    (
-                        response.root_pane,
-                        response.worktree,
-                        !response.already_open,
-                    )
-                })
+        let route = if has_worktree {
+            BranchOpenRoute::Open
         } else {
-            // Herdr create responses cannot distinguish creation from a race that focused a
-            // checkout added after listing, so that rare case may re-run on_open in v1.
-            provider
-                .worktree_create(&WorktreeCreateRequest {
-                    cwd: repo_path.clone(),
-                    branch: branch_name,
-                    base: None,
-                    path: None,
-                    focus: true,
-                })
-                .map(|response| (response.root_pane, response.worktree, true))
+            BranchOpenRoute::Create
         };
+        let result = open_branch_with_retry(provider.as_ref(), &repo_path, &branch_name, route);
 
         match result {
             Ok((root_pane, worktree, run_on_open)) => {
@@ -432,7 +412,7 @@ pub fn spawn_open_branch(
             Err(error) => {
                 sender.send(AppEvent::BranchOperationFailed {
                     repo_path,
-                    message: friendly_branch_error(&error),
+                    failure: BranchOperationFailure::Failed(friendly_branch_error(&error)),
                 });
             }
         }
@@ -499,7 +479,7 @@ pub fn spawn_create_new_branch(
             Err(error) => {
                 sender.send(AppEvent::BranchOperationFailed {
                     repo_path,
-                    message: friendly_branch_error(&error),
+                    failure: BranchOperationFailure::Failed(friendly_branch_error(&error)),
                 });
             }
         }
@@ -582,43 +562,130 @@ pub fn spawn_open_remote_branch(
     let provider = Arc::clone(provider);
     let sender = sender.clone();
     thread::spawn(move || {
-        if let Err(error) = git.create_tracking_branch(&repo_path, &branch_name, &remote)
-            && !is_local_branch_already_exists(&error)
-        {
-            sender.send(AppEvent::BranchOperationFailed {
-                repo_path,
-                message: error.to_string(),
-            });
-            return;
-        }
+        let tracking_created = match git.create_tracking_branch(&repo_path, &branch_name, &remote) {
+            Ok(()) => true,
+            Err(error) if is_local_branch_already_exists(&error) => false,
+            Err(error) => {
+                sender.send(AppEvent::BranchOperationFailed {
+                    repo_path,
+                    failure: BranchOperationFailure::Failed(error.to_string()),
+                });
+                return;
+            }
+        };
 
-        let result = provider
+        let result = open_branch_with_retry(
+            provider.as_ref(),
+            &repo_path,
+            &branch_name,
+            BranchOpenRoute::Create,
+        );
+        match result {
+            Ok((root_pane, worktree, run_on_open)) => {
+                let warning = run_on_open
+                    .then(|| {
+                        apply_on_open(
+                            provider.as_ref(),
+                            &on_open,
+                            &root_pane.pane_id,
+                            &worktree.path,
+                        )
+                    })
+                    .flatten();
+                sender.send(AppEvent::RepoOpened { warning });
+            }
+            Err(error) => {
+                let message = friendly_branch_error(&error);
+                let failure = BranchOperationFailure::LocalBranchAvailable {
+                    branch_name,
+                    tracking_created,
+                    message,
+                };
+                sender.send(AppEvent::BranchOperationFailed { repo_path, failure });
+            }
+        }
+    });
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BranchOpenRoute {
+    Open,
+    Create,
+}
+
+fn open_branch_with_retry(
+    provider: &dyn HerdrProvider,
+    repo_path: &Path,
+    branch_name: &str,
+    route: BranchOpenRoute,
+) -> Result<(PaneInfo, WorktreeInfo, bool), HerdrError> {
+    match run_branch_route(provider, repo_path, branch_name, route) {
+        Ok(opened) => Ok(opened),
+        Err(error) if is_wrong_route_failure(route, &error) => {
+            let refreshed_route = provider.worktree_list(repo_path).ok().map(|response| {
+                if response
+                    .worktrees
+                    .iter()
+                    .any(|worktree| worktree.branch.as_deref() == Some(branch_name))
+                {
+                    BranchOpenRoute::Open
+                } else {
+                    BranchOpenRoute::Create
+                }
+            });
+            match refreshed_route.filter(|refreshed| *refreshed != route) {
+                Some(refreshed) => run_branch_route(provider, repo_path, branch_name, refreshed),
+                None => Err(error),
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn run_branch_route(
+    provider: &dyn HerdrProvider,
+    repo_path: &Path,
+    branch_name: &str,
+    route: BranchOpenRoute,
+) -> Result<(PaneInfo, WorktreeInfo, bool), HerdrError> {
+    match route {
+        BranchOpenRoute::Open => provider
+            .worktree_open(
+                repo_path,
+                &WorktreeOpenTarget::Branch(branch_name.to_string()),
+                true,
+            )
+            .map(|response| {
+                (
+                    response.root_pane,
+                    response.worktree,
+                    !response.already_open,
+                )
+            }),
+        BranchOpenRoute::Create => provider
             .worktree_create(&WorktreeCreateRequest {
-                cwd: repo_path.clone(),
-                branch: branch_name,
+                cwd: repo_path.to_path_buf(),
+                branch: branch_name.to_string(),
                 base: None,
                 path: None,
                 focus: true,
             })
-            .map(|response| (response.root_pane, response.worktree));
-        match result {
-            Ok((root_pane, worktree)) => {
-                let warning = apply_on_open(
-                    provider.as_ref(),
-                    &on_open,
-                    &root_pane.pane_id,
-                    &worktree.path,
-                );
-                sender.send(AppEvent::RepoOpened { warning });
-            }
-            Err(error) => {
-                sender.send(AppEvent::BranchOperationFailed {
-                    repo_path,
-                    message: friendly_branch_error(&error),
-                });
-            }
+            .map(|response| (response.root_pane, response.worktree, true)),
+    }
+}
+
+fn is_wrong_route_failure(route: BranchOpenRoute, error: &HerdrError) -> bool {
+    match (route, error) {
+        (BranchOpenRoute::Create, HerdrError::WorktreeCreateFailed(message)) => {
+            message.to_ascii_lowercase().contains("already checked out")
         }
-    });
+        (BranchOpenRoute::Open, HerdrError::WorktreeNotFound(_)) => true,
+        (BranchOpenRoute::Open, HerdrError::WorktreeOpenFailed(message)) => {
+            let message = message.to_ascii_lowercase();
+            message.contains("not found") || message.contains("no worktree")
+        }
+        _ => false,
+    }
 }
 
 fn apply_on_open(

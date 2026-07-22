@@ -323,21 +323,23 @@ wait_screen_contains "herdr-kiosk — select repo"
 assert_screen_absent "open-me — select branch"
 printf 'branch escape returns to repo picker: ok\n'
 
+git -C "$HK_ROOT/repos/direct/open-me" remote add origin "$HK_ROOT/remote.git"
 git -C "$HK_ROOT/repos/direct/open-me" remote add upstream "$HK_ROOT/remote.git"
 t send-keys -t "$SESSION" Tab
 wait_screen_contains "open-me — select branch"
-wait_screen_contains "remote-only (remote)" 120
-assert_screen_line_contains_all "remote-only" "(remote)"
+wait_screen_contains "upstream/remote-only" 120
+assert_screen_contains "origin/remote-only"
+assert_screen_contains "upstream/remote-only"
 capture
 [ "$(grep -Fc "master (worktree)" "$LAST_SCREEN")" = 1 ] \
     || fail "local master branch row was not unique"
-if grep -Fq "master (remote)" "$LAST_SCREEN"; then
+if grep -Eq '(origin|upstream)/master' "$LAST_SCREEN"; then
     fail "branch present locally and remotely was duplicated"
 fi
-printf 'remote branch streaming and local dedup: ok\n'
+printf 'same-named remote branch streaming and local dedup: ok\n'
 
-t send-keys -t "$SESSION" remote-only
-wait_screen_contains "1 of 7 branches"
+t send-keys -t "$SESSION" upstream/remote-only
+wait_screen_contains "1 of 8 branches"
 t send-keys -t "$SESSION" Enter
 wait_screen_absent "open-me — select branch" 120
 

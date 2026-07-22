@@ -210,6 +210,27 @@ pub struct DeleteWorktreeTarget {
     pub in_progress: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum BranchId {
+    Local(String),
+    Remote { remote: String, name: String },
+}
+
+impl BranchId {
+    pub fn display_name(&self) -> String {
+        match self {
+            Self::Local(name) => name.clone(),
+            Self::Remote { remote, name } => format!("{remote}/{name}"),
+        }
+    }
+}
+
+impl From<&str> for BranchId {
+    fn from(name: &str) -> Self {
+        Self::Local(name.to_string())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NewBranchRoute {
     Existing(BranchEntry),
@@ -280,6 +301,7 @@ pub struct AppState {
     pub repo_filter_generation: u64,
     pub branch_filter_generation: u64,
     pub branch_view_generation: u64,
+    pub pending_branch_selection: Option<BranchId>,
     pub open_worktrees: Vec<WorktreeInfo>,
     pub open_worktree_load_state: OpenWorktreeLoadState,
     pub remote_branches: BTreeMap<String, Vec<BranchEntry>>,
@@ -312,6 +334,7 @@ impl AppState {
             repo_filter_generation: 0,
             branch_filter_generation: 0,
             branch_view_generation: 0,
+            pending_branch_selection: None,
             open_worktrees: Vec::new(),
             open_worktree_load_state: OpenWorktreeLoadState::Unknown,
             remote_branches: BTreeMap::new(),
@@ -479,11 +502,11 @@ impl AppState {
     /// overwrite another remote or a newer fetch result.
     pub fn merge_remote_branches(&mut self, remote: String, incoming: Vec<BranchEntry>) {
         let bucket = self.remote_branches.entry(remote).or_default();
-        let mut known: HashSet<String> = bucket.iter().map(|entry| entry.name.clone()).collect();
+        let mut known: HashSet<BranchId> = bucket.iter().map(BranchEntry::id).collect();
         bucket.extend(
             incoming
                 .into_iter()
-                .filter(|entry| known.insert(entry.name.clone())),
+                .filter(|entry| known.insert(entry.id())),
         );
         BranchEntry::sort(bucket);
 
@@ -493,17 +516,40 @@ impl AppState {
             .filter(|entry| entry.remote.is_none())
             .cloned()
             .collect();
-        let mut names: HashSet<String> = merged.iter().map(|entry| entry.name.clone()).collect();
+        let local_names: HashSet<String> = merged.iter().map(|entry| entry.name.clone()).collect();
         for entries in self.remote_branches.values() {
             merged.extend(
                 entries
                     .iter()
-                    .filter(|entry| names.insert(entry.name.clone()))
+                    .filter(|entry| !local_names.contains(&entry.name))
                     .cloned(),
             );
         }
         BranchEntry::sort(&mut merged);
         self.branches = merged;
+    }
+
+    pub fn promote_remote_branch_to_local(&mut self, branch_name: &str) {
+        for entries in self.remote_branches.values_mut() {
+            entries.retain(|entry| entry.name != branch_name);
+        }
+        self.branches
+            .retain(|entry| entry.remote.is_none() || entry.name != branch_name);
+        if !self
+            .branches
+            .iter()
+            .any(|entry| entry.remote.is_none() && entry.name == branch_name)
+        {
+            self.branches.push(BranchEntry {
+                name: branch_name.to_string(),
+                worktree_path: None,
+                is_current: false,
+                is_default: false,
+                remote: None,
+                open_workspace_id: None,
+            });
+        }
+        BranchEntry::sort(&mut self.branches);
     }
 
     pub fn canonical_sort(&mut self) {
@@ -674,6 +720,20 @@ pub struct BranchEntry {
 }
 
 impl BranchEntry {
+    pub fn id(&self) -> BranchId {
+        self.remote.as_ref().map_or_else(
+            || BranchId::Local(self.name.clone()),
+            |remote| BranchId::Remote {
+                remote: remote.clone(),
+                name: self.name.clone(),
+            },
+        )
+    }
+
+    pub fn display_name(&self) -> String {
+        self.id().display_name()
+    }
+
     pub fn build_local(
         repo: &Repo,
         branch_names: &[String],
@@ -757,6 +817,7 @@ impl BranchEntry {
                         .cmp(&left.worktree_path.is_some()),
                 )
                 .then(left.name.cmp(&right.name))
+                .then(left.remote.cmp(&right.remote))
         });
     }
 }
@@ -963,6 +1024,62 @@ mod tests {
     }
 
     #[test]
+    fn same_named_remote_branches_keep_distinct_identities() {
+        let mut state = AppState::new(None);
+        state.merge_remote_branches(
+            "origin".into(),
+            BranchEntry::build_remote("origin", &["feature".into()], &[]),
+        );
+        state.merge_remote_branches(
+            "upstream".into(),
+            BranchEntry::build_remote("upstream", &["feature".into()], &[]),
+        );
+
+        assert_eq!(
+            state
+                .branches
+                .iter()
+                .map(BranchEntry::id)
+                .collect::<Vec<_>>(),
+            [
+                BranchId::Remote {
+                    remote: "origin".into(),
+                    name: "feature".into(),
+                },
+                BranchId::Remote {
+                    remote: "upstream".into(),
+                    name: "feature".into(),
+                },
+            ]
+        );
+        assert_eq!(
+            state
+                .branches
+                .iter()
+                .map(BranchEntry::display_name)
+                .collect::<Vec<_>>(),
+            ["origin/feature", "upstream/feature"]
+        );
+    }
+
+    #[test]
+    fn local_branch_shadows_same_name_from_every_remote() {
+        let mut state = AppState::new(None);
+        state.branches = BranchEntry::build_local(&repo("/repo"), &["feature".into()], None, None);
+        state.merge_remote_branches(
+            "origin".into(),
+            BranchEntry::build_remote("origin", &["feature".into()], &[]),
+        );
+        state.merge_remote_branches(
+            "upstream".into(),
+            BranchEntry::build_remote("upstream", &["feature".into()], &[]),
+        );
+
+        assert_eq!(state.branches.len(), 1);
+        assert_eq!(state.branches[0].id(), BranchId::Local("feature".into()));
+    }
+
+    #[test]
     fn remote_merges_are_deduplicated_and_sorted_after_locals() {
         let mut state = AppState::new(None);
         state.branches = BranchEntry::build_local(
@@ -999,6 +1116,7 @@ mod tests {
                 ("z-local", None),
                 ("a-remote", Some("origin")),
                 ("z-remote", Some("origin")),
+                ("z-remote", Some("upstream")),
             ]
         );
     }

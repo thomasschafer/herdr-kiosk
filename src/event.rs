@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use crate::{
     git::{Repo, ScanWarning, Worktree},
     herdr::{WorkspaceInfo, WorktreeInfo},
-    state::BranchEntry,
+    state::{BranchEntry, BranchId},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,9 +17,19 @@ pub enum FilterTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FilterKey {
     Repo(PathBuf),
-    Branch(String),
+    Branch(BranchId),
     Base(String),
     Help(usize),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BranchOperationFailure {
+    Failed(String),
+    LocalBranchAvailable {
+        branch_name: String,
+        tracking_created: bool,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,7 +113,7 @@ pub enum AppEvent {
     RepoOpenFailed(String),
     BranchOperationFailed {
         repo_path: PathBuf,
-        message: String,
+        failure: BranchOperationFailure,
     },
     OpenWorkspacesFailed(String),
 }

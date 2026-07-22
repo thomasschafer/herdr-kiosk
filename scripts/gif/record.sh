@@ -267,7 +267,7 @@ wait_screen_contains "1 of 8 repos"
 sleep 1.2
 send Tab
 wait_screen_contains "5 of 5 branches"
-wait_screen_contains "experiment/sidebar (remote)"
+wait_screen_contains "origin/experiment/sidebar"
 sleep 1.8
 type_slow docs
 wait_screen_contains "1 of 5 branches"

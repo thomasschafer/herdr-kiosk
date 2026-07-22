@@ -101,18 +101,10 @@ pub fn draw(
 
 fn branch_item(branch: &BranchEntry, theme: &Theme, row_width: usize) -> ListItem<'static> {
     let mut left = if branch.remote.is_some() {
-        vec![
-            Span::styled(
-                branch.name.clone(),
-                Style::default().fg(theme.muted).add_modifier(Modifier::DIM),
-            ),
-            Span::styled(
-                " (remote)",
-                Style::default()
-                    .fg(theme.muted)
-                    .add_modifier(Modifier::DIM | Modifier::ITALIC),
-            ),
-        ]
+        vec![Span::styled(
+            branch.display_name(),
+            Style::default().fg(theme.muted).add_modifier(Modifier::DIM),
+        )]
     } else {
         vec![Span::raw(branch.name.clone())]
     };
@@ -138,4 +130,69 @@ fn branch_item(branch: &BranchEntry, theme: &Theme, row_width: usize) -> ListIte
         truncate_spans(&left, row_width)
     };
     ListItem::new(Line::from(spans))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use ratatui::{Terminal, backend::TestBackend, style::Modifier};
+
+    use crate::{
+        state::{AppState, BranchContext, BranchEntry, Mode, SearchableList},
+        theme::Theme,
+    };
+
+    use super::draw;
+
+    #[test]
+    fn remote_row_uses_qualified_name_without_redundant_suffix() {
+        let mut state = AppState::new(None);
+        state.mode = Mode::BranchSelect(BranchContext {
+            repo_path: "/repo".into(),
+            repo_name: "repo".into(),
+        });
+        state.branches = BranchEntry::build_remote("origin", &["feature".into()], &[]);
+        state.branch_list = SearchableList::new(1);
+        state.branch_list.selected = None;
+        let theme = Theme::from_config(&crate::config::ThemeConfig::default());
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw(frame, area, &mut state, &theme, Instant::now());
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered = buffer
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(rendered.contains("origin/feature"));
+        assert!(!rendered.contains("(remote)"));
+        let label = "origin/feature"
+            .chars()
+            .map(|character| character.to_string())
+            .collect::<Vec<_>>();
+        let cells = buffer
+            .content()
+            .windows(label.len())
+            .find(|cells| {
+                cells
+                    .iter()
+                    .zip(&label)
+                    .all(|(cell, symbol)| cell.symbol() == symbol)
+            })
+            .expect("remote label cells");
+        assert!(cells.iter().all(|cell| cell.fg == theme.muted));
+        assert!(
+            cells
+                .iter()
+                .all(|cell| cell.modifier.contains(Modifier::DIM))
+        );
+    }
 }
