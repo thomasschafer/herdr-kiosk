@@ -34,13 +34,7 @@ pub enum AppEvent {
     ReposFound {
         repo: Repo,
     },
-    RepoEnriched {
-        repo_path: PathBuf,
-        worktrees: Vec<Worktree>,
-    },
-    ScanComplete {
-        search_dirs: Vec<(PathBuf, u16)>,
-    },
+    ScanComplete,
     ScanWarning(ScanWarning),
     FilterCompleted {
         target: FilterTarget,
@@ -78,9 +72,6 @@ pub enum AppEvent {
         error: Option<String>,
         is_final: bool,
     },
-    WorktreeCreated {
-        path: PathBuf,
-    },
     BranchNameValidated {
         repo_path: PathBuf,
         branch_name: String,
@@ -115,5 +106,4 @@ pub enum AppEvent {
         message: String,
     },
     OpenWorkspacesFailed(String),
-    GitError(String),
 }

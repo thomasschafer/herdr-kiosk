@@ -1,12 +1,8 @@
-use std::{
-    error::Error,
-    fmt,
-    path::{Path, PathBuf},
-};
+use std::{error::Error, fmt, path::Path};
 
 use anyhow::Result;
 
-use super::{Repo, RepoScan, ScanWarning, Worktree};
+use super::{Repo, ScanWarning, Worktree};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalBranchAlreadyExists {
@@ -49,31 +45,14 @@ pub fn is_dirty_worktree_requires_force(error: &anyhow::Error) -> bool {
 }
 
 pub trait GitProvider: Send + Sync {
-    fn scan_repos(&self, dirs: &[(PathBuf, u16)]) -> Result<RepoScan>;
-
     fn scan_repos_streaming(
         &self,
         dir: &Path,
         depth: u16,
         is_cancelled: &dyn Fn() -> bool,
         on_found: &dyn Fn(Repo),
-    ) -> Result<Vec<ScanWarning>> {
-        if is_cancelled() {
-            return Ok(Vec::new());
-        }
-        let scan = self.scan_repos(&[(dir.to_path_buf(), depth)])?;
-        for repo in scan.repos {
-            if is_cancelled() {
-                break;
-            }
-            on_found(repo);
-        }
-        Ok(scan.warnings)
-    }
-
-    fn discover_repos(&self, dirs: &[(PathBuf, u16)]) -> Result<RepoScan>;
+    ) -> Result<Vec<ScanWarning>>;
     fn list_branches(&self, repo_path: &Path) -> Result<Vec<String>>;
-    fn list_remote_branches(&self, repo_path: &Path) -> Result<Vec<String>>;
     fn list_remote_branches_for_remote(
         &self,
         repo_path: &Path,

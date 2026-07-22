@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 pub struct Worktree {
     pub path: PathBuf,
     pub branch: Option<String>,
-    pub is_main: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -22,12 +21,6 @@ pub struct ScanWarning {
     pub message: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RepoScan {
-    pub repos: Vec<Repo>,
-    pub warnings: Vec<ScanWarning>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -40,7 +33,6 @@ mod tests {
             worktrees: vec![Worktree {
                 path: PathBuf::from("/tmp/demo"),
                 branch: Some("main".to_string()),
-                is_main: true,
             }],
         };
 

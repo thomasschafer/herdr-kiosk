@@ -45,7 +45,7 @@ fallback() {
         exit 1
     fi
 
-    (cd "$REPO_ROOT" && "$CARGO" build --release)
+    (cd "$REPO_ROOT" && "$CARGO" build --locked --release)
     built_out=${CARGO_TARGET_DIR:-"$REPO_ROOT/target"}/release/herdr-kiosk
     if [ "$built_out" != "$OUT" ]; then
         if [ ! -f "$built_out" ]; then

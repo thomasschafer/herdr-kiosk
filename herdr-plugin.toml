@@ -43,4 +43,4 @@ command = ["sh", "scripts/fetch-or-build.sh"]
 
 [[build]]
 platforms = ["windows"]
-command = ["cargo", "build", "--release"]
+command = ["cargo", "build", "--locked", "--release"]

@@ -24,8 +24,6 @@ use crate::{
     state::BranchEntry,
 };
 
-/// Bounds concurrent `git worktree list` enrichment calls for large scans.
-pub const ENRICHMENT_POOL_SIZE: usize = 8;
 /// Bounds concurrent remote fetches.
 pub const FETCH_POOL_SIZE: usize = 4;
 
@@ -99,22 +97,10 @@ pub fn spawn_repo_discovery(
             return;
         }
 
-        let enrichment_pool = ThreadPoolBuilder::new()
-            .num_threads(ENRICHMENT_POOL_SIZE)
-            .build()
-            .map(Arc::new);
-        if let Err(error) = &enrichment_pool {
-            sender.send(AppEvent::ScanWarning(ScanWarning {
-                path: PathBuf::new(),
-                message: format!("failed to create repository enrichment pool: {error}"),
-            }));
-        }
-
         thread::scope(|scope| {
             for (dir, depth) in &search_dirs {
                 let git = &git;
                 let sender = &sender;
-                let enrichment_pool = enrichment_pool.as_ref().ok().cloned();
                 scope.spawn(move || {
                     if sender.is_cancelled() {
                         return;
@@ -124,28 +110,7 @@ pub fn spawn_repo_discovery(
                             if sender.is_cancelled() {
                                 return;
                             }
-                            let repo_path = repo.path.clone();
                             sender.send(AppEvent::ReposFound { repo });
-                            if let Some(pool) = enrichment_pool.as_ref() {
-                                let git = Arc::clone(git);
-                                let sender = sender.clone();
-                                pool.spawn(move || match git.list_worktrees(&repo_path) {
-                                    Ok(worktrees) => {
-                                        sender.send(AppEvent::RepoEnriched {
-                                            repo_path,
-                                            worktrees,
-                                        });
-                                    }
-                                    Err(error) => {
-                                        sender.send(AppEvent::ScanWarning(ScanWarning {
-                                            path: repo_path,
-                                            message: format!(
-                                                "failed to enrich repository worktrees: {error:#}"
-                                            ),
-                                        }));
-                                    }
-                                });
-                            }
                         });
                     match result {
                         Ok(warnings) => {
@@ -164,7 +129,7 @@ pub fn spawn_repo_discovery(
             }
         });
 
-        sender.send(AppEvent::ScanComplete { search_dirs });
+        sender.send(AppEvent::ScanComplete);
     });
 }
 
@@ -231,8 +196,6 @@ pub fn spawn_branch_loading(
         let result = (|| {
             let local_names = git.list_branches(&repo.path)?;
             let default_branch = git.default_branch(&repo.path, &local_names)?;
-            // This listing is deliberately fresh. Repo discovery enrichment may be
-            // stale, and Enter relies on it for the open-vs-create decision.
             repo.worktrees = git.list_worktrees(&repo.path)?;
             let branches = BranchEntry::build_local(
                 &repo,
@@ -440,7 +403,7 @@ pub fn spawn_open_branch(
                 })
         } else {
             // Herdr create responses cannot distinguish creation from a race that focused a
-            // checkout added after enrichment, so that rare case may re-run on_open in v1.
+            // checkout added after listing, so that rare case may re-run on_open in v1.
             provider
                 .worktree_create(&WorktreeCreateRequest {
                     cwd: repo_path.clone(),
@@ -705,7 +668,7 @@ mod tests {
 
     use crate::{
         config::{OnOpenPaneConfig, OnOpenPaneDirection},
-        git::{Repo, mock::MockGitProvider},
+        git::{Repo, Worktree, mock::MockGitProvider},
         herdr::{
             AgentStatus, PaneInfo, PaneRunResponse, PaneSplitResponse, WorkspaceInfo, WorktreeInfo,
             WorktreeOpenResponse,
@@ -740,9 +703,103 @@ mod tests {
             },
         }));
         sender.cancel();
-        assert!(!sender.send(AppEvent::GitError("cancelled".into())));
+        assert!(!sender.send(AppEvent::ScanWarning(ScanWarning {
+            path: PathBuf::new(),
+            message: "cancelled".into(),
+        })));
         assert!(rx.recv_timeout(Duration::from_secs(1)).is_ok());
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn repo_discovery_streams_stubs_without_listing_worktrees() {
+        let git_mock = Arc::new(MockGitProvider {
+            repos: vec![Repo {
+                name: "repo".into(),
+                path: "/repo".into(),
+                worktrees: vec![Worktree {
+                    path: "/repo".into(),
+                    branch: Some("main".into()),
+                }],
+            }],
+            ..MockGitProvider::default()
+        });
+        let git: Arc<dyn GitProvider> = git_mock.clone();
+        let (tx, rx) = mpsc::channel();
+        let sender = EventSender::new(tx, Arc::new(AtomicBool::new(false)));
+
+        spawn_repo_discovery(&git, &sender, vec![("/search".into(), 1)]);
+
+        let AppEvent::ReposFound { repo } = rx.recv_timeout(Duration::from_secs(1)).unwrap() else {
+            panic!("repository was not streamed")
+        };
+        assert_eq!(repo.path, Path::new("/repo"));
+        assert!(repo.worktrees.is_empty());
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            AppEvent::ScanComplete
+        ));
+        assert!(git_mock.list_worktree_calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn branch_loading_uses_a_fresh_worktree_listing() {
+        let git_mock = Arc::new(MockGitProvider {
+            branches: vec!["main".into(), "feature".into()],
+            worktrees: vec![
+                Worktree {
+                    path: "/repo".into(),
+                    branch: Some("main".into()),
+                },
+                Worktree {
+                    path: "/repo-feature".into(),
+                    branch: Some("feature".into()),
+                },
+            ],
+            default_branch: Some("main".into()),
+            ..MockGitProvider::default()
+        });
+        let git: Arc<dyn GitProvider> = git_mock.clone();
+        let (tx, rx) = mpsc::channel();
+        let sender = EventSender::new(tx, Arc::new(AtomicBool::new(false)));
+
+        spawn_branch_loading(
+            &git,
+            &sender,
+            Repo {
+                name: "repo".into(),
+                path: "/repo".into(),
+                worktrees: Vec::new(),
+            },
+            Some("/repo-feature/src".into()),
+            7,
+        );
+
+        let AppEvent::BranchesLoaded {
+            repo_path,
+            generation,
+            branches,
+            worktrees,
+        } = rx.recv_timeout(Duration::from_secs(1)).unwrap()
+        else {
+            panic!("branches were not loaded")
+        };
+        assert_eq!(repo_path, Path::new("/repo"));
+        assert_eq!(generation, 7);
+        assert_eq!(worktrees.len(), 2);
+        let feature = branches
+            .iter()
+            .find(|branch| branch.name == "feature")
+            .unwrap();
+        assert_eq!(
+            feature.worktree_path.as_deref(),
+            Some(Path::new("/repo-feature"))
+        );
+        assert!(feature.is_current);
+        assert_eq!(
+            *git_mock.list_worktree_calls.lock().unwrap(),
+            [PathBuf::from("/repo")]
+        );
     }
 
     fn on_open_config() -> OnOpenConfig {

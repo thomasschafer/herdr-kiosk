@@ -10,8 +10,7 @@ use std::{
 use anyhow::{Result, bail};
 
 use super::{
-    DirtyWorktreeRequiresForce, GitProvider, LocalBranchAlreadyExists, Repo, RepoScan, ScanWarning,
-    Worktree,
+    DirtyWorktreeRequiresForce, GitProvider, LocalBranchAlreadyExists, Repo, ScanWarning, Worktree,
 };
 
 #[derive(Default)]
@@ -22,6 +21,7 @@ pub struct MockGitProvider {
     pub remote_branches: Vec<String>,
     pub remote_branches_by_remote: HashMap<String, Vec<String>>,
     pub worktrees: Vec<Worktree>,
+    pub list_worktree_calls: Mutex<Vec<PathBuf>>,
     pub remotes: Vec<String>,
     pub default_branch: Option<String>,
     pub failure: Mutex<Option<String>>,
@@ -46,38 +46,29 @@ impl MockGitProvider {
 }
 
 impl GitProvider for MockGitProvider {
-    fn scan_repos(&self, _dirs: &[(PathBuf, u16)]) -> Result<RepoScan> {
+    fn scan_repos_streaming(
+        &self,
+        _dir: &Path,
+        _depth: u16,
+        is_cancelled: &dyn Fn() -> bool,
+        on_found: &dyn Fn(Repo),
+    ) -> Result<Vec<ScanWarning>> {
         self.check_failure()?;
-        Ok(RepoScan {
-            repos: self
-                .repos
-                .iter()
-                .cloned()
-                .map(|repo| Repo {
-                    worktrees: Vec::new(),
-                    ..repo
-                })
-                .collect(),
-            warnings: self.scan_warnings.clone(),
-        })
-    }
-
-    fn discover_repos(&self, _dirs: &[(PathBuf, u16)]) -> Result<RepoScan> {
-        self.check_failure()?;
-        Ok(RepoScan {
-            repos: self.repos.clone(),
-            warnings: self.scan_warnings.clone(),
-        })
+        for repo in &self.repos {
+            if is_cancelled() {
+                break;
+            }
+            on_found(Repo {
+                worktrees: Vec::new(),
+                ..repo.clone()
+            });
+        }
+        Ok(self.scan_warnings.clone())
     }
 
     fn list_branches(&self, _repo_path: &Path) -> Result<Vec<String>> {
         self.check_failure()?;
         Ok(self.branches.clone())
-    }
-
-    fn list_remote_branches(&self, _repo_path: &Path) -> Result<Vec<String>> {
-        self.check_failure()?;
-        Ok(self.remote_branches.clone())
     }
 
     fn list_remote_branches_for_remote(
@@ -93,8 +84,12 @@ impl GitProvider for MockGitProvider {
             .unwrap_or_else(|| self.remote_branches.clone()))
     }
 
-    fn list_worktrees(&self, _repo_path: &Path) -> Result<Vec<Worktree>> {
+    fn list_worktrees(&self, repo_path: &Path) -> Result<Vec<Worktree>> {
         self.check_failure()?;
+        self.list_worktree_calls
+            .lock()
+            .unwrap()
+            .push(repo_path.to_path_buf());
         Ok(self.worktrees.clone())
     }
 

@@ -281,7 +281,6 @@ pub struct AppState {
     pub branch_filter_generation: u64,
     pub branch_view_generation: u64,
     pub open_worktrees: Vec<WorktreeInfo>,
-    pub open_worktrees_repo: Option<PathBuf>,
     pub open_worktree_load_state: OpenWorktreeLoadState,
     pub remote_branches: BTreeMap<String, Vec<BranchEntry>>,
     pub fetching_remote_repo: Option<PathBuf>,
@@ -314,7 +313,6 @@ impl AppState {
             branch_filter_generation: 0,
             branch_view_generation: 0,
             open_worktrees: Vec::new(),
-            open_worktrees_repo: None,
             open_worktree_load_state: OpenWorktreeLoadState::Unknown,
             remote_branches: BTreeMap::new(),
             fetching_remote_repo: None,
@@ -896,12 +894,10 @@ mod tests {
                 Worktree {
                     path: "/repo".into(),
                     branch: Some("main".into()),
-                    is_main: true,
                 },
                 Worktree {
                     path: "/repo-feature".into(),
                     branch: Some("feature".into()),
-                    is_main: false,
                 },
             ],
         };
@@ -943,7 +939,6 @@ mod tests {
         repo.worktrees.push(Worktree {
             path: "/repo".into(),
             branch: Some("main".into()),
-            is_main: true,
         });
         let entries = BranchEntry::build_local(
             &repo,

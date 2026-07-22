@@ -11,8 +11,8 @@ use std::{
 use anyhow::{Context, Result, bail};
 
 use super::{
-    DirtyWorktreeRequiresForce, GitProvider, LocalBranchAlreadyExists, Repo, RepoScan, ScanWarning,
-    Worktree, parse_worktree_porcelain,
+    DirtyWorktreeRequiresForce, GitProvider, LocalBranchAlreadyExists, Repo, ScanWarning, Worktree,
+    parse_worktree_porcelain,
 };
 
 const GIT_DIR_ENTRY: &str = ".git";
@@ -25,10 +25,6 @@ const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(25);
 pub struct CliGitProvider;
 
 impl GitProvider for CliGitProvider {
-    fn scan_repos(&self, dirs: &[(PathBuf, u16)]) -> Result<RepoScan> {
-        self.scan_dirs(dirs, false)
-    }
-
     fn scan_repos_streaming(
         &self,
         dir: &Path,
@@ -46,21 +42,9 @@ impl GitProvider for CliGitProvider {
         })
     }
 
-    fn discover_repos(&self, dirs: &[(PathBuf, u16)]) -> Result<RepoScan> {
-        self.scan_dirs(dirs, true)
-    }
-
     fn list_branches(&self, repo_path: &Path) -> Result<Vec<String>> {
         let output = run_git(repo_path, ["branch", "--format=%(refname:short)"])?;
         Ok(lines(&output.stdout))
-    }
-
-    fn list_remote_branches(&self, repo_path: &Path) -> Result<Vec<String>> {
-        let mut branches = Vec::new();
-        for remote in self.list_remotes(repo_path)? {
-            branches.extend(self.list_remote_branches_for_remote(repo_path, &remote)?);
-        }
-        Ok(branches)
     }
 
     fn list_remote_branches_for_remote(
@@ -208,35 +192,6 @@ impl GitProvider for CliGitProvider {
 }
 
 impl CliGitProvider {
-    fn scan_dirs(&self, dirs: &[(PathBuf, u16)], with_worktrees: bool) -> Result<RepoScan> {
-        let mut repos = Vec::new();
-        let mut warnings = Vec::new();
-        for (dir, depth) in dirs {
-            let mut enrichment_warnings = Vec::new();
-            let walk_warnings = walk_repos(dir, *depth, &mut |path| {
-                if with_worktrees {
-                    match self.build_repo(path) {
-                        Ok(Some(repo)) => repos.push(repo),
-                        Ok(None) => {}
-                        Err(error) => enrichment_warnings.push(ScanWarning {
-                            path: path.to_path_buf(),
-                            message: format!("failed to enrich repository: {error:#}"),
-                        }),
-                    }
-                } else if let Some(repo) = Self::build_repo_stub(path) {
-                    repos.push(repo);
-                }
-            })?;
-            warnings.extend(walk_warnings);
-            warnings.append(&mut enrichment_warnings);
-        }
-
-        let mut seen_paths = HashSet::new();
-        repos.retain(|repo| seen_paths.insert(repo.path.clone()));
-        repos.sort_by_cached_key(|repo| repo.name.to_lowercase());
-        Ok(RepoScan { repos, warnings })
-    }
-
     fn build_repo_stub(path: &Path) -> Option<Repo> {
         Some(Repo {
             name: path.file_name()?.to_string_lossy().into_owned(),
@@ -244,23 +199,6 @@ impl CliGitProvider {
             worktrees: Vec::new(),
         })
     }
-
-    fn build_repo(&self, path: &Path) -> Result<Option<Repo>> {
-        let Some(mut repo) = Self::build_repo_stub(path) else {
-            return Ok(None);
-        };
-        repo.worktrees = self.list_worktrees(path)?;
-        Ok(Some(repo))
-    }
-}
-
-/// Walk a directory tree to `depth` without descending into repositories.
-pub fn walk_repos(
-    dir: &Path,
-    depth: u16,
-    on_repo: &mut dyn FnMut(&Path),
-) -> Result<Vec<ScanWarning>> {
-    walk_repos_with_cancel(dir, depth, &|| false, on_repo)
 }
 
 fn walk_repos_with_cancel(
@@ -575,27 +513,31 @@ mod tests {
         repo
     }
 
+    fn scan_streaming(
+        provider: &CliGitProvider,
+        dir: &Path,
+        depth: u16,
+    ) -> Result<(Vec<Repo>, Vec<ScanWarning>)> {
+        let repos = RefCell::new(Vec::new());
+        let warnings = provider.scan_repos_streaming(dir, depth, &|| false, &|repo| {
+            repos.borrow_mut().push(repo);
+        })?;
+        Ok((repos.into_inner(), warnings))
+    }
+
     #[test]
-    fn scans_and_discovers_real_repositories() {
+    fn streaming_discovery_emits_repo_stubs_without_worktrees() {
         let temp = TempDir::new().unwrap();
         let repo = repo_fixture(temp.path(), "my-repo");
         fs::create_dir(temp.path().join("not-a-repo")).unwrap();
         let provider = CliGitProvider;
 
-        let scanned = provider
-            .scan_repos(&[(temp.path().to_path_buf(), 1)])
-            .unwrap();
-        assert!(scanned.warnings.is_empty());
-        assert_eq!(scanned.repos.len(), 1);
-        assert_eq!(scanned.repos[0].name, "my-repo");
-        assert!(scanned.repos[0].worktrees.is_empty());
-
-        let discovered = provider
-            .discover_repos(&[(temp.path().to_path_buf(), 1)])
-            .unwrap();
-        assert!(discovered.warnings.is_empty());
-        assert_eq!(discovered.repos[0].path, fs::canonicalize(repo).unwrap());
-        assert_eq!(discovered.repos[0].worktrees.len(), 1);
+        let (repos, warnings) = scan_streaming(&provider, temp.path(), 1).unwrap();
+        assert!(warnings.is_empty());
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].name, "my-repo");
+        assert_eq!(repos[0].path, fs::canonicalize(repo).unwrap());
+        assert!(repos[0].worktrees.is_empty());
     }
 
     #[test]
@@ -607,18 +549,13 @@ mod tests {
         let provider = CliGitProvider;
 
         assert!(
-            provider
-                .scan_repos(&[(temp.path().to_path_buf(), 1)])
+            scan_streaming(&provider, temp.path(), 1)
                 .unwrap()
-                .repos
+                .0
                 .is_empty()
         );
         assert_eq!(
-            provider
-                .scan_repos(&[(temp.path().to_path_buf(), 2)])
-                .unwrap()
-                .repos
-                .len(),
+            scan_streaming(&provider, temp.path(), 2).unwrap().0.len(),
             1
         );
 
@@ -626,11 +563,7 @@ mod tests {
         fs::create_dir_all(&child).unwrap();
         init_test_repo(&child);
         assert_eq!(
-            provider
-                .scan_repos(&[(temp.path().to_path_buf(), 3)])
-                .unwrap()
-                .repos
-                .len(),
+            scan_streaming(&provider, temp.path(), 3).unwrap().0.len(),
             1
         );
     }
@@ -645,26 +578,6 @@ mod tests {
             &["worktree", "add", linked.to_str().unwrap(), "feat/worktree"],
         );
         (temp, repo)
-    }
-
-    #[test]
-    fn batch_scan_deduplicates_linked_worktree_paths() {
-        let (temp, repo) = linked_worktree_fixture();
-        let provider = CliGitProvider;
-
-        for repos in [
-            provider
-                .scan_repos(&[(temp.path().to_path_buf(), 1)])
-                .unwrap()
-                .repos,
-            provider
-                .discover_repos(&[(temp.path().to_path_buf(), 1)])
-                .unwrap()
-                .repos,
-        ] {
-            assert_eq!(repos.len(), 1, "linked worktree must be deduplicated");
-            assert_eq!(repos[0].path, fs::canonicalize(&repo).unwrap());
-        }
     }
 
     #[test]
@@ -718,12 +631,6 @@ mod tests {
                 .list_remote_branches_for_remote(&source, "upstream")
                 .unwrap(),
             ["main"]
-        );
-        assert!(
-            provider
-                .list_remote_branches(&source)
-                .unwrap()
-                .contains(&"main".into())
         );
     }
 
@@ -885,7 +792,12 @@ mod tests {
     fn missing_search_directory_is_an_error() {
         let provider = CliGitProvider;
         let error = provider
-            .scan_repos(&[(PathBuf::from("/definitely/not/here/herdr-kiosk"), 1)])
+            .scan_repos_streaming(
+                Path::new("/definitely/not/here/herdr-kiosk"),
+                1,
+                &|| false,
+                &|_| {},
+            )
             .unwrap_err();
         assert!(
             error
@@ -905,12 +817,10 @@ mod tests {
         let repo = repo_fixture(&container, "repo");
         symlink(&container, container.join("loop")).unwrap();
 
-        let scan = CliGitProvider
-            .scan_repos(&[(temp.path().to_path_buf(), u16::MAX)])
-            .unwrap();
+        let (repos, _) = scan_streaming(&CliGitProvider, temp.path(), u16::MAX).unwrap();
 
-        assert_eq!(scan.repos.len(), 1);
-        assert_eq!(scan.repos[0].path, fs::canonicalize(repo).unwrap());
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].path, fs::canonicalize(repo).unwrap());
     }
 
     #[cfg(unix)]
@@ -923,12 +833,10 @@ mod tests {
         repo_fixture(outside.path(), "hidden-repo");
         symlink(outside.path(), temp.path().join("linked")).unwrap();
 
-        let scan = CliGitProvider
-            .scan_repos(&[(temp.path().to_path_buf(), 2)])
-            .unwrap();
+        let (repos, warnings) = scan_streaming(&CliGitProvider, temp.path(), 2).unwrap();
 
-        assert!(scan.repos.is_empty());
-        assert!(scan.warnings.is_empty());
+        assert!(repos.is_empty());
+        assert!(warnings.is_empty());
     }
 
     #[test]
@@ -985,48 +893,15 @@ mod tests {
             return;
         }
 
-        let scan = CliGitProvider
-            .scan_repos(&[(temp.path().to_path_buf(), 2)])
-            .unwrap();
-        assert_eq!(scan.repos.len(), 1);
-        assert_eq!(scan.repos[0].name, "good-repo");
+        let (repos, warnings) = scan_streaming(&CliGitProvider, temp.path(), 2).unwrap();
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].name, "good-repo");
         assert!(
-            scan.warnings.iter().any(|warning| {
+            warnings.iter().any(|warning| {
                 warning.path == unreadable
                     && warning.message.contains("failed to read nested directory")
             }),
-            "warnings were: {:?}",
-            scan.warnings
-        );
-    }
-
-    #[test]
-    fn broken_repo_warns_and_does_not_abort_discovery() {
-        let temp = TempDir::new().unwrap();
-        let good_repo = repo_fixture(temp.path(), "good-repo");
-        let broken_repo = temp.path().join("broken-repo");
-        fs::create_dir(&broken_repo).unwrap();
-        fs::write(
-            broken_repo.join(".git"),
-            "gitdir: /definitely/missing/herdr-kiosk/gitdir\n",
-        )
-        .unwrap();
-
-        let scan = CliGitProvider
-            .discover_repos(&[(temp.path().to_path_buf(), 1)])
-            .unwrap();
-        assert_eq!(scan.repos.len(), 1);
-        assert_eq!(scan.repos[0].path, fs::canonicalize(good_repo).unwrap());
-        assert!(
-            scan.warnings.iter().any(|warning| {
-                warning
-                    .path
-                    .file_name()
-                    .is_some_and(|name| name == "broken-repo")
-                    && warning.message.contains("failed to enrich repository")
-            }),
-            "warnings were: {:?}",
-            scan.warnings
+            "warnings were: {warnings:?}"
         );
     }
 }

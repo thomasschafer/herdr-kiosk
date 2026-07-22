@@ -3,12 +3,12 @@ pub mod mock;
 mod provider;
 mod repo;
 
-pub use cli::{CliGitProvider, walk_repos};
+pub use cli::CliGitProvider;
 pub use provider::{
     DirtyWorktreeRequiresForce, GitProvider, LocalBranchAlreadyExists,
     is_dirty_worktree_requires_force, is_local_branch_already_exists,
 };
-pub use repo::{Repo, RepoScan, ScanWarning, Worktree};
+pub use repo::{Repo, ScanWarning, Worktree};
 
 use anyhow::{Context, Result};
 
@@ -21,7 +21,6 @@ pub fn parse_worktree_porcelain(output: &[u8]) -> Result<Vec<Worktree>> {
     let mut worktrees = Vec::new();
     let mut current_path = None;
     let mut current_branch = None;
-    let mut is_first = true;
 
     for field in output.split(|byte| *byte == 0) {
         if let Some(path) = field.strip_prefix(b"worktree ") {
@@ -35,9 +34,7 @@ pub fn parse_worktree_porcelain(output: &[u8]) -> Result<Vec<Worktree>> {
                 worktrees.push(Worktree {
                     path: previous_path,
                     branch: current_branch.take(),
-                    is_main: is_first,
                 });
-                is_first = false;
             }
         } else if let Some(branch) = field.strip_prefix(b"branch refs/heads/") {
             current_branch = Some(
@@ -50,9 +47,7 @@ pub fn parse_worktree_porcelain(output: &[u8]) -> Result<Vec<Worktree>> {
                 worktrees.push(Worktree {
                     path,
                     branch: current_branch.take(),
-                    is_main: is_first,
                 });
-                is_first = false;
             }
             current_branch = None;
         }
@@ -62,7 +57,6 @@ pub fn parse_worktree_porcelain(output: &[u8]) -> Result<Vec<Worktree>> {
         worktrees.push(Worktree {
             path,
             branch: current_branch,
-            is_main: is_first,
         });
     }
 
@@ -81,9 +75,7 @@ mod tests {
         let worktrees = parse_worktree_porcelain(output).unwrap();
         assert_eq!(worktrees.len(), 2);
         assert_eq!(worktrees[0].path, PathBuf::from("/home/user/project"));
-        assert!(worktrees[0].is_main);
         assert_eq!(worktrees[1].branch.as_deref(), Some("feat/thing"));
-        assert!(!worktrees[1].is_main);
     }
 
     #[test]

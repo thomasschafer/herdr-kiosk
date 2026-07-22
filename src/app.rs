@@ -258,19 +258,7 @@ struct TickChanges {
 fn process_app_event(event: AppEvent, state: &mut AppState, changes: &mut TickChanges) {
     match event {
         AppEvent::ReposFound { repo } => changes.repos_changed |= add_repo(state, repo),
-        AppEvent::RepoEnriched {
-            repo_path,
-            worktrees,
-        } => {
-            if let Some(entry) = state
-                .repos
-                .iter_mut()
-                .find(|entry| entry.repo.path == repo_path)
-            {
-                entry.repo.worktrees = worktrees;
-            }
-        }
-        AppEvent::ScanComplete { .. } => {
+        AppEvent::ScanComplete => {
             state.loading_repos = false;
             changes.collision_pass = true;
         }
@@ -467,7 +455,6 @@ fn process_app_event(event: AppEvent, state: &mut AppState, changes: &mut TickCh
             worktrees,
         } if branch_context_generation_matches(state, &repo_path, generation) => {
             state.open_worktrees = worktrees;
-            state.open_worktrees_repo = Some(repo_path.clone());
             state.open_worktree_load_state = OpenWorktreeLoadState::Loaded {
                 repo_path,
                 generation,
@@ -482,7 +469,6 @@ fn process_app_event(event: AppEvent, state: &mut AppState, changes: &mut TickCh
             message,
         } if branch_context_generation_matches(state, &repo_path, generation) => {
             state.open_worktrees.clear();
-            state.open_worktrees_repo = None;
             state.open_worktree_load_state = OpenWorktreeLoadState::Failed {
                 repo_path,
                 generation,
@@ -583,7 +569,6 @@ fn process_app_event(event: AppEvent, state: &mut AppState, changes: &mut TickCh
                     state.loading_branches = true;
                     state.reset_remote_branches();
                     state.open_worktrees.clear();
-                    state.open_worktrees_repo = None;
                     state.open_worktree_load_state = OpenWorktreeLoadState::Unknown;
                     if let Some(branch) = state
                         .branches
@@ -627,7 +612,7 @@ fn process_app_event(event: AppEvent, state: &mut AppState, changes: &mut TickCh
                 }
             }
         }
-        AppEvent::OpenWorkspacesFailed(message) | AppEvent::GitError(message) => {
+        AppEvent::OpenWorkspacesFailed(message) => {
             state.push_toast(ToastKind::Warning, message);
         }
         _ => {}
@@ -1291,7 +1276,6 @@ fn begin_branch_select(
     state.branches.clear();
     state.branch_list = SearchableList::new(0);
     state.open_worktrees.clear();
-    state.open_worktrees_repo = None;
     state.open_worktree_load_state = OpenWorktreeLoadState::Unknown;
     state.loading_branches = true;
     state.reset_remote_branches();
@@ -2291,7 +2275,6 @@ mod tests {
             worktrees: vec![Worktree {
                 path: "/repo".into(),
                 branch: Some("main".into()),
-                is_main: true,
             }],
             ..MockGitProvider::default()
         }) as Arc<dyn GitProvider>;
@@ -3105,7 +3088,6 @@ mod tests {
         state.repos[0].repo.worktrees.push(Worktree {
             path: "/repo-feature".into(),
             branch: Some("feature".into()),
-            is_main: false,
         });
         state
             .in_flight_worktree_removals

@@ -79,7 +79,7 @@ printf '%064d  %s\n' 0 "$ASSET" >"$BASE/SHA256SUMS"
 run_installer 2>"$TEST_ROOT/no-asset.err"
 grep -Fq "could not download $ASSET" "$TEST_ROOT/no-asset.err"
 grep -Fq 'building from source' "$TEST_ROOT/no-asset.err"
-grep -Fq 'cargo build --release' "$TEST_ROOT/cargo.log"
+grep -Fq 'cargo build --locked --release' "$TEST_ROOT/cargo.log"
 printf 'fallback when no asset: ok\n'
 
 printf 'downloaded but corrupt\n' >"$BASE/$ASSET"
@@ -87,7 +87,7 @@ printf '%064d  %s\n' 0 "$ASSET" >"$BASE/SHA256SUMS"
 rm -f "$TEST_ROOT/cargo.log" "$TEST_ROOT/out/herdr-kiosk"
 run_installer 2>"$TEST_ROOT/mismatch.err"
 grep -Fq 'checksum mismatch' "$TEST_ROOT/mismatch.err"
-grep -Fq 'cargo build --release' "$TEST_ROOT/cargo.log"
+grep -Fq 'cargo build --locked --release' "$TEST_ROOT/cargo.log"
 printf 'checksum mismatch falls back: ok\n'
 
 printf '#!/bin/sh\nprintf "stubbed release binary\\n"\n' >"$BASE/$ASSET"
