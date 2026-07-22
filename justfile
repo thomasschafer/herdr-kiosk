@@ -10,6 +10,9 @@ lint:
 test:
     cargo test
 
+readme:
+    cargo run --example update-readme
+
 e2e:
     ./scripts/e2e.sh
 

@@ -47,43 +47,9 @@ GitHub.
 
 ## Usage
 
-The repository view fuzzy-filters discovered repositories. Press `enter` to open
-the selected repository's main checkout, or `tab` to switch to its branch view.
-The branch view combines local branches, remote-only branches, and existing
-worktrees; `enter` focuses an existing checkout or asks Herdr to create and focus a
-new worktree.
-
-Default bindings:
-
-| Key | Where | Action |
-| --- | --- | --- |
-| `ctrl+c` | Anywhere | Quit the picker |
-| `ctrl+h` | Anywhere | Show active bindings |
-| `ctrl+x` | Notification | Dismiss the notification |
-| `↑` / `ctrl+p` | Lists | Move up |
-| `↓` / `ctrl+n` | Lists | Move down |
-| `esc` | Search | Clear the query |
-| `backspace` | Search | Delete the previous character |
-| `alt+backspace` / `ctrl+w` | Search | Delete the previous word |
-| `←` / `→` | Search | Move the cursor |
-| `enter` | Repository view | Open the main checkout |
-| `tab` | Repository view | Show branches |
-| `q` | Repository view | Quit |
-| `enter` | Branch view | Open or create the selected checkout |
-| `esc` | Branch view | Return to repositories |
-| `ctrl+o` | Branch view | Create a new branch |
-| `ctrl+x` | Branch view | Delete the selected checkout |
-| `enter` / `esc` | Dialogs | Confirm / cancel |
-
-The `ctrl+h` overlay shows the active bindings for the current view, including
-configuration overrides. Type there to fuzzy-filter by key, command, or description;
-`esc` closes help without changing the picker query underneath.
-
-To create a branch, type its new name in the branch view and press `ctrl+o`, then
-choose the base branch. Deletion removes a Herdr-created linked worktree but keeps
-the Git branch. The main checkout and remote-only branches cannot be deleted. An
-open checkout closes its Herdr workspace first, and a dirty checkout requires a
-second confirmation.
+Type to fuzzy-search repositories and branches. `enter` opens the selected checkout,
+`tab` opens the selected repository's branch view, and `ctrl+h` shows all active
+bindings for the current view.
 
 ## Configuration
 
@@ -111,55 +77,59 @@ panes = [
 ]
 ```
 
-### Key bindings
+### `[keys]` section
 
-Bindings are layered, and each binding belongs in the section shown below. The
-repository, branch, and base-branch lists use the general, text-edit, and
-list-navigation layers. Repository and branch lists then add their matching view
-layer. The searchable base-branch list and confirmation dialogs use the modal
-layer; dialogs do not use the text-edit or list-navigation layers. A view or modal
-binding wins when it uses the same key as a shared binding.
+Bindings are configured under `[keys.<section>]`; defaults are shown below, and to
+unbind an inherited mapping, assign it to `noop`.
 
-| Default key | Action | Config section | Action name | Applies in |
-| --- | --- | --- | --- | --- |
-| `ctrl+c` | Quit the picker | `[keys.general]` | `quit` | All modes |
-| `ctrl+h` | Show active bindings | `[keys.general]` | `help` | Interactive views |
-| `ctrl+x` | Dismiss the visible notification | `[keys.general]` | `dismiss_toast` | All modes with a notification |
-| `esc` | Clear the search query | `[keys.text_edit]` | `clear` | List views unless overridden below |
-| `backspace` | Delete the previous character | `[keys.text_edit]` | `backspace` | All list views |
-| `alt+backspace`, `ctrl+w` | Delete the previous word | `[keys.text_edit]` | `delete_word` | All list views |
-| `←` | Move the cursor left | `[keys.text_edit]` | `cursor_left` | All list views |
-| `→` | Move the cursor right | `[keys.text_edit]` | `cursor_right` | All list views |
-| `↑`, `ctrl+p` | Move selection up | `[keys.list_navigation]` | `move_up` | All list views |
-| `↓`, `ctrl+n` | Move selection down | `[keys.list_navigation]` | `move_down` | All list views |
-| `enter` | Confirm the selection | `[keys.modal]` | `open` | Base-branch list and dialogs |
-| `esc` | Go back or cancel | `[keys.modal]` | `back` | Base-branch list and dialogs |
-| `enter` | Open the main checkout | `[keys.repo_select]` | `open` | Repository list |
-| `tab` | Show repository branches | `[keys.repo_select]` | `branches_view` | Repository list |
-| `q` | Quit the picker | `[keys.repo_select]` | `quit` | Repository list when the query is empty |
-| `enter` | Open or create the selected checkout | `[keys.branch_select]` | `open` | Branch list |
-| `esc` | Return to repositories | `[keys.branch_select]` | `back` | Branch list |
-| `ctrl+o` | Create a new branch | `[keys.branch_select]` | `new_branch` | Branch list |
-| `ctrl+x` | Delete the selected checkout | `[keys.branch_select]` | `delete` | Branch list |
+<!-- KEYS:START -->
+```toml
+[keys.general]
+"ctrl+c" = "quit"
+"ctrl+h" = "help"
+"ctrl+x" = "dismiss_toast"
 
-For example, this moves “create a new branch” from `ctrl+o` to `ctrl+b`. User
-entries are merged with the defaults, so the `noop` entry is needed only to remove
-the old binding; all unrelated defaults remain in place.
+[keys.text_edit]
+"alt+backspace" = "delete_word"
+"backspace" = "backspace"
+"ctrl+w" = "delete_word"
+"esc" = "clear"
+"left" = "cursor_left"
+"right" = "cursor_right"
+
+[keys.list_navigation]
+"ctrl+n" = "move_down"
+"ctrl+p" = "move_up"
+"down" = "move_down"
+"up" = "move_up"
+
+[keys.modal]
+"enter" = "open"
+"esc" = "back"
+
+[keys.repo_select]
+"enter" = "open"
+"q" = "quit"
+"tab" = "branches_view"
+
+[keys.branch_select]
+"ctrl+o" = "new_branch"
+"ctrl+x" = "delete"
+"enter" = "open"
+"esc" = "back"
+
+```
+<!-- KEYS:END -->
+
+Chords use the lowercase `ctrl+`, `alt+`, and `shift+` modifier syntax.
+
+For example, this moves `new_branch` to `ctrl+b` and unbinds its inherited key:
 
 ```toml
 [keys.branch_select]
-"C-b" = "new_branch"
-"C-o" = "noop"
+"ctrl+b" = "new_branch"
+"ctrl+o" = "noop"
 ```
-
-Chords use `C-`/`Ctrl-`, `A-`/`Alt-`/`M-`, and `S-`/`Shift-` modifiers with a
-character or one of `enter`, `esc`, `tab`, `backspace`, `delete`, `up`, `down`,
-`left`, `right`, `home`, `end`, `pageup`, `pagedown`, and `space`. Canonical action
-names are `noop`, `quit`, `help`, `dismiss_toast`, `move_up`, `move_down`, `open`,
-`branches_view`, `back`, `new_branch`, `delete`, `clear`, `backspace`,
-`delete_word`, `cursor_left`, and `cursor_right`. The aliases `none`, `unbound`,
-`show_help`, `enter_repo`, `go_back`, `delete_worktree`, and `clear_query` are also
-accepted.
 
 The theme uses terminal palette colors rather than RGB values. Every field is
 optional; these are the defaults:

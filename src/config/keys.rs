@@ -1,4 +1,8 @@
-use std::{collections::HashMap, fmt, str::FromStr};
+use std::{
+    collections::HashMap,
+    fmt::{self, Write as _},
+    str::FromStr,
+};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -325,6 +329,75 @@ fn map(entries: &[(&str, Command)]) -> HashMap<KeyChord, Command> {
         .collect()
 }
 
+pub fn default_keys_toml() -> String {
+    let keys = KeysConfig::default();
+    let sections = [
+        ("general", &keys.general),
+        ("text_edit", &keys.text_edit),
+        ("list_navigation", &keys.list_navigation),
+        ("modal", &keys.modal),
+        ("repo_select", &keys.repo_select),
+        ("branch_select", &keys.branch_select),
+    ];
+    let mut output = String::from("```toml\n");
+    for (name, bindings) in sections {
+        let _ = writeln!(output, "[keys.{name}]");
+        let mut bindings = bindings.iter().collect::<Vec<_>>();
+        bindings.sort_by(|(left_key, left_command), (right_key, right_command)| {
+            config_key_name(left_key)
+                .cmp(&config_key_name(right_key))
+                .then_with(|| left_command.name().cmp(right_command.name()))
+        });
+        for (key, command) in bindings {
+            let _ = writeln!(
+                output,
+                "\"{}\" = \"{}\"",
+                escape_toml_string(&config_key_name(key)),
+                escape_toml_string(command.name())
+            );
+        }
+        output.push('\n');
+    }
+    output.push_str("```\n");
+    output
+}
+
+fn config_key_name(key: &KeyChord) -> String {
+    let mut output = String::new();
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        output.push_str("ctrl+");
+    }
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        output.push_str("alt+");
+    }
+    if key.modifiers.contains(KeyModifiers::SHIFT) {
+        output.push_str("shift+");
+    }
+    output.push_str(match key.code {
+        KeyCode::Char(' ') => "space",
+        KeyCode::Enter => "enter",
+        KeyCode::Esc => "esc",
+        KeyCode::Tab => "tab",
+        KeyCode::Backspace => "backspace",
+        KeyCode::Delete => "delete",
+        KeyCode::Up => "up",
+        KeyCode::Down => "down",
+        KeyCode::Left => "left",
+        KeyCode::Right => "right",
+        KeyCode::Home => "home",
+        KeyCode::End => "end",
+        KeyCode::PageUp => "pageup",
+        KeyCode::PageDown => "pagedown",
+        KeyCode::Char(character) => return format!("{output}{}", character.to_ascii_lowercase()),
+        _ => "unknown",
+    });
+    output
+}
+
+fn escape_toml_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 impl KeysConfig {
     fn from_raw(raw: RawKeysConfig) -> Result<Self, String> {
         let mut keys = Self::default();
@@ -515,6 +588,25 @@ impl<'de> Deserialize<'de> for KeysConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const KEYS_START: &str = "<!-- KEYS:START -->";
+    const KEYS_END: &str = "<!-- KEYS:END -->";
+
+    #[test]
+    fn readme_default_keys_are_current() {
+        let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))
+            .expect("read README.md");
+        let (_, after_start) = readme
+            .split_once(KEYS_START)
+            .expect("README keys start marker");
+        let (block, _) = after_start
+            .strip_prefix('\n')
+            .expect("newline after README keys start marker")
+            .split_once(KEYS_END)
+            .expect("README keys end marker");
+
+        assert_eq!(block, default_keys_toml());
+    }
 
     #[test]
     fn parses_and_displays_valid_chords() {

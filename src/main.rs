@@ -10,31 +10,17 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::{
-    config::ConfigWarning,
+use herdr_kiosk::{
+    app, components,
+    config::{self, ConfigWarning},
     context::PluginContext,
-    git::CliGitProvider,
+    git::{self, CliGitProvider},
     herdr::{CliHerdrProvider, HerdrProvider},
-    setup::{SetupState, SetupStep},
+    path, pending_delete,
+    setup::{self, SetupState, SetupStep},
     state::{AppState, ToastKind},
-    theme::Theme,
+    theme::{self, Theme},
 };
-
-pub mod app;
-pub mod components;
-pub mod config;
-pub mod context;
-pub mod event;
-pub mod git;
-pub mod herdr;
-pub mod keyboard;
-pub mod keymap;
-pub mod path;
-pub mod pending_delete;
-pub mod setup;
-pub mod spawn;
-pub mod state;
-pub mod theme;
 
 struct TerminalRestoreGuard;
 
@@ -235,7 +221,7 @@ fn handle_depth_key(state: &mut SetupState, key: KeyEvent, home: Option<&std::pa
 fn run_no_search_dirs(terminal: &mut DefaultTerminal, path: Option<&PathBuf>) -> Result<()> {
     let location = path.map_or_else(
         || "No trusted config path could be resolved.".to_string(),
-        |path| format!("Config path: {}", crate::path::display(path)),
+        |path| format!("Config path: {}", path::display(path)),
     );
     loop {
         terminal.draw(|frame| draw_no_search_dirs(frame, &location))?;
