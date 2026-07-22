@@ -24,6 +24,7 @@ use ratatui::{
 
 use crate::{
     components,
+    config::keys::{BindingMode, Command, KeysConfig},
     event::{AppEvent, FilterKey, FilterTarget, WorktreeRemovalOutcome},
     git::{GitProvider, Repo},
     herdr::HerdrProvider,
@@ -151,6 +152,7 @@ pub fn run(
     herdr: Option<&Arc<dyn HerdrProvider>>,
     search_dirs: Vec<(PathBuf, u16)>,
     theme: &Theme,
+    keys: &KeysConfig,
 ) -> Result<RunOutcome> {
     let (tx, rx) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
@@ -164,7 +166,7 @@ pub fn run(
     }
 
     let outcome = loop {
-        terminal.draw(|frame| draw(frame, state, theme, spinner_start))?;
+        terminal.draw(|frame| draw(frame, state, theme, keys, spinner_start))?;
 
         let mut changes = TickChanges::default();
         for app_event in rx.try_iter().take(MAX_EVENTS_PER_TICK) {
@@ -216,7 +218,7 @@ pub fn run(
             if key.kind != KeyEventKind::Press {
                 continue;
             }
-            let Some(action) = crate::keymap::resolve_action(key, state) else {
+            let Some(action) = crate::keymap::resolve_action(key, state, keys) else {
                 continue;
             };
             if let Some(outcome) =
@@ -636,6 +638,8 @@ fn process_action(
         Action::DismissToast => {
             state.toasts.pop_front();
         }
+        Action::ShowHelp => state.help_open = true,
+        Action::CloseHelp => state.help_open = false,
         Action::Noop => {}
     }
     None
@@ -1300,7 +1304,13 @@ fn cancel_overlay(state: &mut AppState) {
     }
 }
 
-fn draw(frame: &mut Frame, state: &mut AppState, theme: &Theme, spinner_start: Instant) {
+fn draw(
+    frame: &mut Frame,
+    state: &mut AppState,
+    theme: &Theme,
+    keys: &KeysConfig,
+    spinner_start: Instant,
+) {
     let loading_message = match &state.mode {
         Mode::Loading { message, .. } => Some(message.clone()),
         Mode::ValidatingNewBranch { name, .. } => Some(format!("Validating {name}…")),
@@ -1358,42 +1368,76 @@ fn draw(frame: &mut Frame, state: &mut AppState, theme: &Theme, spinner_start: I
             unreachable!("loading mode returned above")
         }
     }
-    let mut footer = vec![
-        Span::styled("↑/↓", Style::default().fg(theme.hint)),
-        Span::raw(" move  "),
-        Span::styled("Enter", Style::default().fg(theme.hint)),
-        Span::raw(" open  "),
-    ];
-    if matches!(state.mode, Mode::RepoSelect) {
-        footer.extend([
-            Span::styled("Tab", Style::default().fg(theme.hint)),
-            Span::raw(" branches  "),
-        ]);
-    }
-    if matches!(state.mode, Mode::BranchSelect(_)) {
-        footer.extend([
-            Span::styled("Ctrl+O", Style::default().fg(theme.hint)),
-            Span::raw(" new  "),
-            Span::styled("Ctrl+X", Style::default().fg(theme.hint)),
-            Span::raw(" delete  "),
-        ]);
-    }
-    let escape_hint = match state.mode {
-        Mode::BranchSelect(_) => "back",
-        Mode::SelectBaseBranch { .. } | Mode::ConfirmWorktreeDelete { .. } => "cancel",
-        _ => "clear/quit",
-    };
-    footer.extend([
-        Span::styled("Esc", Style::default().fg(theme.hint)),
-        Span::raw(format!(" {escape_hint}  ")),
-        Span::styled("Ctrl+C", Style::default().fg(theme.hint)),
-        Span::raw(" quit"),
-    ]);
+    let binding_mode = KeysConfig::mode_for(&state.mode);
+    let footer = footer_spans(keys, binding_mode, &state.mode, theme);
     frame.render_widget(
         Paragraph::new(Line::from(footer)).alignment(Alignment::Center),
         footer_area,
     );
     components::error_toast::draw(frame, frame.area(), state, theme);
+    if state.help_open {
+        components::help::draw(
+            frame,
+            frame.area(),
+            keys,
+            binding_mode,
+            !state.toasts.is_empty(),
+            theme,
+        );
+    }
+}
+
+fn footer_spans<'a>(
+    keys: &KeysConfig,
+    binding_mode: BindingMode,
+    mode: &Mode,
+    theme: &Theme,
+) -> Vec<Span<'a>> {
+    let mut hints = Vec::new();
+    let mut add = |command, label: &'static str| {
+        if let Some(key) = keys.first_key(binding_mode, command) {
+            if !hints.is_empty() {
+                hints.push(Span::raw("  "));
+            }
+            hints.push(Span::styled(
+                key.to_string(),
+                Style::default().fg(theme.hint),
+            ));
+            hints.push(Span::raw(format!(" {label}")));
+        }
+    };
+    if !matches!(binding_mode, BindingMode::Modal) {
+        add(Command::MoveUp, "move");
+    }
+    add(
+        Command::Open,
+        if matches!(
+            mode,
+            Mode::SelectBaseBranch { .. } | Mode::ConfirmWorktreeDelete { .. }
+        ) {
+            "confirm"
+        } else {
+            "open"
+        },
+    );
+    if matches!(mode, Mode::RepoSelect) {
+        add(Command::BranchesView, "branches");
+    }
+    if matches!(mode, Mode::BranchSelect(_)) {
+        add(Command::NewBranch, "new");
+        add(Command::Delete, "delete");
+    }
+    if matches!(
+        mode,
+        Mode::BranchSelect(_) | Mode::SelectBaseBranch { .. } | Mode::ConfirmWorktreeDelete { .. }
+    ) {
+        add(Command::Back, "back");
+    } else {
+        add(Command::Clear, "clear/quit");
+    }
+    add(Command::Help, "help");
+    add(Command::Quit, "quit");
+    hints
 }
 
 fn draw_delete_dialog(

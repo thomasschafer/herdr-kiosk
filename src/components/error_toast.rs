@@ -11,6 +11,10 @@ use crate::{
     theme::Theme,
 };
 
+fn queue_counter(length: usize) -> Option<String> {
+    (length > 1).then(|| format!("1/{length}"))
+}
+
 pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
     let Some(toast) = state.toasts.front() else {
         return;
@@ -27,6 +31,7 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
         ToastKind::Warning => ("Warning", theme.warning),
         ToastKind::Error => ("Error", theme.error),
     };
+    let counter = queue_counter(state.toasts.len()).map(|counter| format!("  {counter}"));
     let body = vec![
         Line::from(vec![
             Span::styled(
@@ -34,6 +39,10 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
             ),
             Span::raw(&toast.message),
+            Span::styled(
+                counter.unwrap_or_default(),
+                Style::default().fg(theme.muted),
+            ),
         ]),
         Line::raw(""),
         Line::from(vec![
@@ -54,4 +63,16 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
             .wrap(Wrap { trim: true }),
         toast_area,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::queue_counter;
+
+    #[test]
+    fn queue_counter_only_appears_for_pending_toasts() {
+        assert_eq!(queue_counter(0), None);
+        assert_eq!(queue_counter(1), None);
+        assert_eq!(queue_counter(3).as_deref(), Some("1/3"));
+    }
 }

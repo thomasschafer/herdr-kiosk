@@ -271,14 +271,27 @@ confirm, Esc cancel, plus Enter on a non-empty no-match branch query. Strict fmt
 Reviewed and independently verified (commit 7f68d5c); one review round: pending-delete
 state now honours `HERDR_PLUGIN_STATE_DIR` before the XDG/HOME fallback, sharing the
 config module's absolute-path trust helper. Known benign overlap for the M7 keys pass:
-Ctrl+X dismisses a visible toast before it means delete-checkout (make bindings
-configurable in M7).
+Ctrl+X dismisses a visible toast before it means delete-checkout. Resolved in M7 by
+making both bindings configurable while retaining dismiss precedence and documenting
+the active overlap in help whenever a toast is visible.
 
 ### M7 — wizard, config polish, UX finish
-- [ ] Setup wizard port (D9): first-run flow writing config to
+- [x] Setup wizard port (D9): first-run flow writing config to
   `$HERDR_PLUGIN_CONFIG_DIR/config.toml` (path completion, dir management as in kiosk).
-- [ ] `[keys]` in-TUI keybinding config; help overlay reflecting actual bindings.
-- [ ] Optional OSC 11 light/dark refinement (§6). Error-toast and edge-case polish pass.
+- [x] `[keys]` in-TUI keybinding config; help overlay reflecting actual bindings.
+- [x] Optional OSC 11 light/dark refinement (§6). Error-toast and edge-case polish pass.
+
+Implemented and locally verified: missing-vs-empty config distinction; welcome → repeated
+directory/path-completion → per-entry depth → confirmation wizard with abort safety and
+atomic guarded config installation; direct continuation into discovery; six slim key
+layers with kiosk-compatible chord syntax, validation, defaults plus overrides/noop;
+mode-specific help generated from effective bindings; bounded pre-ratatui OSC 11 probing
+with 1–4 digit `rgb:` and six-digit `#` parsing; light-background muted-shade refinement;
+binding-derived footers and queued-toast counters. The checked kiosk source uses `C-h`
+for help before its printable-character fallback, so `?` remains searchable here too.
+Strict fmt/clippy, 118 unit tests plus the startup integration test, and the full M3–M7
+tmux e2e pass, including first-run/relaunch, the explicit-empty-config path, remapped
+`Ctrl+B`, help content, and Esc return.
 
 ### M8 — Windows (early, then parity forever after)
 - [ ] Re-verify the file-viewer Windows findings against current herdr: relative pane

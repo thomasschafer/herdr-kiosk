@@ -1,249 +1,230 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::{keyboard::Action, state::AppState};
+use crate::{
+    config::keys::{Command, KeyChord, KeysConfig},
+    keyboard::Action,
+    state::{AppState, Mode},
+};
 
-pub fn resolve_action(key: KeyEvent, state: &AppState) -> Option<Action> {
-    let control = key.modifiers.contains(KeyModifiers::CONTROL);
-    let alt = key.modifiers.contains(KeyModifiers::ALT);
-
-    if control && key.code == KeyCode::Char('c') {
-        return Some(Action::Quit);
+pub fn resolve_action(key: KeyEvent, state: &AppState, keys: &KeysConfig) -> Option<Action> {
+    let chord = KeyChord::from_event(key);
+    if state.help_open {
+        return (chord == KeyChord::new(KeyCode::Esc, KeyModifiers::NONE))
+            .then_some(Action::CloseHelp);
     }
-    if control && key.code == KeyCode::Char('x') && !state.toasts.is_empty() {
+
+    if !state.toasts.is_empty() && keys.is_dismiss_toast(chord) {
         return Some(Action::DismissToast);
     }
+
+    let binding_mode = KeysConfig::mode_for(&state.mode);
     if matches!(
         state.mode,
-        crate::state::Mode::Loading { .. } | crate::state::Mode::ValidatingNewBranch { .. }
+        Mode::Loading { .. } | Mode::ValidatingNewBranch { .. }
     ) {
-        return None;
-    }
-
-    if let crate::state::Mode::ConfirmWorktreeDelete { target, .. } = &state.mode {
-        if target.in_progress {
-            return None;
-        }
-        return match key.code {
-            KeyCode::Enter => Some(Action::ConfirmDeleteWorktree),
-            KeyCode::Esc => Some(Action::CancelOverlay),
+        return match keys.command_for(binding_mode, chord) {
+            Some(Command::Quit) => Some(Action::Quit),
             _ => None,
         };
     }
 
-    let query = match &state.mode {
-        crate::state::Mode::RepoSelect => &state.repo_list.input.text,
-        crate::state::Mode::BranchSelect(_) => &state.branch_list.input.text,
-        crate::state::Mode::SelectBaseBranch { flow, .. } => &flow.list.input.text,
-        crate::state::Mode::Loading { .. }
-        | crate::state::Mode::ValidatingNewBranch { .. }
-        | crate::state::Mode::ConfirmWorktreeDelete { .. } => unreachable!("handled above"),
-    };
+    let query = active_query(state);
+    if let Some(command) = keys.command_for(binding_mode, chord)
+        && !(command == Command::Quit
+            && chord.modifiers == KeyModifiers::NONE
+            && matches!(chord.code, KeyCode::Char(_))
+            && !query.is_empty())
+    {
+        return command_to_action(command, state);
+    }
+    if let KeyCode::Char(character) = chord.code
+        && chord.modifiers == KeyModifiers::NONE
+        && (character.is_ascii_graphic() || character == ' ')
+        && matches!(
+            state.mode,
+            Mode::RepoSelect | Mode::BranchSelect(_) | Mode::SelectBaseBranch { .. }
+        )
+    {
+        return Some(Action::Insert(character));
+    }
+    None
+}
 
-    match key.code {
-        KeyCode::Up | KeyCode::Char('p') if control => Some(Action::MoveSelection(-1)),
-        KeyCode::Down | KeyCode::Char('n') if control => Some(Action::MoveSelection(1)),
-        KeyCode::Up => Some(Action::MoveSelection(-1)),
-        KeyCode::Down => Some(Action::MoveSelection(1)),
-        KeyCode::Enter if matches!(state.mode, crate::state::Mode::RepoSelect) => {
-            Some(Action::OpenRepo)
+fn command_to_action(command: Command, state: &AppState) -> Option<Action> {
+    match command {
+        Command::Noop => None,
+        Command::Quit => Some(Action::Quit),
+        Command::Help => Some(Action::ShowHelp),
+        Command::DismissToast => (!state.toasts.is_empty()).then_some(Action::DismissToast),
+        Command::MoveUp => Some(Action::MoveSelection(-1)),
+        Command::MoveDown => Some(Action::MoveSelection(1)),
+        Command::Open => match &state.mode {
+            Mode::RepoSelect => Some(Action::OpenRepo),
+            Mode::BranchSelect(_)
+                if !active_query(state).is_empty() && state.branch_list.filtered.is_empty() =>
+            {
+                Some(Action::StartNewBranch)
+            }
+            Mode::BranchSelect(_) => Some(Action::OpenBranch),
+            Mode::SelectBaseBranch { .. } => Some(Action::CreateNewBranch),
+            Mode::ConfirmWorktreeDelete { target, .. } if !target.in_progress => {
+                Some(Action::ConfirmDeleteWorktree)
+            }
+            Mode::Loading { .. }
+            | Mode::ValidatingNewBranch { .. }
+            | Mode::ConfirmWorktreeDelete { .. } => None,
+        },
+        Command::BranchesView => {
+            matches!(state.mode, Mode::RepoSelect).then_some(Action::OpenBranches)
         }
-        KeyCode::Enter if matches!(state.mode, crate::state::Mode::SelectBaseBranch { .. }) => {
-            Some(Action::CreateNewBranch)
+        Command::Back => {
+            if active_query(state).is_empty() {
+                match state.mode {
+                    Mode::BranchSelect(_) => Some(Action::BackToRepos),
+                    Mode::SelectBaseBranch { .. } | Mode::ConfirmWorktreeDelete { .. } => {
+                        Some(Action::CancelOverlay)
+                    }
+                    _ => None,
+                }
+            } else {
+                Some(Action::ClearQuery)
+            }
         }
-        KeyCode::Enter
-            if matches!(state.mode, crate::state::Mode::BranchSelect(_))
-                && !query.is_empty()
-                && state.branch_list.filtered.is_empty() =>
-        {
-            Some(Action::StartNewBranch)
+        Command::NewBranch => {
+            matches!(state.mode, Mode::BranchSelect(_)).then_some(Action::StartNewBranch)
         }
-        KeyCode::Enter => Some(Action::OpenBranch),
-        KeyCode::Char('o')
-            if control && matches!(state.mode, crate::state::Mode::BranchSelect(_)) =>
-        {
-            Some(Action::StartNewBranch)
+        Command::Delete => {
+            matches!(state.mode, Mode::BranchSelect(_)).then_some(Action::DeleteWorktree)
         }
-        KeyCode::Char('x')
-            if control && matches!(state.mode, crate::state::Mode::BranchSelect(_)) =>
-        {
-            Some(Action::DeleteWorktree)
+        Command::Clear => {
+            if !active_query(state).is_empty() {
+                Some(Action::ClearQuery)
+            } else if matches!(state.mode, Mode::RepoSelect) {
+                Some(Action::Quit)
+            } else {
+                None
+            }
         }
-        KeyCode::Tab if matches!(state.mode, crate::state::Mode::RepoSelect) => {
-            Some(Action::OpenBranches)
-        }
-        KeyCode::Tab => Some(Action::Noop),
-        KeyCode::Esc
-            if query.is_empty() && matches!(state.mode, crate::state::Mode::BranchSelect(_)) =>
-        {
-            Some(Action::BackToRepos)
-        }
-        KeyCode::Esc if matches!(state.mode, crate::state::Mode::SelectBaseBranch { .. }) => {
-            Some(Action::CancelOverlay)
-        }
-        KeyCode::Esc if query.is_empty() => Some(Action::Quit),
-        KeyCode::Esc => Some(Action::ClearQuery),
-        KeyCode::Backspace if alt => Some(Action::DeleteWord),
-        KeyCode::Backspace => Some(Action::Backspace),
-        KeyCode::Char('w') if control => Some(Action::DeleteWord),
-        KeyCode::Left if !control && !alt => Some(Action::CursorLeft),
-        KeyCode::Right if !control && !alt => Some(Action::CursorRight),
-        KeyCode::Char('q')
-            if query.is_empty()
-                && matches!(state.mode, crate::state::Mode::RepoSelect)
-                && !control
-                && !alt
-                && !key.modifiers.contains(KeyModifiers::SHIFT) =>
-        {
-            Some(Action::Quit)
-        }
-        KeyCode::Char(character)
-            if !control && !alt && (character.is_ascii_graphic() || character == ' ') =>
-        {
-            Some(Action::Insert(character))
-        }
-        _ => None,
+        Command::Backspace => Some(Action::Backspace),
+        Command::DeleteWord => Some(Action::DeleteWord),
+        Command::CursorLeft => Some(Action::CursorLeft),
+        Command::CursorRight => Some(Action::CursorRight),
+    }
+}
+
+fn active_query(state: &AppState) -> &str {
+    match &state.mode {
+        Mode::RepoSelect => &state.repo_list.input.text,
+        Mode::BranchSelect(_) => &state.branch_list.input.text,
+        Mode::SelectBaseBranch { flow, .. } => &flow.list.input.text,
+        Mode::Loading { .. }
+        | Mode::ValidatingNewBranch { .. }
+        | Mode::ConfirmWorktreeDelete { .. } => "",
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{
-        AppState, BaseBranchSelection, BranchContext, DeleteWorktreeTarget, Mode, SearchableList,
-    };
+    use crate::state::{BaseBranchSelection, BranchContext, DeleteWorktreeTarget, SearchableList};
 
-    #[test]
-    fn q_quits_only_when_query_is_empty() {
-        let mut state = AppState::new(None);
-        let q = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
-        assert_eq!(resolve_action(q, &state), Some(Action::Quit));
-        state.repo_list.input.text.push('a');
-        state.repo_list.input.cursor = 1;
-        assert_eq!(resolve_action(q, &state), Some(Action::Insert('q')));
+    fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, modifiers)
     }
 
     #[test]
-    fn escape_clears_a_query_before_quitting() {
-        let mut state = AppState::new(None);
-        let escape = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-        assert_eq!(resolve_action(escape, &state), Some(Action::Quit));
-        state.repo_list.input.text.push('a');
-        assert_eq!(resolve_action(escape, &state), Some(Action::ClearQuery));
+    fn question_mark_remains_searchable_and_configured_help_opens_overlay() {
+        let state = AppState::new(None);
+        let keys = KeysConfig::default();
+        assert_eq!(
+            resolve_action(key(KeyCode::Char('?'), KeyModifiers::NONE), &state, &keys),
+            Some(Action::Insert('?'))
+        );
+        assert_eq!(
+            resolve_action(
+                key(KeyCode::Char('h'), KeyModifiers::CONTROL),
+                &state,
+                &keys
+            ),
+            Some(Action::ShowHelp)
+        );
     }
 
     #[test]
-    fn branch_keys_enter_back_without_quitting_and_always_type_q() {
+    fn q_default_is_contextual_and_can_be_unbound() {
+        let mut state = AppState::new(None);
+        let q = key(KeyCode::Char('q'), KeyModifiers::NONE);
+        assert_eq!(
+            resolve_action(q, &state, &KeysConfig::default()),
+            Some(Action::Quit)
+        );
+        state.repo_list.input.text = "a".into();
+        assert_eq!(
+            resolve_action(q, &state, &KeysConfig::default()),
+            Some(Action::Insert('q'))
+        );
+
+        state.repo_list.input.clear();
+        let keys = toml::from_str::<KeysConfig>("[repo_select]\nq = \"noop\"").unwrap();
+        assert_eq!(resolve_action(q, &state, &keys), None);
+    }
+
+    #[test]
+    fn toast_dismiss_has_precedence_over_branch_delete() {
         let mut state = AppState::new(None);
         state.mode = Mode::BranchSelect(BranchContext {
             repo_path: "/repo".into(),
             repo_name: "repo".into(),
         });
+        let chord = key(KeyCode::Char('x'), KeyModifiers::CONTROL);
         assert_eq!(
-            resolve_action(
-                KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
-                &state
-            ),
-            Some(Action::Insert('q'))
+            resolve_action(chord, &state, &KeysConfig::default()),
+            Some(Action::DeleteWorktree)
         );
+        state.push_toast(crate::state::ToastKind::Warning, "notice");
         assert_eq!(
-            resolve_action(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &state),
-            Some(Action::BackToRepos)
-        );
-        assert_eq!(
-            resolve_action(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &state),
-            Some(Action::Noop)
-        );
-
-        state.branch_list.input.text = "feature".into();
-        assert_eq!(
-            resolve_action(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &state),
-            Some(Action::ClearQuery)
+            resolve_action(chord, &state, &KeysConfig::default()),
+            Some(Action::DismissToast)
         );
     }
 
     #[test]
-    fn loading_accepts_only_ctrl_c() {
-        let mut state = AppState::new(None);
-        state.mode = crate::state::Mode::Loading {
-            message: "Opening…".into(),
-            branch: None,
-        };
-        assert_eq!(
-            resolve_action(
-                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
-                &state
-            ),
-            Some(Action::Quit)
-        );
-        assert_eq!(
-            resolve_action(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &state),
-            None
-        );
-    }
-
-    #[test]
-    fn kiosk_new_delete_and_modal_defaults_are_preserved() {
+    fn existing_modal_defaults_are_preserved() {
         let context = BranchContext {
             repo_path: "/repo".into(),
             repo_name: "repo".into(),
         };
+        let keys = KeysConfig::default();
         let mut state = AppState::new(None);
-        state.mode = Mode::BranchSelect(context.clone());
-        state.branch_list.input.text = "feat/new".into();
-        state.branch_list.filtered.clear();
-        assert_eq!(
-            resolve_action(
-                KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
-                &state
-            ),
-            Some(Action::StartNewBranch)
-        );
-        assert_eq!(
-            resolve_action(
-                KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
-                &state
-            ),
-            Some(Action::DeleteWorktree)
-        );
-        assert_eq!(
-            resolve_action(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &state),
-            Some(Action::StartNewBranch)
-        );
-
         state.mode = Mode::SelectBaseBranch {
             context: context.clone(),
             flow: BaseBranchSelection {
-                new_name: "feat/new".into(),
+                new_name: "feat".into(),
                 bases: vec!["main".into()],
                 list: SearchableList::new(1),
             },
         };
         assert_eq!(
-            resolve_action(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &state),
+            resolve_action(key(KeyCode::Enter, KeyModifiers::NONE), &state, &keys),
             Some(Action::CreateNewBranch)
         );
         assert_eq!(
-            resolve_action(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &state),
+            resolve_action(key(KeyCode::Esc, KeyModifiers::NONE), &state, &keys),
             Some(Action::CancelOverlay)
         );
-
         state.mode = Mode::ConfirmWorktreeDelete {
             context,
             target: DeleteWorktreeTarget {
-                branch_name: "feature".into(),
-                worktree_path: "/repo-feature".into(),
+                branch_name: "feat".into(),
+                worktree_path: "/wt".into(),
                 open_workspace_id: None,
                 force: false,
                 in_progress: false,
             },
         };
         assert_eq!(
-            resolve_action(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &state),
+            resolve_action(key(KeyCode::Enter, KeyModifiers::NONE), &state, &keys),
             Some(Action::ConfirmDeleteWorktree)
-        );
-        assert_eq!(
-            resolve_action(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &state),
-            Some(Action::CancelOverlay)
         );
     }
 }

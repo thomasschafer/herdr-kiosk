@@ -2,11 +2,11 @@
 set -euo pipefail
 
 PROJECT_ROOT=$(cd "$(dirname "$0")/.." && pwd)
-HK_ROOT=${HK_E2E_HOME:-/tmp/hk-m6}
+HK_ROOT=${HK_E2E_HOME:-/tmp/hk-m7}
 HERDR_BIN=${HERDR:-"$PROJECT_ROOT/../herdr/target/release/herdr"}
 HK_HOME_DIR="$HK_ROOT/home"
 TMUX_SOCKET="$HK_ROOT/tmux.sock"
-SESSION=hk-m6
+SESSION=hk-m7
 LAST_SCREEN="$HK_ROOT/last-screen.txt"
 CARGO_PATH=/Users/tomschafer/.cargo/bin:/etc/profiles/per-user/tomschafer/bin:/usr/bin:/bin:/usr/sbin:/sbin
 export PATH="$CARGO_PATH"
@@ -223,14 +223,6 @@ printf 'building plugin...\n'
 h plugin link "$PROJECT_ROOT" >/dev/null
 PLUGIN_CONFIG_DIR=$(h plugin config-dir thomasschafer.herdr-kiosk)
 mkdir -p "$PLUGIN_CONFIG_DIR"
-cat >"$PLUGIN_CONFIG_DIR/config.toml" <<EOF
-search_dirs = [
-  { path = "$HK_ROOT/repos/alpha", depth = 1 },
-  { path = "$HK_ROOT/repos/beta", depth = 1 },
-  { path = "$HK_ROOT/repos/deep/level-one", depth = 2 },
-  { path = "$HK_ROOT/repos/direct", depth = 1 },
-]
-EOF
 
 printf 'starting herdr...\n'
 t new-session -d -s "$SESSION" -x 200 -y 50 \
@@ -240,6 +232,58 @@ t send-keys -t "$SESSION" Enter
 sleep 0.5
 t send-keys -t "$SESSION" Escape
 sleep 0.5
+
+h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
+wait_screen_contains "Welcome to herdr-kiosk"
+t send-keys -t "$SESSION" Enter
+wait_screen_contains "Search directories"
+t send-keys -t "$SESSION" "$HK_ROOT/repos/direct"
+t send-keys -t "$SESSION" Enter
+wait_screen_contains "Scan depth"
+t send-keys -t "$SESSION" Enter
+wait_screen_contains "Search directories"
+t send-keys -t "$SESSION" Enter
+wait_screen_contains "Confirm setup"
+t send-keys -t "$SESSION" Enter
+wait_screen_contains "herdr-kiosk — select repo"
+wait_screen_contains "open-me"
+[ -f "$PLUGIN_CONFIG_DIR/config.toml" ] || fail "wizard did not create config.toml"
+grep -Fq "path = \"$HK_ROOT/repos/direct\"" "$PLUGIN_CONFIG_DIR/config.toml" \
+    || fail "wizard config did not contain fixture search directory"
+grep -Fq "depth = 1" "$PLUGIN_CONFIG_DIR/config.toml" \
+    || fail "wizard config did not contain selected depth"
+t send-keys -t "$SESSION" C-c
+wait_screen_absent "herdr-kiosk — select repo"
+
+h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
+wait_screen_contains "herdr-kiosk — select repo"
+assert_screen_absent "Welcome to herdr-kiosk"
+assert_screen_contains "open-me"
+t send-keys -t "$SESSION" C-c
+wait_screen_absent "herdr-kiosk — select repo"
+printf 'first-run wizard writes config, continues, and does not reappear: ok\n'
+
+printf 'search_dirs = []\n' >"$PLUGIN_CONFIG_DIR/config.toml"
+h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
+wait_screen_contains "No search directories configured"
+assert_screen_contains "$PLUGIN_CONFIG_DIR/config.toml"
+assert_screen_absent "Welcome to herdr-kiosk"
+t send-keys -t "$SESSION" C-c
+wait_screen_absent "No search directories configured"
+printf 'existing empty search_dirs keeps the explicit empty-config screen: ok\n'
+
+cat >"$PLUGIN_CONFIG_DIR/config.toml" <<EOF
+search_dirs = [
+  { path = "$HK_ROOT/repos/alpha", depth = 1 },
+  { path = "$HK_ROOT/repos/beta", depth = 1 },
+  { path = "$HK_ROOT/repos/deep/level-one", depth = 2 },
+  { path = "$HK_ROOT/repos/direct", depth = 1 },
+]
+
+[keys.branch_select]
+"C-b" = "new_branch"
+"C-o" = "noop"
+EOF
 
 h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
 wait_screen_contains "herdr-kiosk — select repo"
@@ -289,6 +333,15 @@ wait_screen_absent "loading…"
 assert_screen_line_contains_all "feature" "(worktree)"
 assert_screen_line_contains_all "master" "(worktree)" "*" "(default)"
 printf 'branch listing and markers: ok\n'
+
+t send-keys -t "$SESSION" C-h
+wait_screen_contains "Help — active key bindings"
+assert_screen_contains "Ctrl+B"
+assert_screen_contains "Create a new branch"
+t send-keys -t "$SESSION" Escape
+wait_screen_absent "Help — active key bindings"
+assert_screen_contains "open-me — select branch"
+printf 'help overlay uses remapped bindings and Esc returns: ok\n'
 
 t send-keys -t "$SESSION" plain
 wait_screen_contains "1 of 6 branches"
@@ -377,7 +430,7 @@ t send-keys -t "$SESSION" Tab
 wait_screen_contains "open-me — select branch"
 t send-keys -t "$SESSION" feat/new-branch
 wait_screen_contains "0 of 7 branches"
-t send-keys -t "$SESSION" C-o
+t send-keys -t "$SESSION" C-b
 wait_screen_contains 'New branch "feat/new-branch" — pick base'
 t send-keys -t "$SESSION" feature
 wait_screen_contains "feature"

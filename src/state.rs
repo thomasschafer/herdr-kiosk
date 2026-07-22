@@ -229,6 +229,7 @@ pub struct Toast {
 }
 
 #[derive(Debug)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct AppState {
     pub repos: Vec<RepoEntry>,
     pub repo_list: SearchableList,
@@ -242,6 +243,7 @@ pub struct AppState {
     pub current_cwd: Option<PathBuf>,
     pub selection_touched: bool,
     pub toasts: VecDeque<Toast>,
+    pub help_open: bool,
     pub active_list_rows: usize,
     pub repo_filter_generation: u64,
     pub branch_filter_generation: u64,
@@ -270,6 +272,7 @@ impl AppState {
             current_cwd,
             selection_touched: false,
             toasts: VecDeque::new(),
+            help_open: false,
             active_list_rows: 1,
             repo_filter_generation: 0,
             branch_filter_generation: 0,

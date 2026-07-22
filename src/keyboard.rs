@@ -18,5 +18,7 @@ pub enum Action {
     CancelOverlay,
     BackToRepos,
     DismissToast,
+    ShowHelp,
+    CloseHelp,
     Noop,
 }

@@ -514,6 +514,7 @@ dependencies = [
  "anyhow",
  "crossterm",
  "fuzzy-matcher",
+ "libc",
  "ratatui",
  "rayon",
  "serde",

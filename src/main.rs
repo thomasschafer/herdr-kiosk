@@ -1,7 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use anyhow::Result;
-use crossterm::event::{self as ct_event, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{self as ct_event, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Alignment, Constraint, Layout},
@@ -15,6 +15,7 @@ use crate::{
     context::PluginContext,
     git::CliGitProvider,
     herdr::{CliHerdrProvider, HerdrProvider},
+    setup::{SetupState, SetupStep},
     state::{AppState, ToastKind},
     theme::Theme,
 };
@@ -29,6 +30,7 @@ pub mod herdr;
 pub mod keyboard;
 pub mod keymap;
 pub mod pending_delete;
+pub mod setup;
 pub mod spawn;
 pub mod state;
 pub mod theme;
@@ -49,7 +51,7 @@ fn main() {
 }
 
 fn start() -> Result<()> {
-    let loaded = config::load_config()?;
+    let mut loaded = config::load_config()?;
     let herdr_binary = std::env::var_os("HERDR_BIN_PATH").filter(|path| !path.is_empty());
     let context = std::env::var("HERDR_PLUGIN_CONTEXT_JSON")
         .ok()
@@ -59,8 +61,19 @@ fn start() -> Result<()> {
         .map_err(|error| anyhow::anyhow!("invalid HERDR_PLUGIN_CONTEXT_JSON: {error}"))?
         .unwrap_or_default();
 
+    let background = theme::query_background_tone(std::time::Duration::from_millis(60));
+    let theme = Theme::from_config_with_background(&loaded.config.theme, background);
     let _restore_guard = TerminalRestoreGuard;
     let mut terminal = ratatui::try_init()?;
+    if !loaded.exists
+        && let Some(path) = loaded.path.as_ref()
+    {
+        let Some(search_dirs) = run_setup_wizard(&mut terminal, path, &theme)? else {
+            return Ok(());
+        };
+        loaded.config.search_dirs = search_dirs;
+        loaded.exists = true;
+    }
     if loaded.config.search_dirs.is_empty() {
         return run_no_search_dirs(&mut terminal, loaded.path.as_ref());
     }
@@ -81,7 +94,6 @@ fn start() -> Result<()> {
     for ConfigWarning { message } in warnings {
         state.push_toast(ToastKind::Warning, message);
     }
-    let theme = Theme::from_config(&loaded.config.theme);
     let herdr: Option<Arc<dyn HerdrProvider>> = herdr_binary
         .map(|binary| Arc::new(CliHerdrProvider::new(binary)) as Arc<dyn HerdrProvider>);
     let git = Arc::new(CliGitProvider) as Arc<dyn git::GitProvider>;
@@ -92,8 +104,128 @@ fn start() -> Result<()> {
         herdr.as_ref(),
         resolved.dirs,
         &theme,
+        &loaded.config.keys,
     )?;
     Ok(())
+}
+
+fn run_setup_wizard(
+    terminal: &mut DefaultTerminal,
+    config_path: &std::path::Path,
+    theme: &Theme,
+) -> Result<Option<Vec<config::SearchDirEntry>>> {
+    let mut state = SetupState::default();
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let path_display = config_path.display().to_string();
+    loop {
+        terminal.draw(|frame| components::setup::draw(frame, &state, theme, &path_display))?;
+        let Event::Key(key) = ct_event::read()? else {
+            continue;
+        };
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            return Ok(None);
+        }
+        match &state.step {
+            SetupStep::Welcome => match key.code {
+                KeyCode::Enter => state.continue_from_welcome(),
+                KeyCode::Esc => return Ok(None),
+                _ => {}
+            },
+            SetupStep::Directories => {
+                if handle_directory_key(&mut state, key, home.as_deref()) {
+                    return Ok(None);
+                }
+            }
+            SetupStep::Depth { .. } => match key.code {
+                KeyCode::Enter => {
+                    if let Err(message) = state.commit_depth() {
+                        state.message = Some(message);
+                    }
+                }
+                KeyCode::Esc => {
+                    state.step = SetupStep::Directories;
+                    state.input.clear();
+                    state.message = None;
+                }
+                KeyCode::Backspace => state.input.backspace(),
+                KeyCode::Char(character)
+                    if character.is_ascii_digit() && key.modifiers == KeyModifiers::NONE =>
+                {
+                    if state.input.text == "1" {
+                        state.input.clear();
+                    }
+                    state.input.insert_char(character);
+                }
+                _ => {}
+            },
+            SetupStep::Confirm => match key.code {
+                KeyCode::Enter => {
+                    let search_dirs = state.search_dirs();
+                    setup::write_config_atomic(config_path, &search_dirs)?;
+                    return Ok(Some(search_dirs));
+                }
+                KeyCode::Esc => {
+                    state.step = SetupStep::Directories;
+                    state.input.clear();
+                }
+                _ => {}
+            },
+        }
+    }
+}
+
+fn handle_directory_key(
+    state: &mut SetupState,
+    key: KeyEvent,
+    home: Option<&std::path::Path>,
+) -> bool {
+    let control = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    match key.code {
+        KeyCode::Enter => {
+            if let Err(message) = state.begin_depth() {
+                state.message = Some(message.into());
+            }
+        }
+        KeyCode::Tab => state.tab_complete(home),
+        KeyCode::Esc if state.input.text.is_empty() => return true,
+        KeyCode::Esc => {
+            state.input.clear();
+            state.update_completions(home);
+        }
+        KeyCode::Char('x') if control => {
+            if state.remove_last().is_none() {
+                state.message = Some("No directory to remove".into());
+            }
+        }
+        KeyCode::Backspace if alt => {
+            state.input.delete_word();
+            state.update_completions(home);
+        }
+        KeyCode::Backspace => {
+            state.input.backspace();
+            state.update_completions(home);
+        }
+        KeyCode::Char('w') if control => {
+            state.input.delete_word();
+            state.update_completions(home);
+        }
+        KeyCode::Left if !control && !alt => state.input.cursor_left(),
+        KeyCode::Right if !control && !alt => state.input.cursor_right(),
+        KeyCode::Char(character)
+            if key.modifiers == KeyModifiers::NONE
+                && (character.is_ascii_graphic() || character == ' ') =>
+        {
+            state.input.insert_char(character);
+            state.message = None;
+            state.update_completions(home);
+        }
+        _ => {}
+    }
+    false
 }
 
 fn run_no_search_dirs(terminal: &mut DefaultTerminal, path: Option<&PathBuf>) -> Result<()> {

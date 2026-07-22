@@ -8,6 +8,7 @@ license = "MIT"
 [dependencies]
 anyhow = "1"
 crossterm = "0.29"
+libc = "0.2"
 fuzzy-matcher = "0.3"
 ratatui = "0.30"
 rayon = "1"

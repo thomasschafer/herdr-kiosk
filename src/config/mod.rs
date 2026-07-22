@@ -6,6 +6,9 @@ use std::{
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
+pub mod keys;
+pub use keys::KeysConfig;
+
 pub const APP_NAME: &str = "herdr-kiosk";
 pub const DEFAULT_SEARCH_DEPTH: u16 = 1;
 
@@ -15,9 +18,6 @@ pub enum SearchDirEntry {
     Simple(String),
     Rich { path: String, depth: Option<u16> },
 }
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct KeysConfig {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -123,6 +123,7 @@ pub struct ResolvedSearchDirs {
 pub struct LoadedConfig {
     pub config: Config,
     pub path: Option<PathBuf>,
+    pub exists: bool,
     pub warnings: Vec<ConfigWarning>,
 }
 
@@ -203,6 +204,7 @@ pub fn load_config_with(
         return Ok(LoadedConfig {
             config: Config::default(),
             path: None,
+            exists: false,
             warnings: resolution.warnings,
         });
     };
@@ -212,6 +214,7 @@ pub fn load_config_with(
         return Ok(LoadedConfig {
             config: Config::default(),
             path: Some(path),
+            exists: false,
             warnings: resolution.warnings,
         });
     };
@@ -223,6 +226,7 @@ pub fn load_config_with(
     Ok(LoadedConfig {
         config,
         path: Some(path),
+        exists: true,
         warnings,
     })
 }
@@ -432,6 +436,7 @@ highlight_fg = "reset"
         let loaded = load_config_with(|_| None, |_| panic!("no path should be read")).unwrap();
         assert!(loaded.config.search_dirs.is_empty());
         assert!(loaded.path.is_none());
+        assert!(!loaded.exists);
     }
 
     #[test]
@@ -448,6 +453,38 @@ highlight_fg = "reset"
         )
         .unwrap();
         assert_eq!(loaded.config.search_dirs.len(), 1);
+        assert!(loaded.exists);
+    }
+
+    #[test]
+    fn resolved_but_missing_and_existing_empty_configs_are_distinguished() {
+        let missing = load_config_with(
+            |name| (name == "HERDR_PLUGIN_CONFIG_DIR").then(|| "/config".into()),
+            |_| Ok(None),
+        )
+        .unwrap();
+        assert_eq!(
+            missing.path.as_deref(),
+            Some(Path::new("/config/config.toml"))
+        );
+        assert!(!missing.exists);
+
+        let empty = load_config_with(
+            |name| (name == "HERDR_PLUGIN_CONFIG_DIR").then(|| "/config".into()),
+            |_| Ok(Some("search_dirs = []".into())),
+        )
+        .unwrap();
+        assert!(empty.exists);
+        assert!(empty.config.search_dirs.is_empty());
+    }
+
+    #[test]
+    fn invalid_key_chords_and_unknown_actions_are_config_errors() {
+        let chord = parse_config("[keys.branch_select]\n\"Hyper-B\" = \"new_branch\"").unwrap_err();
+        assert!(format!("{chord:#}").contains("invalid key chord"));
+        let action =
+            parse_config("[keys.branch_select]\n\"C-b\" = \"unknown_action\"").unwrap_err();
+        assert!(format!("{action:#}").contains("unknown key action"));
     }
 
     #[test]
