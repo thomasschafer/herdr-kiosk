@@ -148,6 +148,24 @@ directory = "$HK_ROOT/worktrees"
 
 [theme]
 name = "catppuccin"
+
+[theme.custom]
+panel_bg = "#24273a"
+surface0 = "#363a4f"
+surface1 = "#494d64"
+surface_dim = "#1e2030"
+overlay0 = "#6e738d"
+overlay1 = "#8087a2"
+text = "#cad3f5"
+subtext0 = "#a5adcb"
+accent = "#8aadf4"
+mauve = "#c6a0f6"
+green = "#a6da95"
+yellow = "#eed49f"
+red = "#ed8796"
+blue = "#8aadf4"
+teal = "#8bd5ca"
+peach = "#f5a97f"
 EOF
 
 cat >"$HK_HOME_DIR/.zshrc" <<'EOF'
