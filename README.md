@@ -17,8 +17,7 @@ On Linux and macOS, the installer downloads the matching release binary, verifie
 its SHA-256 checksum, and falls back to `cargo build --release` when necessary.
 Windows builds from source with Cargo for now.
 
-Herdr 0.7.4 does not render plugin actions in its menus. Keybindings are the only
-way to surface the picker, so add this once to your Herdr config:
+Add a keybinding to open the picker (here, `prefix+f`):
 
 ```toml
 [[keys.command]]
@@ -41,8 +40,8 @@ On first use, a setup wizard writes the directories and scan depth to the plugin
 herdr plugin config-dir thomasschafer.herdr-kiosk
 ```
 
-Herdr v1 has no `plugin update` command. To refresh the plugin, reinstall it from
-GitHub.
+At the time of writing, Herdr has no plugin-update command. Reinstall the plugin
+from GitHub to update to a newer version.
 
 ## Usage
 
@@ -75,73 +74,23 @@ Accepted forms:
 
 Customize terminal-palette colors used by the picker.
 
-Every field is optional and falls back to the default shown below.
+Colors use the terminal's ANSI palette and can be `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `white`, `gray`, `dark_gray`, `reset`.
 
-Accepted colors are `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `white`, `gray`, `dark_gray`, `reset`. Values use the terminal's ANSI palette, not RGB colors.
+Defaults:
 
-#### `accent`
-
-Repository-picker accent, used for its active border and selected row.
-
-Default: `"magenta"`
-
-#### `secondary`
-
-Branch and new-branch accent, used for active borders, selections, and
-branch status markers.
-
-Default: `"cyan"`
-
-#### `tertiary`
-
-Help-view accent, used for its border and selected row.
-
-Default: `"green"`
-
-#### `error`
-
-Error notification title color.
-
-Default: `"red"`
-
-#### `warning`
-
-Warning notification title and setup-warning color.
-
-Default: `"yellow"`
-
-#### `muted`
-
-De-emphasized text color for metadata, counts, inactive content, and
-explanatory labels. The untouched default becomes `gray` when a light
-terminal background is detected.
-
-Default: `"dark_gray"`
-
-#### `border`
-
-Inactive list-border color. The untouched default becomes `gray` when a
-light terminal background is detected.
-
-Default: `"dark_gray"`
-
-#### `hint`
-
-Keyboard-hint color in dialogs, setup, and notifications.
-
-Default: `"blue"`
-
-#### `highlight_fg`
-
-Foreground color for text on selected-row accent backgrounds in every view.
-
-Default: `"black"`
-
-#### `open`
-
-Color of the marker shown beside an open repository or worktree.
-
-Default: `"green"`
+```toml
+[theme]
+accent = "magenta"
+secondary = "cyan"
+tertiary = "green"
+error = "red"
+warning = "yellow"
+muted = "dark_gray"
+border = "dark_gray"
+hint = "blue"
+highlight_fg = "black"
+open = "green"
+```
 
 ### `[on_open]`
 
@@ -167,41 +116,9 @@ Each entry is an inline table with:
 
 Customize key bindings grouped by where they are active.
 
-Layered key bindings for the picker and its dialogs. Keys use lowercase
-`ctrl+`, `alt+`, and `shift+` modifiers with a character or a named key such as
-`enter`, `esc`, `tab`, `backspace`, `delete`, an arrow name, `home`, `end`,
-`pageup`, `pagedown`, or `space`. User bindings extend the defaults; assign
-`"noop"` to unbind an inherited key.
+Assign a key to `"noop"` to unbind an inherited mapping.
 
-#### `general`
-
-Bindings active everywhere. Accepted actions are `quit`, `help`,
-`dismiss_toast`, and `noop`.
-
-#### `text_edit`
-
-Bindings active while editing search or name text. Accepted actions are
-`clear`, `backspace`, `delete_word`, `cursor_left`, `cursor_right`, and `noop`.
-
-#### `list_navigation`
-
-Bindings active in navigable lists. Accepted actions are `move_up`,
-`move_down`, and `noop`.
-
-#### `modal`
-
-Bindings active in confirmation dialogs and the base-branch picker. Accepted
-actions are `open`, `back`, and `noop`.
-
-#### `repo_select`
-
-Bindings specific to the repository picker. Accepted actions are `open`,
-`branches_view`, `quit`, and `noop`.
-
-#### `branch_select`
-
-Bindings specific to the branch picker. Accepted actions are `open`, `back`,
-`new_branch`, `delete`, and `noop`.
+Write chords with lowercase `ctrl+`, `alt+`, and `shift+` modifiers followed by a character or a named key such as `enter`, `esc`, `tab`, `backspace`, `delete`, an arrow, `home`, `end`, `pageup`, `pagedown`, or `space`.
 
 Defaults:
 

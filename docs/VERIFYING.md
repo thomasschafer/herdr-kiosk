@@ -1,8 +1,8 @@
 # Verifying herdr-kiosk end to end
 
-How to drive a real herdr — popup included — programmatically. Validated during M0
-against herdr 0.7.4 built from source. Both the orchestrator and Codex run this same
-loop before reporting work as done.
+How to drive a real herdr — popup included — programmatically. The harness has been
+validated against herdr 0.7.4 built from source and is the end-to-end loop used before
+reporting runtime work as done.
 
 ## The pattern
 
@@ -57,7 +57,7 @@ h server stop 2>/dev/null; t kill-server       # teardown (killing tmux also kil
                                                # server that was auto-started by the client)
 ```
 
-## What M0 validated with this harness
+## What this harness validates
 
 1. Popup opens via action invoke; env injection is as documented
    (`HERDR_BIN_PATH`, `HERDR_PLUGIN_CONTEXT_JSON` with `workspace_cwd` /
@@ -78,10 +78,9 @@ h server stop 2>/dev/null; t kill-server       # teardown (killing tmux also kil
    code) in `plugin log list` — which is the debugging channel for shim failures
    generally, `ui_busy` included.
 
-7. `ui_busy` observed in the wild during M1 verification: a fresh sandbox HOME makes
-   herdr show its first-run welcome dialog, and invoking the picker action while any
-   such modal is up fails with `ui_busy: "popup panes can only open from the normal
-   workspace view"` — captured in `plugin log list` like every other shim failure.
-   Harness note: dismiss first-run onboarding (Enter through welcome, Escape out of
-   Settings) before invoking popup actions, or reuse a sandbox HOME that has already
-   completed onboarding.
+7. A fresh sandbox HOME makes herdr show its first-run welcome dialog. Invoking the
+   picker action while that or another modal is open fails with `ui_busy: "popup panes
+   can only open from the normal workspace view"` — captured in `plugin log list` like
+   every other shim failure. Dismiss first-run onboarding (Enter through welcome,
+   Escape out of Settings) before invoking popup actions, or reuse a sandbox HOME that
+   has already completed onboarding.

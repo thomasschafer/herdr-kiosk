@@ -75,15 +75,14 @@ fn render_config_field(
     {
         writeln!(docs, "### `[{name}]`\n")?;
         push_doc(docs, &field_doc);
-        push_distinct_doc(docs, &field_doc, &required_doc(&nested.attrs, &type_name)?);
 
-        if type_name == "KeysConfig" {
-            render_keys(docs, nested)?;
-        } else {
-            if type_name == "ThemeConfig" {
-                render_theme_values(docs, model)?;
+        match type_name.as_str() {
+            "ThemeConfig" => render_theme(docs, nested, model, default)?,
+            "KeysConfig" => render_keys(docs),
+            _ => {
+                push_distinct_doc(docs, &field_doc, &required_doc(&nested.attrs, &type_name)?);
+                render_struct_fields(docs, nested, model, default)?;
             }
-            render_struct_fields(docs, nested, model, default)?;
         }
         return Ok(());
     }
@@ -168,22 +167,22 @@ fn render_collection_schema(docs: &mut String, field: &Field, model: &ConfigMode
     Ok(())
 }
 
-fn render_keys(docs: &mut String, keys: &ItemStruct) -> Result<()> {
-    for field in named_fields(keys)? {
-        let name = field_name(field)?;
-        writeln!(docs, "#### `{name}`\n")?;
-        push_doc(
-            docs,
-            &required_doc(&field.attrs, &format!("KeysConfig::{name}"))?,
-        );
-    }
+fn render_keys(docs: &mut String) {
+    docs.push_str("Assign a key to `\"noop\"` to unbind an inherited mapping.\n\n");
+    docs.push_str(
+        "Write chords with lowercase `ctrl+`, `alt+`, and `shift+` modifiers followed by a character or a named key such as `enter`, `esc`, `tab`, `backspace`, `delete`, an arrow, `home`, `end`, `pageup`, `pagedown`, or `space`.\n\n",
+    );
     docs.push_str("Defaults:\n\n");
     docs.push_str(&default_keys_toml());
     docs.push('\n');
-    Ok(())
 }
 
-fn render_theme_values(docs: &mut String, model: &ConfigModel) -> Result<()> {
+fn render_theme(
+    docs: &mut String,
+    theme: &ItemStruct,
+    model: &ConfigModel,
+    default: Option<&toml::Value>,
+) -> Result<()> {
     let theme_color = model
         .enums
         .get("ThemeColor")
@@ -196,8 +195,17 @@ fn render_theme_values(docs: &mut String, model: &ConfigModel) -> Result<()> {
         .join(", ");
     writeln!(
         docs,
-        "Accepted colors are {colors}. Values use the terminal's ANSI palette, not RGB colors.\n"
+        "Colors use the terminal's ANSI palette and can be {colors}.\n"
     )?;
+    docs.push_str("Defaults:\n\n```toml\n[theme]\n");
+    for field in named_fields(theme)? {
+        let name = field_name(field)?;
+        let value = default
+            .and_then(|value| value.get(&name))
+            .with_context(|| format!("ThemeConfig::{name} is missing from Config::default()"))?;
+        writeln!(docs, "{name} = {}", format_toml_value(value))?;
+    }
+    docs.push_str("```\n\n");
     Ok(())
 }
 
