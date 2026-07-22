@@ -1,8 +1,11 @@
 use std::{
     collections::HashSet,
-    fs,
+    fs::{self, OpenOptions},
+    io,
     path::{Path, PathBuf},
-    process::{Command, Output},
+    process::{Command, ExitStatus, Output, Stdio},
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, bail};
@@ -14,6 +17,9 @@ use super::{
 
 const GIT_DIR_ENTRY: &str = ".git";
 const GITDIR_FILE_PREFIX: &str = "gitdir:";
+// Long enough for normal network latency, but bounded so a credential prompt cannot hang the UI.
+const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 #[derive(Debug, Clone, Default)]
 pub struct CliGitProvider;
@@ -27,10 +33,11 @@ impl GitProvider for CliGitProvider {
         &self,
         dir: &Path,
         depth: u16,
+        is_cancelled: &dyn Fn() -> bool,
         on_found: &dyn Fn(Repo),
     ) -> Result<Vec<ScanWarning>> {
         let mut seen_paths = HashSet::new();
-        walk_repos(dir, depth, &mut |path| {
+        walk_repos_with_cancel(dir, depth, is_cancelled, &mut |path| {
             if seen_paths.insert(path.to_path_buf())
                 && let Some(repo) = Self::build_repo_stub(path)
             {
@@ -49,8 +56,11 @@ impl GitProvider for CliGitProvider {
     }
 
     fn list_remote_branches(&self, repo_path: &Path) -> Result<Vec<String>> {
-        let output = run_git(repo_path, ["branch", "-r", "--format=%(refname:short)"])?;
-        Ok(parse_remote_branches(&output.stdout))
+        let mut branches = Vec::new();
+        for remote in self.list_remotes(repo_path)? {
+            branches.extend(self.list_remote_branches_for_remote(repo_path, &remote)?);
+        }
+        Ok(branches)
     }
 
     fn list_remote_branches_for_remote(
@@ -58,18 +68,16 @@ impl GitProvider for CliGitProvider {
         repo_path: &Path,
         remote: &str,
     ) -> Result<Vec<String>> {
-        let pattern = format!("{remote}/*");
+        let namespace = format!("refs/remotes/{remote}/");
         let output = run_git(
             repo_path,
             [
-                "branch",
-                "-r",
-                "--format=%(refname:short)",
-                "--list",
-                &pattern,
+                "for-each-ref",
+                "--format=%(refname:lstrip=2)%00%(symref)",
+                &namespace,
             ],
         )?;
-        Ok(parse_remote_branches(&output.stdout))
+        Ok(parse_remote_branches_for_remote(&output.stdout, remote))
     }
 
     fn list_worktrees(&self, repo_path: &Path) -> Result<Vec<Worktree>> {
@@ -90,9 +98,7 @@ impl GitProvider for CliGitProvider {
     }
 
     fn fetch_remote(&self, repo_path: &Path, remote: &str) -> Result<()> {
-        let mut command = fetch_command(repo_path, remote);
-        let output = command
-            .output()
+        let output = run_fetch_with_timeout(fetch_command(repo_path, remote), FETCH_TIMEOUT)
             .with_context(|| format!("failed to run git in {}", repo_path.display()))?;
         if !output.status.success() {
             bail!(
@@ -254,74 +260,89 @@ pub fn walk_repos(
     depth: u16,
     on_repo: &mut dyn FnMut(&Path),
 ) -> Result<Vec<ScanWarning>> {
+    walk_repos_with_cancel(dir, depth, &|| false, on_repo)
+}
+
+fn walk_repos_with_cancel(
+    dir: &Path,
+    depth: u16,
+    is_cancelled: &dyn Fn() -> bool,
+    on_repo: &mut dyn FnMut(&Path),
+) -> Result<Vec<ScanWarning>> {
     if depth == 0 {
         bail!("repository scan depth must be at least 1");
     }
+
     let mut warnings = Vec::new();
-    walk_repos_inner(dir, depth, true, on_repo, &mut warnings)?;
-    Ok(warnings)
-}
+    let mut visited = HashSet::new();
+    visited.insert(fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf()));
+    let mut pending = vec![(dir.to_path_buf(), depth, true)];
 
-fn walk_repos_inner(
-    dir: &Path,
-    depth: u16,
-    is_search_root: bool,
-    on_repo: &mut dyn FnMut(&Path),
-    warnings: &mut Vec<ScanWarning>,
-) -> Result<()> {
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(error) if is_search_root => {
-            return Err(error)
-                .with_context(|| format!("failed to read search directory {}", dir.display()));
+    while let Some((directory, remaining_depth, is_search_root)) = pending.pop() {
+        if is_cancelled() {
+            break;
         }
-        Err(error) => {
-            warnings.push(ScanWarning {
-                path: dir.to_path_buf(),
-                message: format!("failed to read nested directory: {error}"),
-            });
-            return Ok(());
-        }
-    };
-
-    for entry in entries {
-        let entry = match entry {
-            Ok(entry) => entry,
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if is_search_root => {
+                return Err(error).with_context(|| {
+                    format!("failed to read search directory {}", directory.display())
+                });
+            }
             Err(error) => {
                 warnings.push(ScanWarning {
-                    path: dir.to_path_buf(),
-                    message: format!("failed to read directory entry: {error}"),
+                    path: directory,
+                    message: format!("failed to read nested directory: {error}"),
                 });
                 continue;
             }
         };
-        let path = entry.path();
-        let metadata = match fs::metadata(&path) {
-            Ok(metadata) => metadata,
-            Err(error) => {
-                warnings.push(ScanWarning {
-                    path: path.clone(),
-                    message: format!("failed to inspect directory entry: {error}"),
-                });
+
+        for entry in entries {
+            if is_cancelled() {
+                return Ok(warnings);
+            }
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    warnings.push(ScanWarning {
+                        path: directory.clone(),
+                        message: format!("failed to read directory entry: {error}"),
+                    });
+                    continue;
+                }
+            };
+            let path = entry.path();
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(error) => {
+                    warnings.push(ScanWarning {
+                        path: path.clone(),
+                        message: format!("failed to inspect directory entry: {error}"),
+                    });
+                    continue;
+                }
+            };
+            if file_type.is_symlink() || !file_type.is_dir() {
                 continue;
             }
-        };
-        if !metadata.is_dir() {
-            continue;
-        }
 
-        if path.join(GIT_DIR_ENTRY).exists() {
-            let canonical = fs::canonicalize(&path).unwrap_or(path);
-            let repo_root = resolve_main_repo_from_linked_worktree(&canonical)
-                .map(|root| fs::canonicalize(&root).unwrap_or(root))
-                .unwrap_or(canonical);
-            on_repo(&repo_root);
-        } else if depth > 1 {
-            walk_repos_inner(&path, depth - 1, false, on_repo, warnings)?;
+            let canonical = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+            if !visited.insert(canonical.clone()) {
+                continue;
+            }
+            if path.join(GIT_DIR_ENTRY).exists() {
+                let repo_root = resolve_main_repo_from_linked_worktree(&canonical)
+                    .map(|root| fs::canonicalize(&root).unwrap_or(root))
+                    .unwrap_or(canonical);
+                on_repo(&repo_root);
+            } else if remaining_depth > 1 {
+                pending.push((path, remaining_depth - 1, false));
+            }
         }
     }
 
-    Ok(())
+    Ok(warnings)
 }
 
 fn resolve_main_repo_from_linked_worktree(path: &Path) -> Option<PathBuf> {
@@ -382,6 +403,100 @@ fn fetch_command(repo_path: &Path, remote: &str) -> Command {
     command
 }
 
+#[derive(Debug)]
+struct FetchOutput {
+    status: ExitStatus,
+    stderr: Vec<u8>,
+}
+
+fn run_fetch_with_timeout(mut command: Command, timeout: Duration) -> Result<FetchOutput> {
+    let (stderr_path, stderr_file) = temporary_stderr_file()?;
+    command
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(stderr_file));
+    configure_fetch_process(&mut command);
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            let _ = fs::remove_file(&stderr_path);
+            return Err(error.into());
+        }
+    };
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => {
+                terminate_fetch_child(&mut child);
+                let _ = child.wait();
+                let _ = fs::remove_file(&stderr_path);
+                return Err(error.into());
+            }
+        }
+        if started.elapsed() >= timeout {
+            terminate_fetch_child(&mut child);
+            let _ = child.wait();
+            let _ = fs::remove_file(&stderr_path);
+            bail!(
+                "git fetch timed out after {} seconds",
+                timeout.as_secs_f64()
+            );
+        }
+        thread::sleep(CHILD_POLL_INTERVAL.min(timeout.saturating_sub(started.elapsed())));
+    };
+    let stderr = fs::read(&stderr_path).unwrap_or_default();
+    let _ = fs::remove_file(stderr_path);
+    Ok(FetchOutput { status, stderr })
+}
+
+fn temporary_stderr_file() -> io::Result<(PathBuf, fs::File)> {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    for attempt in 0..16_u8 {
+        let path = std::env::temp_dir().join(format!(
+            "herdr-kiosk-fetch-{}-{nonce}-{attempt}.stderr",
+            std::process::id()
+        ));
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not allocate temporary fetch stderr file",
+    ))
+}
+
+#[cfg(unix)]
+fn configure_fetch_process(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn configure_fetch_process(_command: &mut Command) {}
+
+#[cfg(unix)]
+fn terminate_fetch_child(child: &mut std::process::Child) {
+    if let Ok(process_group) = i32::try_from(child.id()) {
+        // SAFETY: the negative PID targets only the process group created for this fetch child.
+        if unsafe { libc::kill(-process_group, libc::SIGKILL) } == 0 {
+            return;
+        }
+    }
+    let _ = child.kill();
+}
+
+#[cfg(not(unix))]
+fn terminate_fetch_child(child: &mut std::process::Child) {
+    let _ = child.kill();
+}
+
 fn tracking_branch_already_exists(stderr: &str, branch: &str) -> bool {
     stderr.contains(&format!("a branch named '{branch}' already exists"))
 }
@@ -401,18 +516,27 @@ fn lines(bytes: &[u8]) -> Vec<String> {
         .collect()
 }
 
-fn parse_remote_branches(bytes: &[u8]) -> Vec<String> {
+fn parse_remote_branches_for_remote(bytes: &[u8], remote: &str) -> Vec<String> {
+    let prefix = format!("{remote}/");
     lines(bytes)
         .into_iter()
-        // Skip remote HEAD pointers such as `origin/HEAD -> origin/main`.
-        .filter(|line| !line.contains("->"))
-        .filter_map(|line| line.split_once('/').map(|(_, branch)| branch.to_string()))
+        .filter_map(|line| {
+            let (refname, symref) = line.split_once('\0').unwrap_or((&line, ""));
+            symref
+                .is_empty()
+                .then(|| refname.strip_prefix(&prefix))
+                .flatten()
+                .map(str::to_string)
+        })
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, fs};
+    use std::{
+        cell::{Cell, RefCell},
+        fs,
+    };
 
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
@@ -549,7 +673,7 @@ mod tests {
         let provider = CliGitProvider;
         let streamed = RefCell::new(Vec::new());
         let warnings = provider
-            .scan_repos_streaming(temp.path(), 1, &|found| {
+            .scan_repos_streaming(temp.path(), 1, &|| false, &|found| {
                 streamed.borrow_mut().push(found);
             })
             .unwrap();
@@ -654,6 +778,38 @@ mod tests {
         assert_eq!(prompt, Some(std::ffi::OsStr::new("0")));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn fetch_timeout_kills_a_sleeping_git_process() {
+        let temp = TempDir::new().unwrap();
+        let fake_git = temp.path().join("git");
+        let completion_marker = temp.path().join("completed");
+        fs::write(&fake_git, "#!/bin/sh\nsleep 5\nprintf completed > \"$1\"\n").unwrap();
+        let mut permissions = fs::metadata(&fake_git).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&fake_git, permissions).unwrap();
+        let mut command = Command::new(&fake_git);
+        command.arg(&completion_marker);
+
+        let error = run_fetch_with_timeout(command, Duration::from_millis(75)).unwrap_err();
+
+        assert!(error.to_string().contains("git fetch timed out"));
+        assert!(!completion_marker.exists());
+    }
+
+    #[test]
+    fn remote_parser_strips_the_exact_remote_and_skips_symbolic_head() {
+        let output = b"team/origin/HEAD\0refs/remotes/team/origin/main\n\
+                       team/origin/feature\0\n\
+                       team/origin/topic/nested\0\n\
+                       other/branch\0\n";
+
+        assert_eq!(
+            parse_remote_branches_for_remote(output, "team/origin"),
+            ["feature", "topic/nested"]
+        );
+    }
+
     #[test]
     fn removes_registered_worktree_and_prunes() {
         let temp = TempDir::new().unwrap();
@@ -736,6 +892,66 @@ mod tests {
                 .to_string()
                 .contains("failed to read search directory")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn self_looping_directory_symlink_terminates_without_duplicates() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempDir::new().unwrap();
+        let container = temp.path().join("container");
+        fs::create_dir(&container).unwrap();
+        let repo = repo_fixture(&container, "repo");
+        symlink(&container, container.join("loop")).unwrap();
+
+        let scan = CliGitProvider
+            .scan_repos(&[(temp.path().to_path_buf(), u16::MAX)])
+            .unwrap();
+
+        assert_eq!(scan.repos.len(), 1);
+        assert_eq!(scan.repos[0].path, fs::canonicalize(repo).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_subdirectory_is_not_descended_into() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        repo_fixture(outside.path(), "hidden-repo");
+        symlink(outside.path(), temp.path().join("linked")).unwrap();
+
+        let scan = CliGitProvider
+            .scan_repos(&[(temp.path().to_path_buf(), 2)])
+            .unwrap();
+
+        assert!(scan.repos.is_empty());
+        assert!(scan.warnings.is_empty());
+    }
+
+    #[test]
+    fn scan_checks_cancellation_while_iterating_directories() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir(temp.path().join("nested")).unwrap();
+        let checks = Cell::new(0);
+        let mut found = Vec::new();
+
+        let warnings = walk_repos_with_cancel(
+            temp.path(),
+            u16::MAX,
+            &|| {
+                checks.set(checks.get() + 1);
+                checks.get() > 1
+            },
+            &mut |repo| found.push(repo.to_path_buf()),
+        )
+        .unwrap();
+
+        assert!(warnings.is_empty());
+        assert!(found.is_empty());
+        assert!(checks.get() > 1);
     }
 
     #[cfg(unix)]

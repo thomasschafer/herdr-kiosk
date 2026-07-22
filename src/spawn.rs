@@ -116,33 +116,34 @@ pub fn spawn_repo_discovery(
                     if sender.is_cancelled() {
                         return;
                     }
-                    let result = git.scan_repos_streaming(dir, *depth, &|repo| {
-                        if sender.is_cancelled() {
-                            return;
-                        }
-                        let repo_path = repo.path.clone();
-                        sender.send(AppEvent::ReposFound { repo });
-                        if let Some(pool) = enrichment_pool.as_ref() {
-                            let git = Arc::clone(git);
-                            let sender = sender.clone();
-                            pool.spawn(move || match git.list_worktrees(&repo_path) {
-                                Ok(worktrees) => {
-                                    sender.send(AppEvent::RepoEnriched {
-                                        repo_path,
-                                        worktrees,
-                                    });
-                                }
-                                Err(error) => {
-                                    sender.send(AppEvent::ScanWarning(ScanWarning {
-                                        path: repo_path,
-                                        message: format!(
-                                            "failed to enrich repository worktrees: {error:#}"
-                                        ),
-                                    }));
-                                }
-                            });
-                        }
-                    });
+                    let result =
+                        git.scan_repos_streaming(dir, *depth, &|| sender.is_cancelled(), &|repo| {
+                            if sender.is_cancelled() {
+                                return;
+                            }
+                            let repo_path = repo.path.clone();
+                            sender.send(AppEvent::ReposFound { repo });
+                            if let Some(pool) = enrichment_pool.as_ref() {
+                                let git = Arc::clone(git);
+                                let sender = sender.clone();
+                                pool.spawn(move || match git.list_worktrees(&repo_path) {
+                                    Ok(worktrees) => {
+                                        sender.send(AppEvent::RepoEnriched {
+                                            repo_path,
+                                            worktrees,
+                                        });
+                                    }
+                                    Err(error) => {
+                                        sender.send(AppEvent::ScanWarning(ScanWarning {
+                                            path: repo_path,
+                                            message: format!(
+                                                "failed to enrich repository worktrees: {error:#}"
+                                            ),
+                                        }));
+                                    }
+                                });
+                            }
+                        });
                     match result {
                         Ok(warnings) => {
                             for warning in warnings {

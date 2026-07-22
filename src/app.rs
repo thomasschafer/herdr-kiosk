@@ -2734,6 +2734,44 @@ mod tests {
     }
 
     #[test]
+    fn new_branch_before_local_load_stays_in_branch_view_then_works_after_load() {
+        let git_mock = Arc::new(MockGitProvider::default());
+        let git: Arc<dyn GitProvider> = git_mock.clone();
+        let (sender, rx) = sender();
+        let mut state = state_with_branch(false);
+        state.branches.clear();
+        state.branch_list = SearchableList::new(0);
+        state.branch_list.input.text = "feat/new".into();
+        state.branch_list.input.cursor = "feat/new".len();
+        state.loading_branches = true;
+
+        begin_start_new_branch(&mut state, &git, None, &sender);
+
+        assert!(matches!(state.mode, Mode::BranchSelect(_)));
+        assert!(state.loading_branches);
+        assert!(
+            state
+                .toasts
+                .back()
+                .unwrap()
+                .message
+                .contains("still loading")
+        );
+        assert!(rx.try_recv().is_err());
+
+        state.loading_branches = false;
+        begin_start_new_branch(&mut state, &git, None, &sender);
+
+        assert!(matches!(state.mode, Mode::ValidatingNewBranch { .. }));
+        let event = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(matches!(event, AppEvent::BranchNameValidated { .. }));
+        assert_eq!(
+            *git_mock.validation_calls.lock().unwrap(),
+            [(PathBuf::from("/repo"), "feat/new".into())]
+        );
+    }
+
+    #[test]
     fn validated_new_branch_preselects_known_default_local_base() {
         let mut state = state_with_branch(false);
         state.branches = vec![

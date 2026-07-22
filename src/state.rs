@@ -353,6 +353,9 @@ impl AppState {
         let Mode::BranchSelect(context) = &self.mode else {
             return Err("New branches can only be created from the branch view");
         };
+        if self.loading_branches {
+            return Err("Branches are still loading");
+        }
         let name = self.branch_list.input.text.clone();
         if name.is_empty() {
             return Err("Type a branch name first");

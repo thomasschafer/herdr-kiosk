@@ -99,8 +99,11 @@ fn command_to_action(command: Command, state: &AppState) -> Option<Action> {
         Command::MoveDown => Some(Action::MoveSelection(1)),
         Command::Open => match &state.mode {
             Mode::RepoSelect => Some(Action::OpenRepo),
+            Mode::BranchSelect(_) if state.loading_branches => None,
             Mode::BranchSelect(_)
-                if !active_query(state).is_empty() && state.branch_list.filtered.is_empty() =>
+                if !state.loading_branches
+                    && !active_query(state).is_empty()
+                    && state.branch_list.filtered.is_empty() =>
             {
                 Some(Action::StartNewBranch)
             }
@@ -129,9 +132,9 @@ fn command_to_action(command: Command, state: &AppState) -> Option<Action> {
                 Some(Action::ClearQuery)
             }
         }
-        Command::NewBranch => {
-            matches!(state.mode, Mode::BranchSelect(_)).then_some(Action::StartNewBranch)
-        }
+        Command::NewBranch => (matches!(state.mode, Mode::BranchSelect(_))
+            && !state.loading_branches)
+            .then_some(Action::StartNewBranch),
         Command::Delete => {
             matches!(state.mode, Mode::BranchSelect(_)).then_some(Action::DeleteWorktree)
         }
@@ -255,6 +258,46 @@ mod tests {
         assert_eq!(
             resolve_action(chord, &state, &KeysConfig::default()),
             Some(Action::DismissToast)
+        );
+    }
+
+    #[test]
+    fn new_branch_routes_are_blocked_until_local_branches_finish_loading() {
+        let mut state = AppState::new(None);
+        state.mode = Mode::BranchSelect(BranchContext {
+            repo_path: "/repo".into(),
+            repo_name: "repo".into(),
+        });
+        state.branch_list.input.text = "feat/new".into();
+        state.branch_list.filtered.clear();
+        state.loading_branches = true;
+        let keys = KeysConfig::default();
+
+        assert_eq!(
+            resolve_action(
+                key(KeyCode::Char('o'), KeyModifiers::CONTROL),
+                &state,
+                &keys
+            ),
+            None
+        );
+        assert_eq!(
+            resolve_action(key(KeyCode::Enter, KeyModifiers::NONE), &state, &keys),
+            None
+        );
+
+        state.loading_branches = false;
+        assert_eq!(
+            resolve_action(
+                key(KeyCode::Char('o'), KeyModifiers::CONTROL),
+                &state,
+                &keys
+            ),
+            Some(Action::StartNewBranch)
+        );
+        assert_eq!(
+            resolve_action(key(KeyCode::Enter, KeyModifiers::NONE), &state, &keys),
+            Some(Action::StartNewBranch)
         );
     }
 

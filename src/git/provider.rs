@@ -55,10 +55,17 @@ pub trait GitProvider: Send + Sync {
         &self,
         dir: &Path,
         depth: u16,
+        is_cancelled: &dyn Fn() -> bool,
         on_found: &dyn Fn(Repo),
     ) -> Result<Vec<ScanWarning>> {
+        if is_cancelled() {
+            return Ok(Vec::new());
+        }
         let scan = self.scan_repos(&[(dir.to_path_buf(), depth)])?;
         for repo in scan.repos {
+            if is_cancelled() {
+                break;
+            }
             on_found(repo);
         }
         Ok(scan.warnings)

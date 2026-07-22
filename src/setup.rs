@@ -56,12 +56,7 @@ impl SetupState {
     }
 
     pub fn begin_depth(&mut self) -> Result<(), &'static str> {
-        let path = self
-            .input
-            .text
-            .trim()
-            .trim_end_matches(['/', '\\'])
-            .to_string();
+        let path = normalize_search_dir(self.input.text.trim());
         if path.is_empty() {
             if self.dirs.is_empty() {
                 return Err("Add at least one search directory");
@@ -162,6 +157,35 @@ impl SetupState {
             })
             .collect()
     }
+}
+
+fn normalize_search_dir(path: &str) -> String {
+    if is_root_path(path) {
+        return path.to_string();
+    }
+    path.trim_end_matches(['/', '\\']).to_string()
+}
+
+fn is_root_path(path: &str) -> bool {
+    if path.is_empty() || !path.ends_with(['/', '\\']) {
+        return false;
+    }
+    let without_separators = path.trim_end_matches(['/', '\\']);
+    if without_separators.is_empty() {
+        return true;
+    }
+    let bytes = without_separators.as_bytes();
+    if bytes.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return true;
+    }
+    if path.starts_with("//") || path.starts_with("\\\\") {
+        return without_separators[2..]
+            .split(['/', '\\'])
+            .filter(|part| !part.is_empty())
+            .count()
+            == 2;
+    }
+    false
 }
 
 pub fn split_input(input: &str) -> (String, String) {
@@ -422,6 +446,40 @@ mod tests {
         assert_eq!(state.input.text, "~/Code");
         assert_eq!(state.input.cursor, "~/Code".len());
         assert!(state.dirs.is_empty());
+    }
+
+    #[test]
+    fn filesystem_root_is_preserved_when_beginning_depth() {
+        let mut state = SetupState::default();
+        state.continue_from_welcome();
+        state.input.text = "/".into();
+
+        state.begin_depth().unwrap();
+
+        assert_eq!(state.step, SetupStep::Depth { path: "/".into() });
+    }
+
+    #[test]
+    fn trailing_separator_is_trimmed_from_a_normal_search_path() {
+        let mut state = SetupState::default();
+        state.continue_from_welcome();
+        state.input.text = "/work/projects/".into();
+
+        state.begin_depth().unwrap();
+
+        assert_eq!(
+            state.step,
+            SetupStep::Depth {
+                path: "/work/projects".into()
+            }
+        );
+    }
+
+    #[test]
+    fn windows_and_unc_roots_are_preserved() {
+        for root in [r"C:\", r"\\server\share\"] {
+            assert_eq!(normalize_search_dir(root), root);
+        }
     }
 
     #[test]
