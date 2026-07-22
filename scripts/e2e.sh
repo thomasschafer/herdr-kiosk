@@ -189,12 +189,16 @@ printf 'branch listing and markers: ok\n'
 
 t send-keys -t "$SESSION" C-h
 wait_screen_contains "Help — active key bindings"
-assert_screen_contains "Ctrl+B"
+assert_screen_contains "ctrl+b"
 assert_screen_contains "Create a new branch"
+t send-keys -t "$SESSION" -l "delete"
+wait_screen_absent "Create a new branch"
+assert_screen_contains "(delete)"
+assert_screen_contains "Delete the selected checkout"
 t send-keys -t "$SESSION" Escape
 wait_screen_absent "Help — active key bindings"
 assert_screen_contains "open-me — select branch"
-printf 'help overlay uses remapped bindings and Esc returns: ok\n'
+printf 'help overlay uses remapped lowercase bindings, filters, and Esc returns: ok\n'
 
 t send-keys -t "$SESSION" plain
 wait_screen_contains "1 of 6 branches"
@@ -285,8 +289,23 @@ t send-keys -t "$SESSION" feat/new-branch
 wait_screen_contains "0 of 7 branches"
 t send-keys -t "$SESSION" C-b
 wait_screen_contains 'New branch "feat/new-branch" — pick base'
-t send-keys -t "$SESSION" feature
-wait_screen_contains "feature"
+assert_screen_contains "open-me — select branch"
+t send-keys -t "$SESSION" featurx
+wait_screen_contains "0 bases"
+t send-keys -t "$SESSION" BSpace
+wait_screen_contains "1 bases"
+assert_screen_contains "feature"
+t send-keys -t "$SESSION" Escape
+wait_screen_contains "7 bases"
+t send-keys -t "$SESSION" Down
+t send-keys -t "$SESSION" C-n
+t send-keys -t "$SESSION" Down
+t send-keys -t "$SESSION" C-n
+t send-keys -t "$SESSION" C-p
+t send-keys -t "$SESSION" Up
+t send-keys -t "$SESSION" C-n
+sleep 0.2
+assert_screen_line_contains_all "feature" "▸"
 t send-keys -t "$SESSION" Enter
 wait_screen_absent "open-me — select branch" 120
 
@@ -302,7 +321,7 @@ MASTER_TIP=$(git -C "$HK_ROOT/repos/direct/open-me" rev-parse master)
     || fail "feat/new-branch unexpectedly used master as its base"
 git -C "$HK_ROOT/repos/direct/open-me" merge-base --is-ancestor feature feat/new-branch \
     || fail "feature was not an ancestor of feat/new-branch"
-printf 'new branch base selection, worktree, and focus: ok\n'
+printf 'new branch base editing, arrow/Ctrl navigation, worktree, and focus: ok\n'
 
 h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
 wait_screen_contains "herdr-kiosk — select repo"

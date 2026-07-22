@@ -46,7 +46,7 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
         ]),
         Line::raw(""),
         Line::from(vec![
-            Span::styled("Ctrl+X", Style::default().fg(theme.hint)),
+            Span::styled("ctrl+x", Style::default().fg(theme.hint)),
             Span::raw(" dismiss"),
         ]),
     ];

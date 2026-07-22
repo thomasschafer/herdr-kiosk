@@ -222,7 +222,7 @@ pub fn run(
                 continue;
             };
             if let Some(outcome) =
-                process_action(action, state, git, herdr, &sender, &filter_worker)
+                process_action(action, state, git, herdr, &sender, &filter_worker, keys)
             {
                 break outcome;
             }
@@ -302,7 +302,13 @@ fn process_app_event(event: AppEvent, state: &mut AppState, changes: &mut TickCh
             FilterTarget::Bases if generation == state.base_filter_generation => {
                 apply_base_filter_result(state, &matches, selected.as_ref());
             }
-            FilterTarget::Repos | FilterTarget::Branches | FilterTarget::Bases => {}
+            FilterTarget::Help if generation == state.help_filter_generation => {
+                apply_help_filter_result(state, &matches, selected.as_ref());
+            }
+            FilterTarget::Repos
+            | FilterTarget::Branches
+            | FilterTarget::Bases
+            | FilterTarget::Help => {}
         },
         AppEvent::BranchNameValidated {
             repo_path,
@@ -595,11 +601,14 @@ fn process_action(
     herdr: Option<&Arc<dyn HerdrProvider>>,
     sender: &EventSender,
     filter_worker: &FilterWorker,
+    keys: &KeysConfig,
 ) -> Option<RunOutcome> {
     match action {
         Action::Quit => return Some(RunOutcome::Quit),
         Action::MoveSelection(delta) => {
-            if matches!(state.mode, Mode::RepoSelect) {
+            if let Some(overlay) = &mut state.help_overlay {
+                overlay.list.move_selection(delta);
+            } else if matches!(state.mode, Mode::RepoSelect) {
                 state.selection_touched = true;
                 state.repo_list.move_selection(delta);
             } else if matches!(state.mode, Mode::BranchSelect(_)) {
@@ -642,14 +651,21 @@ fn process_action(
         Action::DismissToast => {
             state.toasts.pop_front();
         }
-        Action::ShowHelp => state.help_open = true,
-        Action::CloseHelp => state.help_open = false,
+        Action::ShowHelp => {
+            let binding_mode = KeysConfig::mode_for(&state.mode);
+            state.help_overlay = Some(components::help::overlay(keys, binding_mode));
+            state.help_filter_generation = state.help_filter_generation.wrapping_add(1);
+        }
+        Action::CloseHelp => state.help_overlay = None,
         Action::Noop => {}
     }
     None
 }
 
 fn active_list_mut(state: &mut AppState) -> &mut SearchableList {
+    if let Some(overlay) = &mut state.help_overlay {
+        return &mut overlay.list;
+    }
     match &mut state.mode {
         Mode::BranchSelect(_) => &mut state.branch_list,
         Mode::SelectBaseBranch { flow, .. } => &mut flow.list,
@@ -665,6 +681,11 @@ fn edit_active_list(
     worker: &FilterWorker,
     edit: impl FnOnce(&mut SearchableList),
 ) {
+    if let Some(overlay) = &mut state.help_overlay {
+        edit(&mut overlay.list);
+        queue_help_filter(state, worker, None);
+        return;
+    }
     match state.mode {
         Mode::RepoSelect => {
             state.selection_touched = true;
@@ -968,6 +989,34 @@ fn queue_base_filter(state: &mut AppState, worker: &FilterWorker, selected_name:
     });
 }
 
+fn queue_help_filter(state: &mut AppState, worker: &FilterWorker, selected_index: Option<usize>) {
+    state.help_filter_generation = state.help_filter_generation.wrapping_add(1);
+    let Some(overlay) = &mut state.help_overlay else {
+        return;
+    };
+    if overlay.list.input.text.is_empty() {
+        overlay.list.filtered = (0..overlay.rows.len()).map(|index| (index, 0)).collect();
+        overlay.list.selected = (!overlay.rows.is_empty()).then_some(0);
+        overlay.list.scroll_offset = 0;
+        return;
+    }
+    worker.request(FilterRequest {
+        target: FilterTarget::Help,
+        generation: state.help_filter_generation,
+        query: overlay.list.input.text.clone(),
+        items: overlay
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| FilterItem {
+                key: FilterKey::Help(index),
+                text: row.search_text(),
+            })
+            .collect(),
+        selected: selected_index.map(FilterKey::Help),
+    });
+}
+
 fn apply_repo_filter_result(
     state: &mut AppState,
     matches: &[(FilterKey, i64)],
@@ -983,13 +1032,13 @@ fn apply_repo_filter_result(
         .iter()
         .filter_map(|(key, score)| match key {
             FilterKey::Repo(path) => indices.get(path.as_path()).map(|index| (*index, *score)),
-            FilterKey::Branch(_) | FilterKey::Base(_) => None,
+            FilterKey::Branch(_) | FilterKey::Base(_) | FilterKey::Help(_) => None,
         })
         .collect();
     state.repo_list.selected = selected
         .and_then(|key| match key {
             FilterKey::Repo(path) => Some(path),
-            FilterKey::Branch(_) | FilterKey::Base(_) => None,
+            FilterKey::Branch(_) | FilterKey::Base(_) | FilterKey::Help(_) => None,
         })
         .and_then(|path| {
             state
@@ -1017,13 +1066,13 @@ fn apply_branch_filter_result(
         .iter()
         .filter_map(|(key, score)| match key {
             FilterKey::Branch(name) => indices.get(name.as_str()).map(|index| (*index, *score)),
-            FilterKey::Repo(_) | FilterKey::Base(_) => None,
+            FilterKey::Repo(_) | FilterKey::Base(_) | FilterKey::Help(_) => None,
         })
         .collect();
     state.branch_list.selected = selected
         .and_then(|key| match key {
             FilterKey::Branch(name) => Some(name),
-            FilterKey::Repo(_) | FilterKey::Base(_) => None,
+            FilterKey::Repo(_) | FilterKey::Base(_) | FilterKey::Help(_) => None,
         })
         .and_then(|name| {
             state
@@ -1054,13 +1103,13 @@ fn apply_base_filter_result(
         .iter()
         .filter_map(|(key, score)| match key {
             FilterKey::Base(name) => indices.get(name.as_str()).map(|index| (*index, *score)),
-            FilterKey::Repo(_) | FilterKey::Branch(_) => None,
+            FilterKey::Repo(_) | FilterKey::Branch(_) | FilterKey::Help(_) => None,
         })
         .collect();
     flow.list.selected = selected
         .and_then(|key| match key {
             FilterKey::Base(name) => Some(name),
-            FilterKey::Repo(_) | FilterKey::Branch(_) => None,
+            FilterKey::Repo(_) | FilterKey::Branch(_) | FilterKey::Help(_) => None,
         })
         .and_then(|name| {
             flow.list
@@ -1070,6 +1119,42 @@ fn apply_base_filter_result(
         })
         .or_else(|| (!flow.list.filtered.is_empty()).then_some(0));
     flow.list.scroll_offset = 0;
+}
+
+fn apply_help_filter_result(
+    state: &mut AppState,
+    matches: &[(FilterKey, i64)],
+    selected: Option<&FilterKey>,
+) {
+    let Some(overlay) = &mut state.help_overlay else {
+        return;
+    };
+    let scores = matches
+        .iter()
+        .filter_map(|(key, score)| match key {
+            FilterKey::Help(index) if *index < overlay.rows.len() => Some((*index, *score)),
+            FilterKey::Repo(_) | FilterKey::Branch(_) | FilterKey::Base(_) | FilterKey::Help(_) => {
+                None
+            }
+        })
+        .collect::<HashMap<_, _>>();
+    overlay.list.filtered = (0..overlay.rows.len())
+        .filter_map(|index| scores.get(&index).map(|score| (index, *score)))
+        .collect();
+    overlay.list.selected = selected
+        .and_then(|key| match key {
+            FilterKey::Help(index) => Some(*index),
+            FilterKey::Repo(_) | FilterKey::Branch(_) | FilterKey::Base(_) => None,
+        })
+        .and_then(|selected| {
+            overlay
+                .list
+                .filtered
+                .iter()
+                .position(|(index, _)| *index == selected)
+        })
+        .or_else(|| (!overlay.list.filtered.is_empty()).then_some(0));
+    overlay.list.scroll_offset = 0;
 }
 
 fn begin_open_selected(
@@ -1319,7 +1404,6 @@ fn draw(
 ) {
     let loading_message = match &state.mode {
         Mode::Loading { message, .. } => Some(message.clone()),
-        Mode::ValidatingNewBranch { name, .. } => Some(format!("Validating {name}…")),
         _ => None,
     };
     if let Some(message) = loading_message {
@@ -1342,7 +1426,7 @@ fn draw(
                         .add_modifier(Modifier::BOLD),
                 )),
                 Line::from(Span::styled(
-                    "Ctrl+C to cancel",
+                    "ctrl+c to cancel",
                     Style::default().fg(theme.muted),
                 )),
             ])
@@ -1362,15 +1446,15 @@ fn draw(
         Mode::BranchSelect(_) => {
             components::branch_picker::draw(frame, main_area, state, theme, spinner_start);
         }
-        Mode::SelectBaseBranch { .. } => {
+        Mode::SelectBaseBranch { .. } | Mode::ValidatingNewBranch { .. } => {
             components::branch_picker::draw(frame, main_area, state, theme, spinner_start);
-            components::new_branch::draw(frame, main_area, state, theme);
+            components::new_branch::draw(frame, main_area, state, theme, spinner_start);
         }
         Mode::ConfirmWorktreeDelete { target, .. } => {
             components::branch_picker::draw(frame, main_area, state, theme, spinner_start);
             draw_delete_dialog(frame, main_area, target, theme, spinner_start);
         }
-        Mode::Loading { .. } | Mode::ValidatingNewBranch { .. } => {
+        Mode::Loading { .. } => {
             unreachable!("loading mode returned above")
         }
     }
@@ -1381,15 +1465,9 @@ fn draw(
         footer_area,
     );
     components::error_toast::draw(frame, frame.area(), state, theme);
-    if state.help_open {
-        components::help::draw(
-            frame,
-            frame.area(),
-            keys,
-            binding_mode,
-            !state.toasts.is_empty(),
-            theme,
-        );
+    let toast_visible = !state.toasts.is_empty();
+    if let Some(overlay) = &mut state.help_overlay {
+        components::help::draw(frame, frame.area(), overlay, toast_visible, theme);
     }
 }
 
@@ -1412,6 +1490,13 @@ fn footer_spans<'a>(
             hints.push(Span::raw(format!(" {label}")));
         }
     };
+    if matches!(
+        mode,
+        Mode::ValidatingNewBranch { .. } | Mode::Loading { .. }
+    ) {
+        add(Command::Quit, "quit");
+        return hints;
+    }
     if !matches!(binding_mode, BindingMode::Modal) {
         add(Command::MoveUp, "move");
     }
@@ -1483,17 +1568,17 @@ fn draw_delete_dialog(
                 % components::repo_list::SPINNER_FOR_LOADING.len()];
         lines.push(Line::from(Span::styled(
             format!("{spinner} Removing checkout…"),
-            Style::default().fg(theme.accent),
+            Style::default().fg(theme.secondary),
         )));
     } else {
         lines.push(Line::from(vec![
-            Span::styled("Enter", Style::default().fg(theme.hint)),
+            Span::styled("enter", Style::default().fg(theme.hint)),
             Span::raw(" confirm / "),
-            Span::styled("Esc", Style::default().fg(theme.hint)),
+            Span::styled("esc", Style::default().fg(theme.hint)),
             Span::raw(" cancel"),
         ]));
     }
-    components::dialog::Dialog::new(" Confirm delete ", lines, theme.accent).render(frame, area);
+    components::dialog::Dialog::new(" Confirm delete ", lines, theme.secondary).render(frame, area);
 }
 
 #[cfg(test)]
@@ -1513,6 +1598,7 @@ mod tests {
         },
         state::BranchEntry,
     };
+    use ratatui::{Terminal, backend::TestBackend};
 
     use super::*;
 
@@ -1532,6 +1618,7 @@ mod tests {
             .map(|(key, _)| match key {
                 FilterKey::Repo(path) => path.file_name().unwrap().to_string_lossy().into_owned(),
                 FilterKey::Branch(name) | FilterKey::Base(name) => name.clone(),
+                FilterKey::Help(index) => index.to_string(),
             })
             .collect()
     }
@@ -1600,6 +1687,68 @@ mod tests {
         );
     }
 
+    #[test]
+    fn help_fuzzy_filter_matches_key_command_and_description() {
+        let overlay = components::help::overlay(&KeysConfig::default(), BindingMode::Branch);
+        let items = overlay
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| FilterItem {
+                key: FilterKey::Help(index),
+                text: row.search_text(),
+            })
+            .collect::<Vec<_>>();
+        let matcher = SkimMatcherV2::default();
+        for query in ["ctrl+o", "new_branch", "Create a new branch"] {
+            let filtered = fuzzy_filter(query, &items, &matcher);
+            assert!(filtered.iter().any(|(key, _)| {
+                matches!(key, FilterKey::Help(index) if overlay.rows[*index].command_name == "new_branch")
+            }));
+        }
+    }
+
+    #[test]
+    fn base_picker_text_actions_edit_only_the_base_query() {
+        let mut state = state_with_branch(false);
+        state.branch_list.input.text = "underlying".into();
+        state.mode = Mode::SelectBaseBranch {
+            context: BranchContext {
+                repo_path: "/repo".into(),
+                repo_name: "repo".into(),
+            },
+            flow: BaseBranchSelection {
+                new_name: "feat/new".into(),
+                bases: vec!["main".into(), "feature".into()],
+                list: SearchableList::new(2),
+            },
+        };
+        let Mode::SelectBaseBranch { flow, .. } = &mut state.mode else {
+            unreachable!()
+        };
+        flow.list.input.text = "one two".into();
+        flow.list.input.cursor = flow.list.input.text.len();
+
+        let git = Arc::new(MockGitProvider::default()) as Arc<dyn GitProvider>;
+        let (sender, _rx) = sender();
+        let worker = FilterWorker::spawn(sender.clone());
+        let keys = KeysConfig::default();
+        for action in [
+            Action::CursorLeft,
+            Action::CursorRight,
+            Action::Backspace,
+            Action::DeleteWord,
+            Action::Insert('x'),
+        ] {
+            process_action(action, &mut state, &git, None, &sender, &worker, &keys);
+        }
+        let Mode::SelectBaseBranch { flow, .. } = &state.mode else {
+            unreachable!()
+        };
+        assert_eq!(flow.list.input.text, "one x");
+        assert_eq!(state.branch_list.input.text, "underlying");
+    }
+
     fn state_with_repo() -> AppState {
         let mut state = AppState::new(None);
         state.repos.push(RepoEntry::new(Repo {
@@ -1627,6 +1776,42 @@ mod tests {
         }];
         state.branch_list = SearchableList::new(1);
         state
+    }
+
+    #[test]
+    fn validating_new_branch_keeps_branch_view_visible_under_popup() {
+        let mut state = state_with_branch(false);
+        state.mode = Mode::ValidatingNewBranch {
+            context: BranchContext {
+                repo_path: "/repo".into(),
+                repo_name: "repo".into(),
+            },
+            name: "feat/new".into(),
+        };
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = Theme::from_config(&crate::config::ThemeConfig::default());
+        terminal
+            .draw(|frame| {
+                draw(
+                    frame,
+                    &mut state,
+                    &theme,
+                    &KeysConfig::default(),
+                    Instant::now(),
+                );
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let rendered = buffer
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(rendered.contains("repo — select branch"));
+        assert!(rendered.contains("feature"));
+        assert!(rendered.contains("New branch \"feat/new\""));
+        assert!(rendered.contains("Validating branch name…"));
     }
 
     fn workspace() -> WorkspaceInfo {
@@ -1741,6 +1926,7 @@ mod tests {
             None,
             &sender,
             &filter_worker,
+            &KeysConfig::default(),
         );
         assert_eq!(state.mode, Mode::RepoSelect);
         assert_eq!(state.repo_list.input.text, "repo");

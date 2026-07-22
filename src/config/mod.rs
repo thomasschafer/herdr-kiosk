@@ -39,6 +39,8 @@ pub enum ThemeColor {
 #[serde(default)]
 pub struct ThemeConfig {
     pub accent: ThemeColor,
+    pub secondary: ThemeColor,
+    pub tertiary: ThemeColor,
     pub error: ThemeColor,
     pub warning: ThemeColor,
     pub muted: ThemeColor,
@@ -52,6 +54,8 @@ impl Default for ThemeConfig {
     fn default() -> Self {
         Self {
             accent: ThemeColor::Magenta,
+            secondary: ThemeColor::Cyan,
+            tertiary: ThemeColor::Green,
             error: ThemeColor::Red,
             warning: ThemeColor::Yellow,
             muted: ThemeColor::DarkGray,
@@ -428,14 +432,20 @@ future_theme_key = "blue"
             r#"
 [theme]
 accent = "cyan"
+secondary = "blue"
+tertiary = "yellow"
 highlight_fg = "reset"
 "#,
         )
         .unwrap();
         assert!(warnings.is_empty());
         assert_eq!(config.theme.accent, ThemeColor::Cyan);
+        assert_eq!(config.theme.secondary, ThemeColor::Blue);
+        assert_eq!(config.theme.tertiary, ThemeColor::Yellow);
         assert_eq!(config.theme.highlight_fg, ThemeColor::Reset);
         assert!(parse_config("[theme]\naccent = \"#ff00ff\"").is_err());
+        assert!(parse_config("[theme]\nsecondary = \"#00ffff\"").is_err());
+        assert!(parse_config("[theme]\ntertiary = [0, 255, 0]").is_err());
         assert!(parse_config("[theme]\naccent = [255, 0, 255]").is_err());
     }
 

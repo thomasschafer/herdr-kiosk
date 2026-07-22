@@ -60,9 +60,9 @@ fn draw_welcome(frame: &mut Frame, area: Rect, theme: &Theme, path: &str) {
         ]),
         Line::raw(""),
         Line::from(vec![
-            Span::styled("Enter", Style::default().fg(theme.hint)),
+            Span::styled("enter", Style::default().fg(theme.hint)),
             Span::raw(" continue   "),
-            Span::styled("Esc", Style::default().fg(theme.hint)),
+            Span::styled("esc", Style::default().fg(theme.hint)),
             Span::raw(" quit"),
         ]),
     ];
@@ -96,7 +96,7 @@ fn draw_directories(frame: &mut Frame, area: Rect, state: &SetupState, theme: &T
     ])
     .split(inner);
     frame.render_widget(
-        Paragraph::new("Add one or more directories. Enter on an empty input when finished.")
+        Paragraph::new("Add one or more directories. Submit an empty input when finished.")
             .alignment(Alignment::Center),
         chunks[0],
     );
@@ -139,9 +139,9 @@ fn draw_directories(frame: &mut Frame, area: Rect, state: &SetupState, theme: &T
         chunks[3],
     );
     let default_message = if pending_path.is_some() {
-        "Enter add directory   Esc edit path"
+        "enter add directory   esc edit path"
     } else {
-        "Enter add/finish   Tab complete   Ctrl+X remove last   Esc quit"
+        "enter add/finish   tab complete   ctrl+x remove last   esc quit"
     };
     let message = state.message.as_deref().unwrap_or(default_message);
     frame.render_widget(
@@ -223,9 +223,9 @@ fn draw_confirm(frame: &mut Frame, area: Rect, state: &SetupState, theme: &Theme
         ]),
         Line::raw(""),
         Line::from(vec![
-            Span::styled("Enter", Style::default().fg(theme.hint)),
+            Span::styled("enter", Style::default().fg(theme.hint)),
             Span::raw(" write config and open picker   "),
-            Span::styled("Esc", Style::default().fg(theme.hint)),
+            Span::styled("esc", Style::default().fg(theme.hint)),
             Span::raw(" back"),
         ]),
     ]);

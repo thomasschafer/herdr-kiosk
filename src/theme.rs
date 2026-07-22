@@ -12,6 +12,8 @@ use crate::config::{ThemeColor, ThemeConfig};
 
 pub struct Theme {
     pub accent: Color,
+    pub secondary: Color,
+    pub tertiary: Color,
     pub error: Color,
     pub warning: Color,
     pub muted: Color,
@@ -60,6 +62,8 @@ impl Theme {
             };
         Self {
             accent: color(config.accent),
+            secondary: color(config.secondary),
+            tertiary: color(config.tertiary),
             error: color(config.error),
             warning: color(config.warning),
             muted,
@@ -195,6 +199,8 @@ mod tests {
     fn theme_is_limited_to_terminal_palette_colors() {
         let theme = Theme::from_config(&ThemeConfig::default());
         assert_eq!(theme.accent, Color::Magenta);
+        assert_eq!(theme.secondary, Color::Cyan);
+        assert_eq!(theme.tertiary, Color::Green);
         assert_eq!(theme.open, Color::Green);
         assert!(matches!(
             theme.accent,
@@ -248,5 +254,19 @@ mod tests {
         );
         assert_eq!(theme.muted, Color::Gray);
         assert_eq!(theme.border, Color::Gray);
+        assert_eq!(theme.secondary, Color::Cyan);
+        assert_eq!(theme.tertiary, Color::Green);
+    }
+
+    #[test]
+    fn semantic_accents_remain_overridable_terminal_colors() {
+        let config = ThemeConfig {
+            secondary: ThemeColor::Blue,
+            tertiary: ThemeColor::Yellow,
+            ..ThemeConfig::default()
+        };
+        let theme = Theme::from_config_with_background(&config, Some(BackgroundTone::Light));
+        assert_eq!(theme.secondary, Color::Blue);
+        assert_eq!(theme.tertiary, Color::Yellow);
     }
 }

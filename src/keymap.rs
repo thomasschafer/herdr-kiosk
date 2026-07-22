@@ -8,9 +8,23 @@ use crate::{
 
 pub fn resolve_action(key: KeyEvent, state: &AppState, keys: &KeysConfig) -> Option<Action> {
     let chord = KeyChord::from_event(key);
-    if state.help_open {
-        return (chord == KeyChord::new(KeyCode::Esc, KeyModifiers::NONE))
-            .then_some(Action::CloseHelp);
+    if state.help_overlay.is_some() {
+        if chord == KeyChord::new(KeyCode::Esc, KeyModifiers::NONE) {
+            return Some(Action::CloseHelp);
+        }
+        if let Some(action) = keys
+            .command_for(KeysConfig::mode_for(&state.mode), chord)
+            .and_then(help_command_to_action)
+        {
+            return Some(action);
+        }
+        if let KeyCode::Char(character) = chord.code
+            && chord.modifiers == KeyModifiers::NONE
+            && (character.is_ascii_graphic() || character == ' ')
+        {
+            return Some(Action::Insert(character));
+        }
+        return None;
     }
 
     if !state.toasts.is_empty() && keys.is_dismiss_toast(chord) {
@@ -48,6 +62,27 @@ pub fn resolve_action(key: KeyEvent, state: &AppState, keys: &KeysConfig) -> Opt
         return Some(Action::Insert(character));
     }
     None
+}
+
+fn help_command_to_action(command: Command) -> Option<Action> {
+    match command {
+        Command::MoveUp => Some(Action::MoveSelection(-1)),
+        Command::MoveDown => Some(Action::MoveSelection(1)),
+        Command::Clear => Some(Action::ClearQuery),
+        Command::Backspace => Some(Action::Backspace),
+        Command::DeleteWord => Some(Action::DeleteWord),
+        Command::CursorLeft => Some(Action::CursorLeft),
+        Command::CursorRight => Some(Action::CursorRight),
+        Command::Noop
+        | Command::Quit
+        | Command::Help
+        | Command::DismissToast
+        | Command::Open
+        | Command::BranchesView
+        | Command::Back
+        | Command::NewBranch
+        | Command::Delete => None,
+    }
 }
 
 fn command_to_action(command: Command, state: &AppState) -> Option<Action> {
@@ -126,7 +161,10 @@ fn active_query(state: &AppState) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{BaseBranchSelection, BranchContext, DeleteWorktreeTarget, SearchableList};
+    use crate::state::{
+        BaseBranchSelection, BranchContext, DeleteWorktreeTarget, HelpBindingRow, HelpOverlayState,
+        SearchableList,
+    };
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, modifiers)
@@ -225,6 +263,81 @@ mod tests {
         assert_eq!(
             resolve_action(key(KeyCode::Enter, KeyModifiers::NONE), &state, &keys),
             Some(Action::ConfirmDeleteWorktree)
+        );
+    }
+
+    #[test]
+    fn base_picker_resolves_all_search_and_navigation_actions() {
+        let mut state = AppState::new(None);
+        state.mode = Mode::SelectBaseBranch {
+            context: BranchContext {
+                repo_path: "/repo".into(),
+                repo_name: "repo".into(),
+            },
+            flow: BaseBranchSelection {
+                new_name: "feat".into(),
+                bases: vec!["main".into(), "next".into()],
+                list: SearchableList::new(2),
+            },
+        };
+        let keys = KeysConfig::default();
+        for (code, modifiers, expected) in [
+            (KeyCode::Up, KeyModifiers::NONE, Action::MoveSelection(-1)),
+            (KeyCode::Down, KeyModifiers::NONE, Action::MoveSelection(1)),
+            (
+                KeyCode::Char('p'),
+                KeyModifiers::CONTROL,
+                Action::MoveSelection(-1),
+            ),
+            (
+                KeyCode::Char('n'),
+                KeyModifiers::CONTROL,
+                Action::MoveSelection(1),
+            ),
+            (KeyCode::Backspace, KeyModifiers::NONE, Action::Backspace),
+            (
+                KeyCode::Char('w'),
+                KeyModifiers::CONTROL,
+                Action::DeleteWord,
+            ),
+            (KeyCode::Left, KeyModifiers::NONE, Action::CursorLeft),
+            (KeyCode::Right, KeyModifiers::NONE, Action::CursorRight),
+        ] {
+            assert_eq!(
+                resolve_action(key(code, modifiers), &state, &keys),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn help_overlay_searches_without_triggering_underlying_mode_commands() {
+        let mut state = AppState::new(None);
+        state.help_overlay = Some(HelpOverlayState {
+            rows: vec![HelpBindingRow {
+                section_name: "general",
+                key_display: "ctrl+h".into(),
+                command_name: "help",
+                description: "Show active key bindings",
+            }],
+            list: SearchableList::new(1),
+        });
+        let keys = KeysConfig::default();
+        assert_eq!(
+            resolve_action(key(KeyCode::Char('q'), KeyModifiers::NONE), &state, &keys),
+            Some(Action::Insert('q'))
+        );
+        assert_eq!(
+            resolve_action(key(KeyCode::Backspace, KeyModifiers::NONE), &state, &keys),
+            Some(Action::Backspace)
+        );
+        assert_eq!(
+            resolve_action(key(KeyCode::Down, KeyModifiers::NONE), &state, &keys),
+            Some(Action::MoveSelection(1))
+        );
+        assert_eq!(
+            resolve_action(key(KeyCode::Esc, KeyModifiers::NONE), &state, &keys),
+            Some(Action::CloseHelp)
         );
     }
 }

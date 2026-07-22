@@ -37,7 +37,7 @@ pub fn draw(
         &super::search_bar::SearchBarStyle {
             title: &title,
             placeholder: "Type to search branches…",
-            border_color: theme.accent,
+            border_color: theme.secondary,
             muted_color: theme.muted,
         },
         &state.branch_list.input.text,
@@ -83,7 +83,7 @@ pub fn draw(
         )
         .highlight_style(
             Style::default()
-                .bg(theme.accent)
+                .bg(theme.secondary)
                 .fg(theme.highlight_fg)
                 .add_modifier(Modifier::BOLD),
         )
@@ -119,11 +119,11 @@ fn branch_item(branch: &BranchEntry, theme: &Theme, row_width: usize) -> ListIte
     if branch.remote.is_none() && branch.worktree_path.is_some() {
         left.push(Span::styled(
             " (worktree)",
-            Style::default().fg(theme.warning),
+            Style::default().fg(theme.secondary),
         ));
     }
     if branch.remote.is_none() && branch.is_current {
-        left.push(Span::styled(" *", Style::default().fg(theme.accent)));
+        left.push(Span::styled(" *", Style::default().fg(theme.secondary)));
     }
     if branch.remote.is_none() && branch.is_default {
         left.push(Span::styled(" (default)", Style::default().fg(theme.muted)));

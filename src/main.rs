@@ -269,7 +269,7 @@ fn draw_no_search_dirs(frame: &mut Frame, location: &str) {
             Line::raw(""),
             Line::raw(location),
             Line::raw(""),
-            Line::raw("q / Esc / Ctrl+C to quit"),
+            Line::raw("q / esc / ctrl+c to quit"),
         ])
         .alignment(Alignment::Center),
         area,

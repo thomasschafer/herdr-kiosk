@@ -45,35 +45,39 @@ GitHub.
 
 ## Usage
 
-The repository view fuzzy-filters discovered repositories. Press `Enter` to open
-the selected repository's main checkout, or `Tab` to switch to its branch view.
+The repository view fuzzy-filters discovered repositories. Press `enter` to open
+the selected repository's main checkout, or `tab` to switch to its branch view.
 The branch view combines local branches, remote-only branches, and existing
-worktrees; `Enter` focuses an existing checkout or asks Herdr to create and focus a
+worktrees; `enter` focuses an existing checkout or asks Herdr to create and focus a
 new worktree.
 
 Default bindings:
 
 | Key | Where | Action |
 | --- | --- | --- |
-| `Ctrl+C` | Anywhere | Quit the picker |
-| `Ctrl+H` | Anywhere | Show active bindings |
-| `Ctrl+X` | Notification | Dismiss the notification |
-| `Up` / `Ctrl+P` | Lists | Move up |
-| `Down` / `Ctrl+N` | Lists | Move down |
-| `Esc` | Search | Clear the query |
-| `Backspace` | Search | Delete the previous character |
-| `Alt+Backspace` / `Ctrl+W` | Search | Delete the previous word |
-| `Left` / `Right` | Search | Move the cursor |
-| `Enter` | Repository view | Open the main checkout |
-| `Tab` | Repository view | Show branches |
-| `Q` | Repository view | Quit |
-| `Enter` | Branch view | Open or create the selected checkout |
-| `Esc` | Branch view | Return to repositories |
-| `Ctrl+O` | Branch view | Create a new branch |
-| `Ctrl+X` | Branch view | Delete the selected checkout |
-| `Enter` / `Esc` | Dialogs | Confirm / cancel |
+| `ctrl+c` | Anywhere | Quit the picker |
+| `ctrl+h` | Anywhere | Show active bindings |
+| `ctrl+x` | Notification | Dismiss the notification |
+| `↑` / `ctrl+p` | Lists | Move up |
+| `↓` / `ctrl+n` | Lists | Move down |
+| `esc` | Search | Clear the query |
+| `backspace` | Search | Delete the previous character |
+| `alt+backspace` / `ctrl+w` | Search | Delete the previous word |
+| `←` / `→` | Search | Move the cursor |
+| `enter` | Repository view | Open the main checkout |
+| `tab` | Repository view | Show branches |
+| `q` | Repository view | Quit |
+| `enter` | Branch view | Open or create the selected checkout |
+| `esc` | Branch view | Return to repositories |
+| `ctrl+o` | Branch view | Create a new branch |
+| `ctrl+x` | Branch view | Delete the selected checkout |
+| `enter` / `esc` | Dialogs | Confirm / cancel |
 
-To create a branch, type its new name in the branch view and press `Ctrl+O`, then
+The `ctrl+h` overlay shows the active bindings for the current view, including
+configuration overrides. Type there to fuzzy-filter by key, command, or description;
+`esc` closes help without changing the picker query underneath.
+
+To create a branch, type its new name in the branch view and press `ctrl+o`, then
 choose the base branch. Deletion removes a Herdr-created linked worktree but keeps
 the Git branch. The main checkout and remote-only branches cannot be deleted. An
 open checkout closes its Herdr workspace first, and a dirty checkout requires a
@@ -120,6 +124,8 @@ optional; these are the defaults:
 ```toml
 [theme]
 accent = "magenta"
+secondary = "cyan"
+tertiary = "green"
 error = "red"
 warning = "yellow"
 muted = "dark_gray"
@@ -128,6 +134,9 @@ hint = "blue"
 highlight_fg = "black"
 open = "green"
 ```
+
+`accent` identifies the repository picker, `secondary` identifies branch and
+new-branch flows, and `tertiary` identifies help.
 
 Accepted colors are `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`,
 `white`, `gray`, `dark_gray`, and `reset`. On a detected light terminal background,

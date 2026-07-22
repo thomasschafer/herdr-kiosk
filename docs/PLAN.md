@@ -37,6 +37,7 @@ Product decisions made so far. Add new entries as they're made; don't relitigate
 | D15 | Process | Claude orchestrates/plans/verifies, Codex (gpt-5.6 sol, high reasoning) implements, Tom decides product questions and hand-tests (see §8) |
 | D16 | Version control | Commit each verified chunk and push to `origin main` (github.com/thomasschafer/herdr-kiosk) as we go; no co-author lines. Pause for Tom only when something genuinely needs review |
 | D17 | Performance | Users may have very large repo/branch counts. Correctness first, but weigh allocation, process-spawn, and traversal costs in reviews as a standing concern; pragmatic, not premature |
+| D18 | Help search dismissal | Esc always closes the help overlay, even with a non-empty help query. The overlay owns and discards its query, leaving the underlying picker query untouched |
 
 ## 3. Corrections to the research doc (source-verified against herdr 0.7.4)
 
@@ -369,6 +370,11 @@ PowerShell prebuilt-fetch path yet; adding one is post-v1 work.
   Control/Alt input.
 - [x] Directory depth is selected inline on the Search directories screen, preserving
   the pending path and Added list; Esc restores the path for editing.
+- [x] UI polish batch: base-branch selection receives the full searchable-list key
+  layers; displayed chords use lowercase modifier/key conventions; repository,
+  branch, and help surfaces use magenta/cyan/green semantic accents; help fuzzy-filters
+  effective bindings by key, command, or description; new-branch validation remains
+  over the visible branch picker in the same container used by base selection.
 
 Publishing to herdr.dev/plugins (verified against herdr's marketplace doc; the index
 is automatic and unreviewed):

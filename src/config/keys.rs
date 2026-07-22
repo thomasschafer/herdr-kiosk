@@ -86,31 +86,31 @@ impl FromStr for KeyChord {
 impl fmt::Display for KeyChord {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.modifiers.contains(KeyModifiers::CONTROL) {
-            formatter.write_str("Ctrl+")?;
+            formatter.write_str("ctrl+")?;
         }
         if self.modifiers.contains(KeyModifiers::ALT) {
-            formatter.write_str("Alt+")?;
+            formatter.write_str("alt+")?;
         }
         if self.modifiers.contains(KeyModifiers::SHIFT) {
-            formatter.write_str("Shift+")?;
+            formatter.write_str("shift+")?;
         }
         match self.code {
-            KeyCode::Char(' ') => formatter.write_str("Space"),
-            KeyCode::Char(character) => write!(formatter, "{}", character.to_ascii_uppercase()),
-            KeyCode::Enter => formatter.write_str("Enter"),
-            KeyCode::Esc => formatter.write_str("Esc"),
-            KeyCode::Tab => formatter.write_str("Tab"),
-            KeyCode::Backspace => formatter.write_str("Backspace"),
-            KeyCode::Delete => formatter.write_str("Delete"),
+            KeyCode::Char(' ') => formatter.write_str("space"),
+            KeyCode::Char(character) => write!(formatter, "{}", character.to_ascii_lowercase()),
+            KeyCode::Enter => formatter.write_str("enter"),
+            KeyCode::Esc => formatter.write_str("esc"),
+            KeyCode::Tab => formatter.write_str("tab"),
+            KeyCode::Backspace => formatter.write_str("backspace"),
+            KeyCode::Delete => formatter.write_str("delete"),
             KeyCode::Up => formatter.write_str("↑"),
             KeyCode::Down => formatter.write_str("↓"),
             KeyCode::Left => formatter.write_str("←"),
             KeyCode::Right => formatter.write_str("→"),
-            KeyCode::Home => formatter.write_str("Home"),
-            KeyCode::End => formatter.write_str("End"),
-            KeyCode::PageUp => formatter.write_str("PageUp"),
-            KeyCode::PageDown => formatter.write_str("PageDown"),
-            _ => formatter.write_str("Unknown"),
+            KeyCode::Home => formatter.write_str("home"),
+            KeyCode::End => formatter.write_str("end"),
+            KeyCode::PageUp => formatter.write_str("pageup"),
+            KeyCode::PageDown => formatter.write_str("pagedown"),
+            _ => formatter.write_str("unknown"),
         }
     }
 }
@@ -146,6 +146,27 @@ pub enum Command {
 }
 
 impl Command {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Noop => "noop",
+            Self::Quit => "quit",
+            Self::Help => "help",
+            Self::DismissToast => "dismiss_toast",
+            Self::MoveUp => "move_up",
+            Self::MoveDown => "move_down",
+            Self::Open => "open",
+            Self::BranchesView => "branches_view",
+            Self::Back => "back",
+            Self::NewBranch => "new_branch",
+            Self::Delete => "delete",
+            Self::Clear => "clear",
+            Self::Backspace => "backspace",
+            Self::DeleteWord => "delete_word",
+            Self::CursorLeft => "cursor_left",
+            Self::CursorRight => "cursor_right",
+        }
+    }
+
     pub const fn description(self) -> &'static str {
         match self {
             Self::Noop => "Unbound",
@@ -219,6 +240,7 @@ struct RawKeysConfig {
 pub enum BindingMode {
     Repo,
     Branch,
+    BaseBranch,
     Modal,
 }
 
@@ -298,7 +320,9 @@ impl KeysConfig {
         command = match mode {
             BindingMode::Repo => self.repo_select.get(&chord).copied().or(command),
             BindingMode::Branch => self.branch_select.get(&chord).copied().or(command),
-            BindingMode::Modal => self.modal.get(&chord).copied().or(command),
+            BindingMode::BaseBranch | BindingMode::Modal => {
+                self.modal.get(&chord).copied().or(command)
+            }
         };
         command
     }
@@ -318,8 +342,8 @@ impl KeysConfig {
         match mode {
             Mode::RepoSelect => BindingMode::Repo,
             Mode::BranchSelect(_) => BindingMode::Branch,
+            Mode::SelectBaseBranch { .. } => BindingMode::BaseBranch,
             Mode::ValidatingNewBranch { .. }
-            | Mode::SelectBaseBranch { .. }
             | Mode::ConfirmWorktreeDelete { .. }
             | Mode::Loading { .. } => BindingMode::Modal,
         }
@@ -344,6 +368,12 @@ impl KeysConfig {
             ],
             BindingMode::Branch => vec![
                 ("branches", &self.branch_select),
+                ("navigation", &self.list_navigation),
+                ("search", &self.text_edit),
+                ("general", &self.general),
+            ],
+            BindingMode::BaseBranch => vec![
+                ("base branch", &self.modal),
                 ("navigation", &self.list_navigation),
                 ("search", &self.text_edit),
                 ("general", &self.general),
@@ -458,15 +488,16 @@ mod tests {
 
     #[test]
     fn parses_and_displays_valid_chords() {
-        assert_eq!("C-b".parse::<KeyChord>().unwrap().to_string(), "Ctrl+B");
+        assert_eq!("C-b".parse::<KeyChord>().unwrap().to_string(), "ctrl+b");
         assert_eq!(
             "Alt-backspace".parse::<KeyChord>().unwrap().to_string(),
-            "Alt+Backspace"
+            "alt+backspace"
         );
         assert_eq!(
             "shift-tab".parse::<KeyChord>().unwrap().to_string(),
-            "Shift+Tab"
+            "shift+tab"
         );
+        assert_eq!("space".parse::<KeyChord>().unwrap().to_string(), "space");
     }
 
     #[test]
@@ -516,7 +547,43 @@ mod tests {
             .map(|(key, command)| format!("{key} {command:?}"))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(rendered.contains("Ctrl+B NewBranch"));
-        assert!(!rendered.contains("Ctrl+O NewBranch"));
+        assert!(rendered.contains("ctrl+b NewBranch"));
+        assert!(!rendered.contains("ctrl+o NewBranch"));
+    }
+
+    #[test]
+    fn base_branch_mode_layers_search_navigation_and_dialog_bindings() {
+        let keys = KeysConfig::default();
+        for (chord, command) in [
+            ("up", Command::MoveUp),
+            ("down", Command::MoveDown),
+            ("C-p", Command::MoveUp),
+            ("C-n", Command::MoveDown),
+            ("backspace", Command::Backspace),
+            ("C-w", Command::DeleteWord),
+            ("left", Command::CursorLeft),
+            ("right", Command::CursorRight),
+            ("enter", Command::Open),
+            ("esc", Command::Back),
+        ] {
+            assert_eq!(
+                keys.command_for(BindingMode::BaseBranch, chord.parse().unwrap()),
+                Some(command),
+                "unexpected base-branch command for {chord}"
+            );
+        }
+    }
+
+    #[test]
+    fn delete_dialog_remains_modal() {
+        let keys = KeysConfig::default();
+        assert_eq!(
+            keys.command_for(BindingMode::Modal, "backspace".parse().unwrap()),
+            None
+        );
+        assert_eq!(
+            keys.command_for(BindingMode::Modal, "down".parse().unwrap()),
+            None
+        );
     }
 }

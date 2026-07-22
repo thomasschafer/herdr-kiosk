@@ -177,6 +177,29 @@ pub struct BaseBranchSelection {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HelpBindingRow {
+    pub section_name: &'static str,
+    pub key_display: String,
+    pub command_name: &'static str,
+    pub description: &'static str,
+}
+
+impl HelpBindingRow {
+    pub fn search_text(&self) -> String {
+        format!(
+            "{} {} {}",
+            self.key_display, self.command_name, self.description
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HelpOverlayState {
+    pub rows: Vec<HelpBindingRow>,
+    pub list: SearchableList,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeleteWorktreeTarget {
     pub branch_name: String,
     pub worktree_path: PathBuf,
@@ -243,7 +266,7 @@ pub struct AppState {
     pub current_cwd: Option<PathBuf>,
     pub selection_touched: bool,
     pub toasts: VecDeque<Toast>,
-    pub help_open: bool,
+    pub help_overlay: Option<HelpOverlayState>,
     pub active_list_rows: usize,
     pub repo_filter_generation: u64,
     pub branch_filter_generation: u64,
@@ -253,6 +276,7 @@ pub struct AppState {
     pub fetching_remote_repo: Option<PathBuf>,
     pub fetch_warning_remotes: HashSet<String>,
     pub base_filter_generation: u64,
+    pub help_filter_generation: u64,
     pub pending_worktree_deletes: Vec<PendingWorktreeDelete>,
     pub in_flight_worktree_removals: HashSet<PathBuf>,
 }
@@ -272,7 +296,7 @@ impl AppState {
             current_cwd,
             selection_touched: false,
             toasts: VecDeque::new(),
-            help_open: false,
+            help_overlay: None,
             active_list_rows: 1,
             repo_filter_generation: 0,
             branch_filter_generation: 0,
@@ -282,6 +306,7 @@ impl AppState {
             fetching_remote_repo: None,
             fetch_warning_remotes: HashSet::new(),
             base_filter_generation: 0,
+            help_filter_generation: 0,
             pending_worktree_deletes: Vec::new(),
             in_flight_worktree_removals: HashSet::new(),
         }
@@ -802,6 +827,19 @@ mod tests {
         assert_eq!(input.text, "one ");
         input.delete_word();
         assert!(input.text.is_empty());
+    }
+
+    #[test]
+    fn searchable_list_scroll_follows_keyboard_selection() {
+        let mut list = SearchableList::new(8);
+        list.move_selection(6);
+        list.update_scroll_offset(3);
+        assert_eq!(list.selected, Some(6));
+        assert_eq!(list.scroll_offset, 4);
+        list.move_selection(-5);
+        list.update_scroll_offset(3);
+        assert_eq!(list.selected, Some(1));
+        assert_eq!(list.scroll_offset, 1);
     }
 
     #[test]

@@ -11,6 +11,7 @@ pub enum FilterTarget {
     Repos,
     Branches,
     Bases,
+    Help,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +19,7 @@ pub enum FilterKey {
     Repo(PathBuf),
     Branch(String),
     Base(String),
+    Help(usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
