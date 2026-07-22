@@ -16,11 +16,12 @@ const CONFIG_START: &str = "<!-- CONFIG:START -->";
 const CONFIG_END: &str = "<!-- CONFIG:END -->";
 
 pub fn generate(readme_path: &Path, config_path: &Path, check: bool) -> Result<()> {
-    let current = fs::read_to_string(readme_path)
+    let raw = fs::read_to_string(readme_path)
         .with_context(|| format!("failed to read {}", readme_path.display()))?;
+    let current = normalize_line_endings(&raw);
     let generated = generate_config_reference(&current, config_path)?;
 
-    if generated == current {
+    if generated == current && (check || generated == raw) {
         println!("{} is up to date", readme_path.display());
         return Ok(());
     }
@@ -35,6 +36,10 @@ pub fn generate(readme_path: &Path, config_path: &Path, check: bool) -> Result<(
         .with_context(|| format!("failed to write {}", readme_path.display()))?;
     println!("updated {}", readme_path.display());
     Ok(())
+}
+
+fn normalize_line_endings(input: &str) -> String {
+    input.replace('\r', "")
 }
 
 fn generate_config_reference(readme: &str, config_path: &Path) -> Result<String> {
@@ -405,5 +410,13 @@ mod tests {
     #[test]
     fn formats_rust_names_as_serde_snake_case() {
         assert_eq!(snake_case("DarkGray"), "dark_gray");
+    }
+
+    #[test]
+    fn normalizes_crlf_line_endings() {
+        assert_eq!(
+            normalize_line_endings("first\r\nsecond\r\n"),
+            "first\nsecond\n"
+        );
     }
 }
