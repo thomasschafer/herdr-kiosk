@@ -62,8 +62,14 @@ These override the research doc:
    `worktree_operation_in_progress` (e.g. double-Enter on a slow create) and
    `stale_worktree_operation`.
 5. Default checkout path collisions: herdr's `<worktrees.directory>/<repo-name>/<branch-slug>`
-   is keyed by repo directory name. When the picker knows two repos share a name, pass
-   an explicit `--path` to disambiguate (mirroring the display disambiguation of D14).
+   is keyed by repo directory name. Original intent was to pass an explicit `--path`
+   when two repos share a name — but herdr exposes `worktrees.directory` through no
+   API or CLI (verified: `herdr config` only has check/reset-keys), so the plugin
+   cannot compute a correct sibling path without fragile parsing of herdr's own
+   config file. Deferred: the double collision (same repo name AND same branch) makes
+   herdr's `git worktree add` fail on the existing directory, which we surface as a
+   clean error toast. Watch item: request upstream exposure (e.g. `worktree create
+   --path-suffix` or config in an API response) if this bites in practice.
 
 ## 4. Architecture
 

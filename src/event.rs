@@ -6,6 +6,18 @@ use crate::{
     state::BranchEntry,
 };
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FilterTarget {
+    Repos,
+    Branches,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FilterKey {
+    Repo(PathBuf),
+    Branch(String),
+}
+
 #[derive(Debug, Clone)]
 pub enum AppEvent {
     ReposFound {
@@ -20,14 +32,19 @@ pub enum AppEvent {
     },
     ScanWarning(ScanWarning),
     FilterCompleted {
+        target: FilterTarget,
         generation: u64,
-        matches: Vec<(PathBuf, i64)>,
-        selected_path: Option<PathBuf>,
+        matches: Vec<(FilterKey, i64)>,
+        selected: Option<FilterKey>,
     },
     BranchesLoaded {
+        repo_path: PathBuf,
         branches: Vec<BranchEntry>,
         worktrees: Vec<Worktree>,
-        local_names: Vec<String>,
+    },
+    BranchLoadFailed {
+        repo_path: PathBuf,
+        message: String,
     },
     RemoteBranchesLoaded {
         branches: Vec<BranchEntry>,
@@ -56,7 +73,16 @@ pub enum AppEvent {
         repo_path: PathBuf,
         worktrees: Vec<WorktreeInfo>,
     },
+    OpenWorktreesFailed {
+        repo_path: PathBuf,
+        message: String,
+    },
     RepoOpened,
+    RepoOpenFailed(String),
+    BranchOperationFailed {
+        repo_path: PathBuf,
+        message: String,
+    },
+    OpenWorkspacesFailed(String),
     GitError(String),
-    HerdrError(String),
 }

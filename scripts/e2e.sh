@@ -2,11 +2,11 @@
 set -euo pipefail
 
 PROJECT_ROOT=$(cd "$(dirname "$0")/.." && pwd)
-HK_ROOT=${HK_E2E_HOME:-/tmp/hk-m3}
+HK_ROOT=${HK_E2E_HOME:-/tmp/hk-m4}
 HERDR_BIN=${HERDR:-"$PROJECT_ROOT/../herdr/target/release/herdr"}
 HK_HOME_DIR="$HK_ROOT/home"
 TMUX_SOCKET="$HK_ROOT/tmux.sock"
-SESSION=hk-m3
+SESSION=hk-m4
 LAST_SCREEN="$HK_ROOT/last-screen.txt"
 CARGO_PATH=/Users/tomschafer/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin
 
@@ -93,10 +93,53 @@ assert_screen_absent() {
     fi
 }
 
+assert_screen_line_contains_all() {
+    local anchor=$1
+    shift
+    local lines
+    capture
+    lines=$(grep -F "$anchor" "$LAST_SCREEN" || true)
+    [ -n "$lines" ] || fail "screen had no line containing: $anchor"
+    local pattern
+    for pattern in "$@"; do
+        printf '%s\n' "$lines" | grep -Fq "$pattern" \
+            || fail "line containing '$anchor' did not also contain: $pattern"
+    done
+}
+
+assert_focused_checkout() {
+    local checkout=$1
+    local workspaces
+    workspaces=$(h workspace list)
+    printf '%s' "$workspaces" | /usr/bin/python3 -c '
+import json
+import os
+import sys
+
+checkout = os.path.realpath(sys.argv[1])
+workspaces = json.load(sys.stdin)["result"]["workspaces"]
+if not any(
+    workspace.get("focused")
+    and os.path.realpath(workspace.get("worktree", {}).get("checkout_path", "")) == checkout
+    for workspace in workspaces
+):
+    raise SystemExit(1)
+' "$checkout" || fail "workspace for $checkout was not focused and grouped"
+}
+
+workspace_count() {
+    h workspace list | /usr/bin/python3 -c '
+import json
+import sys
+
+print(len(json.load(sys.stdin)["result"]["workspaces"]))
+'
+}
+
 make_repo() {
     local path=$1
     mkdir -p "$path"
-    git -C "$path" init -q
+    git -C "$path" init -q -b master
     printf 'fixture\n' >"$path/README.md"
     git -C "$path" add README.md
     git -C "$path" -c user.name=E2E -c user.email=e2e@example.invalid commit -qm initial
@@ -115,6 +158,11 @@ make_repo "$HK_ROOT/repos/alpha/repo-same"
 make_repo "$HK_ROOT/repos/beta/repo-same"
 make_repo "$HK_ROOT/repos/deep/level-one/level-two/nested-repo"
 make_repo "$HK_ROOT/repos/direct/open-me"
+git -C "$HK_ROOT/repos/direct/open-me" branch feature
+git -C "$HK_ROOT/repos/direct/open-me" branch plain
+mkdir -p "$HK_ROOT/existing-worktrees"
+git -C "$HK_ROOT/repos/direct/open-me" worktree add -q \
+    "$HK_ROOT/existing-worktrees/feature" feature
 
 printf 'building plugin...\n'
 (cd "$PROJECT_ROOT" && env PATH="$CARGO_PATH" cargo build --release)
@@ -177,6 +225,69 @@ t send-keys -t "$SESSION" open-me
 wait_screen_contains "● open"
 assert_screen_contains "open-me"
 printf 'open indicator: ok\n'
+
+t send-keys -t "$SESSION" Tab
+wait_screen_contains "open-me — select branch"
+wait_screen_contains "feature"
+wait_screen_contains "plain"
+wait_screen_contains "master"
+wait_screen_absent "loading…"
+assert_screen_line_contains_all "feature" "(worktree)"
+assert_screen_line_contains_all "master" "(worktree)" "*" "(default)"
+printf 'branch listing and markers: ok\n'
+
+t send-keys -t "$SESSION" plain
+wait_screen_contains "1 of 3 branches"
+t send-keys -t "$SESSION" Enter
+wait_screen_absent "open-me — select branch" 120
+
+PLAIN_WORKTREE="$HK_ROOT/worktrees/open-me/plain"
+[ -d "$PLAIN_WORKTREE" ] || fail "plain worktree was not created under sandbox worktrees"
+assert_focused_checkout "$PLAIN_WORKTREE"
+printf 'plain branch create and focus: ok\n'
+
+h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
+wait_screen_contains "herdr-kiosk — select repo"
+t send-keys -t "$SESSION" open-me
+wait_screen_contains "1 of 4 repos"
+t send-keys -t "$SESSION" Tab
+wait_screen_contains "open-me — select branch"
+t send-keys -t "$SESSION" plain
+wait_screen_contains "1 of 3 branches"
+wait_screen_contains "● open"
+assert_screen_line_contains_all "plain" "(worktree)" "● open"
+WORKSPACE_COUNT_BEFORE=$(workspace_count)
+t send-keys -t "$SESSION" Enter
+wait_screen_absent "open-me — select branch" 120
+assert_focused_checkout "$PLAIN_WORKTREE"
+WORKSPACE_COUNT_AFTER=$(workspace_count)
+[ "$WORKSPACE_COUNT_AFTER" = "$WORKSPACE_COUNT_BEFORE" ] \
+    || fail "reopening plain created a duplicate workspace"
+printf 'plain branch reopen focuses existing workspace: ok\n'
+
+h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
+wait_screen_contains "herdr-kiosk — select repo"
+t send-keys -t "$SESSION" open-me
+wait_screen_contains "1 of 4 repos"
+t send-keys -t "$SESSION" Tab
+wait_screen_contains "open-me — select branch"
+t send-keys -t "$SESSION" master
+wait_screen_contains "1 of 3 branches"
+t send-keys -t "$SESSION" Enter
+wait_screen_absent "open-me — select branch" 120
+assert_focused_checkout "$HK_ROOT/repos/direct/open-me"
+printf 'main checkout branch focuses source workspace: ok\n'
+
+h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
+wait_screen_contains "herdr-kiosk — select repo"
+t send-keys -t "$SESSION" open-me
+wait_screen_contains "1 of 4 repos"
+t send-keys -t "$SESSION" Tab
+wait_screen_contains "open-me — select branch"
+t send-keys -t "$SESSION" Escape
+wait_screen_contains "herdr-kiosk — select repo"
+assert_screen_absent "open-me — select branch"
+printf 'branch escape returns to repo picker: ok\n'
 
 t send-keys -t "$SESSION" C-c
 wait_screen_absent "herdr-kiosk — select repo"

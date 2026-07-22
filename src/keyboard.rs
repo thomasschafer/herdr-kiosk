@@ -9,6 +9,9 @@ pub enum Action {
     CursorRight,
     ClearQuery,
     OpenRepo,
+    OpenBranches,
+    OpenBranch,
+    BackToRepos,
     DismissToast,
     Noop,
 }

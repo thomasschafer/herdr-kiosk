@@ -13,8 +13,9 @@ use rayon::ThreadPoolBuilder;
 
 use crate::{
     event::AppEvent,
-    git::{GitProvider, ScanWarning},
-    herdr::{HerdrProvider, WorktreeOpenTarget},
+    git::{GitProvider, Repo, ScanWarning},
+    herdr::{HerdrError, HerdrProvider, WorktreeCreateRequest, WorktreeOpenTarget},
+    state::BranchEntry,
 };
 
 /// Bounds concurrent `git worktree list` enrichment calls for large scans.
@@ -168,7 +169,7 @@ pub fn spawn_workspace_list(provider: &Arc<dyn HerdrProvider>, sender: &EventSen
             sender.send(AppEvent::OpenWorkspacesLoaded { workspaces });
         }
         Err(error) => {
-            sender.send(AppEvent::HerdrError(format!(
+            sender.send(AppEvent::OpenWorkspacesFailed(format!(
                 "could not load open workspace indicators: {error}"
             )));
         }
@@ -192,10 +193,130 @@ pub fn spawn_open_repo(
                 sender.send(AppEvent::RepoOpened);
             }
             Err(error) => {
-                sender.send(AppEvent::HerdrError(error.to_string()));
+                sender.send(AppEvent::RepoOpenFailed(error.to_string()));
             }
         }
     });
+}
+
+pub fn spawn_branch_loading(
+    git: &Arc<dyn GitProvider>,
+    sender: &EventSender,
+    mut repo: Repo,
+    cwd: Option<PathBuf>,
+) {
+    let git = Arc::clone(git);
+    let sender = sender.clone();
+    thread::spawn(move || {
+        let repo_path = repo.path.clone();
+        let result = (|| {
+            let local_names = git.list_branches(&repo.path)?;
+            let default_branch = git.default_branch(&repo.path, &local_names)?;
+            // This listing is deliberately fresh. Repo discovery enrichment may be
+            // stale, and Enter relies on it for the open-vs-create decision.
+            repo.worktrees = git.list_worktrees(&repo.path)?;
+            let branches = BranchEntry::build_local(
+                &repo,
+                &local_names,
+                default_branch.as_deref(),
+                cwd.as_deref(),
+            );
+            Ok::<_, anyhow::Error>((branches, std::mem::take(&mut repo.worktrees)))
+        })();
+
+        match result {
+            Ok((branches, worktrees)) => {
+                sender.send(AppEvent::BranchesLoaded {
+                    repo_path,
+                    branches,
+                    worktrees,
+                });
+            }
+            Err(error) => {
+                sender.send(AppEvent::BranchLoadFailed {
+                    repo_path,
+                    message: format!("could not load branches: {error:#}"),
+                });
+            }
+        }
+    });
+}
+
+pub fn spawn_open_worktrees(
+    provider: &Arc<dyn HerdrProvider>,
+    sender: &EventSender,
+    repo_path: PathBuf,
+) {
+    let provider = Arc::clone(provider);
+    let sender = sender.clone();
+    thread::spawn(move || match provider.worktree_list(&repo_path) {
+        Ok(response) => {
+            sender.send(AppEvent::OpenWorktreesLoaded {
+                repo_path,
+                worktrees: response.worktrees,
+            });
+        }
+        Err(error) => {
+            sender.send(AppEvent::OpenWorktreesFailed {
+                repo_path,
+                message: format!("could not load open branch indicators: {error}"),
+            });
+        }
+    });
+}
+
+pub fn spawn_open_branch(
+    provider: &Arc<dyn HerdrProvider>,
+    sender: &EventSender,
+    repo_path: PathBuf,
+    branch_name: String,
+    has_worktree: bool,
+) {
+    let provider = Arc::clone(provider);
+    let sender = sender.clone();
+    thread::spawn(move || {
+        let result = if has_worktree {
+            provider
+                .worktree_open(
+                    &repo_path,
+                    &WorktreeOpenTarget::Branch(branch_name.clone()),
+                    true,
+                )
+                .map(|_| ())
+        } else {
+            provider
+                .worktree_create(&WorktreeCreateRequest {
+                    cwd: repo_path.clone(),
+                    branch: branch_name,
+                    base: None,
+                    path: None,
+                    focus: true,
+                })
+                .map(|_| ())
+        };
+
+        match result {
+            Ok(()) => {
+                sender.send(AppEvent::RepoOpened);
+            }
+            Err(error) => {
+                sender.send(AppEvent::BranchOperationFailed {
+                    repo_path,
+                    message: friendly_branch_error(&error),
+                });
+            }
+        }
+    });
+}
+
+fn friendly_branch_error(error: &HerdrError) -> String {
+    match error {
+        HerdrError::WorktreeOperationInProgress(_) => {
+            "Another worktree operation is already in progress; wait for it to finish and try again."
+                .into()
+        }
+        _ => error.to_string(),
+    }
 }
 
 #[cfg(test)]

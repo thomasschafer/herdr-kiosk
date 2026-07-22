@@ -164,9 +164,19 @@ impl SearchableList {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchContext {
+    pub repo_path: PathBuf,
+    pub repo_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
     RepoSelect,
-    Loading(String),
+    BranchSelect(BranchContext),
+    Loading {
+        message: String,
+        branch: Option<BranchContext>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,15 +195,20 @@ pub struct Toast {
 pub struct AppState {
     pub repos: Vec<RepoEntry>,
     pub repo_list: SearchableList,
+    pub branches: Vec<BranchEntry>,
+    pub branch_list: SearchableList,
     pub mode: Mode,
     pub loading_repos: bool,
+    pub loading_branches: bool,
     pub seen_repo_paths: HashSet<PathBuf>,
     pub open_repo_roots: HashSet<PathBuf>,
     pub current_cwd: Option<PathBuf>,
     pub selection_touched: bool,
     pub toasts: VecDeque<Toast>,
     pub active_list_rows: usize,
-    pub filter_generation: u64,
+    pub repo_filter_generation: u64,
+    pub branch_filter_generation: u64,
+    pub open_worktrees: Vec<WorktreeInfo>,
 }
 
 impl AppState {
@@ -201,15 +216,20 @@ impl AppState {
         Self {
             repos: Vec::new(),
             repo_list: SearchableList::new(0),
+            branches: Vec::new(),
+            branch_list: SearchableList::new(0),
             mode: Mode::RepoSelect,
             loading_repos: true,
+            loading_branches: false,
             seen_repo_paths: HashSet::new(),
             open_repo_roots: HashSet::new(),
             current_cwd,
             selection_touched: false,
             toasts: VecDeque::new(),
             active_list_rows: 1,
-            filter_generation: 0,
+            repo_filter_generation: 0,
+            branch_filter_generation: 0,
+            open_worktrees: Vec::new(),
         }
     }
 
@@ -217,6 +237,23 @@ impl AppState {
         let selected = self.repo_list.selected?;
         let index = self.repo_list.filtered.get(selected)?.0;
         self.repos.get(index)
+    }
+
+    pub fn selected_branch(&self) -> Option<&BranchEntry> {
+        let selected = self.branch_list.selected?;
+        let index = self.branch_list.filtered.get(selected)?.0;
+        self.branches.get(index)
+    }
+
+    pub fn branch_context(&self) -> Option<&BranchContext> {
+        match &self.mode {
+            Mode::BranchSelect(context)
+            | Mode::Loading {
+                branch: Some(context),
+                ..
+            } => Some(context),
+            Mode::RepoSelect | Mode::Loading { branch: None, .. } => None,
+        }
     }
 
     pub fn push_toast(&mut self, kind: ToastKind, message: impl Into<String>) {
@@ -390,7 +427,6 @@ impl BranchEntry {
                     .filter(|worktree| path.starts_with(&worktree.path))
                     .max_by_key(|worktree| worktree.path.components().count())
             })
-            .or_else(|| repo.worktrees.first())
             .and_then(|worktree| worktree.branch.as_deref());
 
         let mut entries: Vec<_> = branch_names
@@ -563,34 +599,71 @@ mod tests {
     }
 
     #[test]
-    fn branch_entries_include_open_workspace_state() {
+    fn branch_entries_derive_current_default_worktree_and_open_markers() {
         let repo = Repo {
             name: "repo".into(),
             path: "/repo".into(),
-            worktrees: vec![Worktree {
-                path: "/repo-feature".into(),
-                branch: Some("feature".into()),
-                is_main: false,
-            }],
+            worktrees: vec![
+                Worktree {
+                    path: "/repo".into(),
+                    branch: Some("main".into()),
+                    is_main: true,
+                },
+                Worktree {
+                    path: "/repo-feature".into(),
+                    branch: Some("feature".into()),
+                    is_main: false,
+                },
+            ],
         };
         let mut entries = BranchEntry::build_local(
             &repo,
-            &["feature".into()],
-            None,
+            &["main".into(), "feature".into(), "plain".into()],
+            Some("main"),
             Some(Path::new("/repo-feature/src")),
         );
-        entries[0].apply_open_worktrees(&[WorktreeInfo {
-            path: "/repo-feature".into(),
-            branch: Some("feature".into()),
-            is_bare: false,
-            is_detached: false,
-            is_prunable: false,
-            is_linked_worktree: true,
-            open_workspace_id: Some("w_2".into()),
-            label: "repo".into(),
-        }]);
-        assert!(entries[0].is_current);
-        assert_eq!(entries[0].open_workspace_id.as_deref(), Some("w_2"));
+        for entry in &mut entries {
+            entry.apply_open_worktrees(&[WorktreeInfo {
+                path: "/repo-feature".into(),
+                branch: Some("feature".into()),
+                is_bare: false,
+                is_detached: false,
+                is_prunable: false,
+                is_linked_worktree: true,
+                open_workspace_id: Some("w_2".into()),
+                label: "repo".into(),
+            }]);
+        }
+        let feature = entries
+            .iter()
+            .find(|entry| entry.name == "feature")
+            .unwrap();
+        assert!(feature.is_current);
+        assert!(feature.worktree_path.is_some());
+        assert_eq!(feature.open_workspace_id.as_deref(), Some("w_2"));
+        let main = entries.iter().find(|entry| entry.name == "main").unwrap();
+        assert!(main.is_default);
+        assert!(!main.is_current);
+        let plain = entries.iter().find(|entry| entry.name == "plain").unwrap();
+        assert!(plain.worktree_path.is_none());
+    }
+
+    #[test]
+    fn branch_entries_have_no_current_marker_when_context_is_outside_repo_worktrees() {
+        let mut repo = repo("/repo");
+        repo.worktrees.push(Worktree {
+            path: "/repo".into(),
+            branch: Some("main".into()),
+            is_main: true,
+        });
+        let entries = BranchEntry::build_local(
+            &repo,
+            &["main".into()],
+            Some("main"),
+            Some(Path::new("/somewhere-else")),
+        );
+        assert!(!entries[0].is_current);
+        assert!(entries[0].is_default);
     }
 
     #[test]
