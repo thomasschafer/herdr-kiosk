@@ -133,7 +133,6 @@ pub struct ConfigPathResolution {
 }
 
 pub fn resolve_config_path(get_env: impl Fn(&str) -> Option<String>) -> ConfigPathResolution {
-    let mut warnings = Vec::new();
     let candidates = [
         get_env("HERDR_PLUGIN_CONFIG_DIR")
             .filter(|value| !value.is_empty())
@@ -145,35 +144,37 @@ pub fn resolve_config_path(get_env: impl Fn(&str) -> Option<String>) -> ConfigPa
             .filter(|value| !value.is_empty())
             .map(|value| ("HOME", PathBuf::from(value).join(".config"), true)),
     ];
+    let (path, warnings) =
+        resolve_trusted_file_path(candidates.into_iter().flatten(), "config.toml", "config");
+    ConfigPathResolution { path, warnings }
+}
 
-    for candidate in candidates.into_iter().flatten() {
-        let (source, base, add_app_dir) = candidate;
+pub(crate) fn resolve_trusted_file_path(
+    candidates: impl IntoIterator<Item = (&'static str, PathBuf, bool)>,
+    file_name: &str,
+    directory_kind: &str,
+) -> (Option<PathBuf>, Vec<ConfigWarning>) {
+    let mut warnings = Vec::new();
+    for (source, base, add_app_dir) in candidates {
         if !base.is_absolute() {
             // A cwd-relative fallback lets a browsed repository supply plugin
-            // config, so only absolute environment-derived locations are trusted.
+            // files, so only absolute environment-derived locations are trusted.
             warnings.push(ConfigWarning {
                 message: format!(
-                    "refusing relative config directory from {source}: {}",
+                    "refusing relative {directory_kind} directory from {source}: {}",
                     base.display()
                 ),
             });
             continue;
         }
         let path = if add_app_dir {
-            base.join(APP_NAME).join("config.toml")
+            base.join(APP_NAME).join(file_name)
         } else {
-            base.join("config.toml")
+            base.join(file_name)
         };
-        return ConfigPathResolution {
-            path: Some(path),
-            warnings,
-        };
+        return (Some(path), warnings);
     }
-
-    ConfigPathResolution {
-        path: None,
-        warnings,
-    }
+    (None, warnings)
 }
 
 pub fn parse_config(contents: &str) -> Result<(Config, Vec<ConfigWarning>)> {

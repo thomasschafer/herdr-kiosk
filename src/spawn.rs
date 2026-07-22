@@ -12,8 +12,11 @@ use std::{
 use rayon::ThreadPoolBuilder;
 
 use crate::{
-    event::AppEvent,
-    git::{GitProvider, Repo, ScanWarning, is_local_branch_already_exists},
+    event::{AppEvent, WorktreeRemovalOutcome},
+    git::{
+        GitProvider, Repo, ScanWarning, is_dirty_worktree_requires_force,
+        is_local_branch_already_exists,
+    },
     herdr::{HerdrError, HerdrProvider, WorktreeCreateRequest, WorktreeOpenTarget},
     state::BranchEntry,
 };
@@ -425,6 +428,129 @@ pub fn spawn_open_branch(
     });
 }
 
+pub fn spawn_validate_branch_name(
+    git: &Arc<dyn GitProvider>,
+    sender: &EventSender,
+    repo_path: PathBuf,
+    branch_name: String,
+) {
+    let git = Arc::clone(git);
+    let sender = sender.clone();
+    thread::spawn(
+        move || match git.is_valid_branch_name(&repo_path, &branch_name) {
+            Ok(valid) => {
+                sender.send(AppEvent::BranchNameValidated {
+                    repo_path,
+                    branch_name,
+                    valid,
+                    error: None,
+                });
+            }
+            Err(error) => {
+                sender.send(AppEvent::BranchNameValidated {
+                    repo_path,
+                    branch_name,
+                    valid: false,
+                    error: Some(format!("could not validate branch name: {error:#}")),
+                });
+            }
+        },
+    );
+}
+
+pub fn spawn_create_new_branch(
+    provider: &Arc<dyn HerdrProvider>,
+    sender: &EventSender,
+    repo_path: PathBuf,
+    branch_name: String,
+    base: String,
+) {
+    let provider = Arc::clone(provider);
+    let sender = sender.clone();
+    thread::spawn(move || {
+        match provider.worktree_create(&WorktreeCreateRequest {
+            cwd: repo_path.clone(),
+            branch: branch_name,
+            base: Some(base),
+            path: None,
+            focus: true,
+        }) {
+            Ok(_) => {
+                sender.send(AppEvent::RepoOpened);
+            }
+            Err(error) => {
+                sender.send(AppEvent::BranchOperationFailed {
+                    repo_path,
+                    message: friendly_branch_error(&error),
+                });
+            }
+        }
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_worktree_removal(
+    git: &Arc<dyn GitProvider>,
+    herdr: Option<&Arc<dyn HerdrProvider>>,
+    sender: &EventSender,
+    repo_path: PathBuf,
+    branch_name: String,
+    worktree_path: PathBuf,
+    open_workspace_id: Option<String>,
+    force: bool,
+) {
+    let git = Arc::clone(git);
+    let herdr = herdr.cloned();
+    let sender = sender.clone();
+    thread::spawn(move || {
+        let outcome = if let Some(workspace_id) = open_workspace_id {
+            match herdr {
+                Some(provider) => provider
+                    .worktree_remove(&workspace_id, force)
+                    .map(|_| ())
+                    .map_or_else(
+                        |error| removal_error(RemoveError::Herdr(error), force),
+                        |()| WorktreeRemovalOutcome::Removed { warning: None },
+                    ),
+                None => WorktreeRemovalOutcome::Failed("not running inside herdr".into()),
+            }
+        } else {
+            match git.remove_worktree(&repo_path, &worktree_path, force) {
+                Ok(()) => WorktreeRemovalOutcome::Removed {
+                    warning: git.prune_worktrees(&repo_path).err().map(|error| {
+                        format!("checkout was removed, but git worktree prune failed: {error:#}")
+                    }),
+                },
+                Err(error) => removal_error(RemoveError::Git(error), force),
+            }
+        };
+        sender.send(AppEvent::WorktreeRemovalFinished {
+            repo_path,
+            branch_name,
+            worktree_path,
+            outcome,
+        });
+    });
+}
+
+fn removal_error(error: RemoveError, force: bool) -> WorktreeRemovalOutcome {
+    match error {
+        RemoveError::Herdr(HerdrError::DirtyWorktreeRequiresForce(_)) if !force => {
+            WorktreeRemovalOutcome::DirtyRequiresForce
+        }
+        RemoveError::Git(error) if !force && is_dirty_worktree_requires_force(&error) => {
+            WorktreeRemovalOutcome::DirtyRequiresForce
+        }
+        RemoveError::Herdr(error) => WorktreeRemovalOutcome::Failed(friendly_branch_error(&error)),
+        RemoveError::Git(error) => WorktreeRemovalOutcome::Failed(format!("{error:#}")),
+    }
+}
+
+enum RemoveError {
+    Herdr(HerdrError),
+    Git(anyhow::Error),
+}
+
 pub fn spawn_open_remote_branch(
     git: &Arc<dyn GitProvider>,
     provider: &Arc<dyn HerdrProvider>,
@@ -593,5 +719,34 @@ mod tests {
                 (PathBuf::from("/repo"), "upstream".into()),
             ]
         );
+    }
+
+    #[test]
+    fn prune_failure_after_removal_reports_success_with_warning() {
+        let git_mock = Arc::new(MockGitProvider::default());
+        *git_mock.prune_failure.lock().unwrap() = Some("prune broke".into());
+        let git: Arc<dyn GitProvider> = git_mock;
+        let (tx, rx) = mpsc::channel();
+        let sender = EventSender::new(tx, Arc::new(AtomicBool::new(false)));
+
+        spawn_worktree_removal(
+            &git,
+            None,
+            &sender,
+            "/repo".into(),
+            "feature".into(),
+            "/repo-feature".into(),
+            None,
+            false,
+        );
+
+        let event = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(matches!(
+            event,
+            AppEvent::WorktreeRemovalFinished {
+                outcome: WorktreeRemovalOutcome::Removed { warning: Some(message) },
+                ..
+            } if message.contains("prune broke")
+        ));
     }
 }

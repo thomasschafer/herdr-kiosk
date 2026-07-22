@@ -12,14 +12,31 @@ pub fn resolve_action(key: KeyEvent, state: &AppState) -> Option<Action> {
     if control && key.code == KeyCode::Char('x') && !state.toasts.is_empty() {
         return Some(Action::DismissToast);
     }
-    if matches!(state.mode, crate::state::Mode::Loading { .. }) {
+    if matches!(
+        state.mode,
+        crate::state::Mode::Loading { .. } | crate::state::Mode::ValidatingNewBranch { .. }
+    ) {
         return None;
     }
 
-    let query = match state.mode {
+    if let crate::state::Mode::ConfirmWorktreeDelete { target, .. } = &state.mode {
+        if target.in_progress {
+            return None;
+        }
+        return match key.code {
+            KeyCode::Enter => Some(Action::ConfirmDeleteWorktree),
+            KeyCode::Esc => Some(Action::CancelOverlay),
+            _ => None,
+        };
+    }
+
+    let query = match &state.mode {
         crate::state::Mode::RepoSelect => &state.repo_list.input.text,
         crate::state::Mode::BranchSelect(_) => &state.branch_list.input.text,
-        crate::state::Mode::Loading { .. } => unreachable!("handled above"),
+        crate::state::Mode::SelectBaseBranch { flow, .. } => &flow.list.input.text,
+        crate::state::Mode::Loading { .. }
+        | crate::state::Mode::ValidatingNewBranch { .. }
+        | crate::state::Mode::ConfirmWorktreeDelete { .. } => unreachable!("handled above"),
     };
 
     match key.code {
@@ -30,7 +47,27 @@ pub fn resolve_action(key: KeyEvent, state: &AppState) -> Option<Action> {
         KeyCode::Enter if matches!(state.mode, crate::state::Mode::RepoSelect) => {
             Some(Action::OpenRepo)
         }
+        KeyCode::Enter if matches!(state.mode, crate::state::Mode::SelectBaseBranch { .. }) => {
+            Some(Action::CreateNewBranch)
+        }
+        KeyCode::Enter
+            if matches!(state.mode, crate::state::Mode::BranchSelect(_))
+                && !query.is_empty()
+                && state.branch_list.filtered.is_empty() =>
+        {
+            Some(Action::StartNewBranch)
+        }
         KeyCode::Enter => Some(Action::OpenBranch),
+        KeyCode::Char('o')
+            if control && matches!(state.mode, crate::state::Mode::BranchSelect(_)) =>
+        {
+            Some(Action::StartNewBranch)
+        }
+        KeyCode::Char('x')
+            if control && matches!(state.mode, crate::state::Mode::BranchSelect(_)) =>
+        {
+            Some(Action::DeleteWorktree)
+        }
         KeyCode::Tab if matches!(state.mode, crate::state::Mode::RepoSelect) => {
             Some(Action::OpenBranches)
         }
@@ -39,6 +76,9 @@ pub fn resolve_action(key: KeyEvent, state: &AppState) -> Option<Action> {
             if query.is_empty() && matches!(state.mode, crate::state::Mode::BranchSelect(_)) =>
         {
             Some(Action::BackToRepos)
+        }
+        KeyCode::Esc if matches!(state.mode, crate::state::Mode::SelectBaseBranch { .. }) => {
+            Some(Action::CancelOverlay)
         }
         KeyCode::Esc if query.is_empty() => Some(Action::Quit),
         KeyCode::Esc => Some(Action::ClearQuery),
@@ -68,7 +108,9 @@ pub fn resolve_action(key: KeyEvent, state: &AppState) -> Option<Action> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{AppState, BranchContext, Mode};
+    use crate::state::{
+        AppState, BaseBranchSelection, BranchContext, DeleteWorktreeTarget, Mode, SearchableList,
+    };
 
     #[test]
     fn q_quits_only_when_query_is_empty() {
@@ -136,6 +178,72 @@ mod tests {
         assert_eq!(
             resolve_action(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &state),
             None
+        );
+    }
+
+    #[test]
+    fn kiosk_new_delete_and_modal_defaults_are_preserved() {
+        let context = BranchContext {
+            repo_path: "/repo".into(),
+            repo_name: "repo".into(),
+        };
+        let mut state = AppState::new(None);
+        state.mode = Mode::BranchSelect(context.clone());
+        state.branch_list.input.text = "feat/new".into();
+        state.branch_list.filtered.clear();
+        assert_eq!(
+            resolve_action(
+                KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+                &state
+            ),
+            Some(Action::StartNewBranch)
+        );
+        assert_eq!(
+            resolve_action(
+                KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+                &state
+            ),
+            Some(Action::DeleteWorktree)
+        );
+        assert_eq!(
+            resolve_action(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &state),
+            Some(Action::StartNewBranch)
+        );
+
+        state.mode = Mode::SelectBaseBranch {
+            context: context.clone(),
+            flow: BaseBranchSelection {
+                new_name: "feat/new".into(),
+                bases: vec!["main".into()],
+                list: SearchableList::new(1),
+            },
+        };
+        assert_eq!(
+            resolve_action(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &state),
+            Some(Action::CreateNewBranch)
+        );
+        assert_eq!(
+            resolve_action(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &state),
+            Some(Action::CancelOverlay)
+        );
+
+        state.mode = Mode::ConfirmWorktreeDelete {
+            context,
+            target: DeleteWorktreeTarget {
+                branch_name: "feature".into(),
+                worktree_path: "/repo-feature".into(),
+                open_workspace_id: None,
+                force: false,
+                in_progress: false,
+            },
+        };
+        assert_eq!(
+            resolve_action(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &state),
+            Some(Action::ConfirmDeleteWorktree)
+        );
+        assert_eq!(
+            resolve_action(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &state),
+            Some(Action::CancelOverlay)
         );
     }
 }

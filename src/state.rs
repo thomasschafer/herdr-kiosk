@@ -7,7 +7,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::{git::Repo, herdr::WorktreeInfo};
+use crate::{git::Repo, herdr::WorktreeInfo, pending_delete::PendingWorktreeDelete};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoEntry {
@@ -110,7 +110,7 @@ impl TextInput {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchableList {
     pub input: TextInput,
     pub filtered: Vec<(usize, i64)>,
@@ -170,9 +170,46 @@ pub struct BranchContext {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BaseBranchSelection {
+    pub new_name: String,
+    pub bases: Vec<String>,
+    pub list: SearchableList,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeleteWorktreeTarget {
+    pub branch_name: String,
+    pub worktree_path: PathBuf,
+    pub open_workspace_id: Option<String>,
+    pub force: bool,
+    pub in_progress: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NewBranchRoute {
+    Existing(BranchEntry),
+    Validate {
+        context: BranchContext,
+        name: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
     RepoSelect,
     BranchSelect(BranchContext),
+    ValidatingNewBranch {
+        context: BranchContext,
+        name: String,
+    },
+    SelectBaseBranch {
+        context: BranchContext,
+        flow: BaseBranchSelection,
+    },
+    ConfirmWorktreeDelete {
+        context: BranchContext,
+        target: DeleteWorktreeTarget,
+    },
     Loading {
         message: String,
         branch: Option<BranchContext>,
@@ -209,9 +246,13 @@ pub struct AppState {
     pub repo_filter_generation: u64,
     pub branch_filter_generation: u64,
     pub open_worktrees: Vec<WorktreeInfo>,
+    pub open_worktrees_repo: Option<PathBuf>,
     pub remote_branches: BTreeMap<String, Vec<BranchEntry>>,
     pub fetching_remote_repo: Option<PathBuf>,
     pub fetch_warning_remotes: HashSet<String>,
+    pub base_filter_generation: u64,
+    pub pending_worktree_deletes: Vec<PendingWorktreeDelete>,
+    pub in_flight_worktree_removals: HashSet<PathBuf>,
 }
 
 impl AppState {
@@ -233,9 +274,13 @@ impl AppState {
             repo_filter_generation: 0,
             branch_filter_generation: 0,
             open_worktrees: Vec::new(),
+            open_worktrees_repo: None,
             remote_branches: BTreeMap::new(),
             fetching_remote_repo: None,
             fetch_warning_remotes: HashSet::new(),
+            base_filter_generation: 0,
+            pending_worktree_deletes: Vec::new(),
+            in_flight_worktree_removals: HashSet::new(),
         }
     }
 
@@ -254,12 +299,104 @@ impl AppState {
     pub fn branch_context(&self) -> Option<&BranchContext> {
         match &self.mode {
             Mode::BranchSelect(context)
+            | Mode::ValidatingNewBranch { context, .. }
+            | Mode::SelectBaseBranch { context, .. }
+            | Mode::ConfirmWorktreeDelete { context, .. }
             | Mode::Loading {
                 branch: Some(context),
                 ..
             } => Some(context),
             Mode::RepoSelect | Mode::Loading { branch: None, .. } => None,
         }
+    }
+
+    pub fn new_branch_route(&self) -> Result<NewBranchRoute, &'static str> {
+        let Mode::BranchSelect(context) = &self.mode else {
+            return Err("New branches can only be created from the branch view");
+        };
+        let name = self.branch_list.input.text.clone();
+        if name.is_empty() {
+            return Err("Type a branch name first");
+        }
+        if let Some(branch) = self
+            .branches
+            .iter()
+            .find(|branch| branch.remote.is_none() && branch.name == name)
+        {
+            return Ok(NewBranchRoute::Existing(branch.clone()));
+        }
+        Ok(NewBranchRoute::Validate {
+            context: context.clone(),
+            name,
+        })
+    }
+
+    pub fn selected_worktree_for_delete(&self) -> Result<DeleteWorktreeTarget, &'static str> {
+        let Mode::BranchSelect(context) = &self.mode else {
+            return Err("Worktrees can only be deleted from the branch view");
+        };
+        let branch = self.selected_branch().ok_or("No branch selected")?;
+        if branch.remote.is_some() {
+            return Err("Remote-only branches have no checkout to delete");
+        }
+        let worktree_path = branch
+            .worktree_path
+            .clone()
+            .ok_or("No worktree to delete")?;
+        let canonical_worktree =
+            std::fs::canonicalize(&worktree_path).unwrap_or_else(|_| worktree_path.clone());
+        let canonical_repo =
+            std::fs::canonicalize(&context.repo_path).unwrap_or_else(|_| context.repo_path.clone());
+        if canonical_worktree == canonical_repo {
+            return Err("Cannot delete the main checkout");
+        }
+        if self.in_flight_worktree_removals.contains(&worktree_path)
+            || self.pending_worktree_deletes.iter().any(|pending| {
+                pending.repo_path == context.repo_path && pending.branch_name == branch.name
+            })
+        {
+            return Err("Worktree deletion already in progress");
+        }
+        Ok(DeleteWorktreeTarget {
+            branch_name: branch.name.clone(),
+            worktree_path,
+            open_workspace_id: branch.open_workspace_id.clone(),
+            force: false,
+            in_progress: false,
+        })
+    }
+
+    pub fn mark_pending_worktree_delete(&mut self, pending: PendingWorktreeDelete) {
+        self.pending_worktree_deletes.retain(|entry| {
+            !(entry.repo_path == pending.repo_path && entry.branch_name == pending.branch_name)
+        });
+        self.pending_worktree_deletes.push(pending);
+    }
+
+    pub fn clear_pending_worktree_delete(&mut self, worktree_path: &Path) {
+        self.pending_worktree_deletes
+            .retain(|pending| pending.worktree_path != worktree_path);
+    }
+
+    pub fn reconcile_pending_worktree_deletes(&mut self, repo_path: &Path) -> bool {
+        let active = self
+            .repos
+            .iter()
+            .find(|repo| repo.repo.path == repo_path)
+            .map(|repo| {
+                repo.repo
+                    .worktrees
+                    .iter()
+                    .map(|worktree| worktree.path.as_path())
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
+        let before = self.pending_worktree_deletes.len();
+        self.pending_worktree_deletes.retain(|pending| {
+            pending.repo_path != repo_path
+                || !pending.is_expired() && active.contains(pending.worktree_path.as_path())
+        });
+        before != self.pending_worktree_deletes.len()
     }
 
     pub fn push_toast(&mut self, kind: ToastKind, message: impl Into<String>) {
@@ -759,6 +896,59 @@ mod tests {
                 ("a-remote", Some("origin")),
                 ("z-remote", Some("origin")),
             ]
+        );
+    }
+
+    #[test]
+    fn new_branch_routing_rejects_empty_and_routes_existing_local() {
+        let mut state = AppState::new(None);
+        state.mode = Mode::BranchSelect(BranchContext {
+            repo_path: "/repo".into(),
+            repo_name: "repo".into(),
+        });
+        assert_eq!(state.new_branch_route(), Err("Type a branch name first"));
+
+        state.branches = BranchEntry::build_local(&repo("/repo"), &["feature".into()], None, None);
+        state.branch_list = SearchableList::new(1);
+        state.branch_list.input.text = "feature".into();
+        assert!(matches!(
+            state.new_branch_route(),
+            Ok(NewBranchRoute::Existing(branch)) if branch.name == "feature"
+        ));
+    }
+
+    #[test]
+    fn delete_guards_refuse_main_checkout_and_remote_only_entries_in_state() {
+        let mut state = AppState::new(None);
+        state.mode = Mode::BranchSelect(BranchContext {
+            repo_path: "/repo".into(),
+            repo_name: "repo".into(),
+        });
+        state.branches = vec![BranchEntry {
+            name: "main".into(),
+            worktree_path: Some("/repo".into()),
+            is_current: true,
+            is_default: true,
+            remote: None,
+            open_workspace_id: Some("w_1".into()),
+        }];
+        state.branch_list = SearchableList::new(1);
+        assert_eq!(
+            state.selected_worktree_for_delete(),
+            Err("Cannot delete the main checkout")
+        );
+
+        state.branches[0] = BranchEntry {
+            name: "remote-only".into(),
+            worktree_path: None,
+            is_current: false,
+            is_default: false,
+            remote: Some("origin".into()),
+            open_workspace_id: None,
+        };
+        assert_eq!(
+            state.selected_worktree_for_delete(),
+            Err("Remote-only branches have no checkout to delete")
         );
     }
 }

@@ -256,10 +256,17 @@ where they are exercised)
   e2e PASS. No deviations.
 
 ### M6 — new branch + deletion
-- [ ] New-branch flow (D5): name input → base branch picker → `worktree create --base`.
-- [ ] Deletion (D6): confirmation dialog; open-workspace path via herdr (incl. dirty →
+- [x] New-branch flow (D5): name input → base branch picker → `worktree create --base`.
+- [x] Deletion (D6): confirmation dialog; open-workspace path via herdr (incl. dirty →
   force confirmation flow), closed-checkout path via git; `pending_delete` port.
-- [ ] E2e for both, including dirty-worktree force path.
+- [x] E2e for both, including dirty-worktree force path.
+
+Implemented and locally verified: git-backed ref-name validation; local-only searchable
+base picker with default-branch preselection; persisted, stale-event-safe deletion with
+main/remote guards and separate herdr/git dirty-force retries; branch/worktree/open-state
+refresh after removal. Kiosk defaults retained: Ctrl+O new branch, Ctrl+X delete, Enter
+confirm, Esc cancel, plus Enter on a non-empty no-match branch query. Strict fmt/clippy,
+103 unit tests plus the startup integration test, and the full M3–M6 tmux e2e pass.
 
 ### M7 — wizard, config polish, UX finish
 - [ ] Setup wizard port (D9): first-run flow writing config to

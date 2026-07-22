@@ -13,6 +13,17 @@ pub struct LocalBranchAlreadyExists {
     branch: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirtyWorktreeRequiresForce;
+
+impl fmt::Display for DirtyWorktreeRequiresForce {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("worktree contains modified or untracked files")
+    }
+}
+
+impl Error for DirtyWorktreeRequiresForce {}
+
 impl LocalBranchAlreadyExists {
     pub fn new(branch: impl Into<String>) -> Self {
         Self {
@@ -31,6 +42,10 @@ impl Error for LocalBranchAlreadyExists {}
 
 pub fn is_local_branch_already_exists(error: &anyhow::Error) -> bool {
     error.downcast_ref::<LocalBranchAlreadyExists>().is_some()
+}
+
+pub fn is_dirty_worktree_requires_force(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<DirtyWorktreeRequiresForce>().is_some()
 }
 
 pub trait GitProvider: Send + Sync {
@@ -61,7 +76,8 @@ pub trait GitProvider: Send + Sync {
     fn list_remotes(&self, repo_path: &Path) -> Result<Vec<String>>;
     fn fetch_remote(&self, repo_path: &Path, remote: &str) -> Result<()>;
     fn create_tracking_branch(&self, repo_path: &Path, branch: &str, remote: &str) -> Result<()>;
-    fn remove_worktree(&self, repo_path: &Path, worktree_path: &Path) -> Result<()>;
+    fn is_valid_branch_name(&self, repo_path: &Path, branch: &str) -> Result<bool>;
+    fn remove_worktree(&self, repo_path: &Path, worktree_path: &Path, force: bool) -> Result<()>;
     fn prune_worktrees(&self, repo_path: &Path) -> Result<()>;
     fn default_branch(&self, repo_path: &Path, local_branches: &[String])
     -> Result<Option<String>>;

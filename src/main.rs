@@ -28,6 +28,7 @@ pub mod git;
 pub mod herdr;
 pub mod keyboard;
 pub mod keymap;
+pub mod pending_delete;
 pub mod spawn;
 pub mod state;
 pub mod theme;
@@ -76,6 +77,7 @@ fn start() -> Result<()> {
         .current_cwd()
         .map(|path| std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path)));
     let mut state = AppState::new(current_cwd);
+    state.pending_worktree_deletes = pending_delete::load_pending_worktree_deletes();
     for ConfigWarning { message } in warnings {
         state.push_toast(ToastKind::Warning, message);
     }

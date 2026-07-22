@@ -10,12 +10,21 @@ use crate::{
 pub enum FilterTarget {
     Repos,
     Branches,
+    Bases,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FilterKey {
     Repo(PathBuf),
     Branch(String),
+    Base(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorktreeRemovalOutcome {
+    Removed { warning: Option<String> },
+    DirtyRequiresForce,
+    Failed(String),
 }
 
 #[derive(Debug, Clone)]
@@ -65,14 +74,17 @@ pub enum AppEvent {
     WorktreeCreated {
         path: PathBuf,
     },
-    WorktreeRemoved {
+    BranchNameValidated {
+        repo_path: PathBuf,
         branch_name: String,
-        worktree_path: PathBuf,
+        valid: bool,
+        error: Option<String>,
     },
-    WorktreeRemoveFailed {
+    WorktreeRemovalFinished {
+        repo_path: PathBuf,
         branch_name: String,
         worktree_path: PathBuf,
-        error: String,
+        outcome: WorktreeRemovalOutcome,
     },
     OpenWorkspacesLoaded {
         workspaces: Vec<WorkspaceInfo>,

@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{
         Mutex,
@@ -9,7 +9,10 @@ use std::{
 
 use anyhow::{Result, bail};
 
-use super::{GitProvider, LocalBranchAlreadyExists, Repo, RepoScan, ScanWarning, Worktree};
+use super::{
+    DirtyWorktreeRequiresForce, GitProvider, LocalBranchAlreadyExists, Repo, RepoScan, ScanWarning,
+    Worktree,
+};
 
 #[derive(Default)]
 pub struct MockGitProvider {
@@ -22,9 +25,13 @@ pub struct MockGitProvider {
     pub remotes: Vec<String>,
     pub default_branch: Option<String>,
     pub failure: Mutex<Option<String>>,
+    pub prune_failure: Mutex<Option<String>>,
     pub tracking_already_exists: AtomicBool,
     pub tracking_calls: Mutex<Vec<(PathBuf, String, String)>>,
-    pub remove_calls: Mutex<Vec<(PathBuf, PathBuf)>>,
+    pub invalid_branch_names: HashSet<String>,
+    pub validation_calls: Mutex<Vec<(PathBuf, String)>>,
+    pub dirty_remove_once: AtomicBool,
+    pub remove_calls: Mutex<Vec<(PathBuf, PathBuf, bool)>>,
     pub prune_calls: Mutex<Vec<PathBuf>>,
     pub fetch_calls: Mutex<Vec<(PathBuf, String)>>,
 }
@@ -118,17 +125,33 @@ impl GitProvider for MockGitProvider {
         Ok(())
     }
 
-    fn remove_worktree(&self, repo_path: &Path, worktree_path: &Path) -> Result<()> {
+    fn is_valid_branch_name(&self, repo_path: &Path, branch: &str) -> Result<bool> {
         self.check_failure()?;
-        self.remove_calls
+        self.validation_calls
             .lock()
             .unwrap()
-            .push((repo_path.to_path_buf(), worktree_path.to_path_buf()));
+            .push((repo_path.to_path_buf(), branch.to_string()));
+        Ok(!self.invalid_branch_names.contains(branch))
+    }
+
+    fn remove_worktree(&self, repo_path: &Path, worktree_path: &Path, force: bool) -> Result<()> {
+        self.check_failure()?;
+        self.remove_calls.lock().unwrap().push((
+            repo_path.to_path_buf(),
+            worktree_path.to_path_buf(),
+            force,
+        ));
+        if !force && self.dirty_remove_once.swap(false, Ordering::AcqRel) {
+            return Err(DirtyWorktreeRequiresForce.into());
+        }
         Ok(())
     }
 
     fn prune_worktrees(&self, repo_path: &Path) -> Result<()> {
         self.check_failure()?;
+        if let Some(message) = self.prune_failure.lock().unwrap().take() {
+            bail!(message);
+        }
         self.prune_calls
             .lock()
             .unwrap()

@@ -8,8 +8,8 @@ use std::{
 use anyhow::{Context, Result, bail};
 
 use super::{
-    GitProvider, LocalBranchAlreadyExists, Repo, RepoScan, ScanWarning, Worktree,
-    parse_worktree_porcelain,
+    DirtyWorktreeRequiresForce, GitProvider, LocalBranchAlreadyExists, Repo, RepoScan, ScanWarning,
+    Worktree, parse_worktree_porcelain,
 };
 
 const GIT_DIR_ENTRY: &str = ".git";
@@ -126,12 +126,25 @@ impl GitProvider for CliGitProvider {
         Ok(())
     }
 
-    fn remove_worktree(&self, repo_path: &Path, worktree_path: &Path) -> Result<()> {
-        let canonical =
-            fs::canonicalize(worktree_path).unwrap_or_else(|_| worktree_path.to_path_buf());
+    fn is_valid_branch_name(&self, repo_path: &Path, branch: &str) -> Result<bool> {
         let output = Command::new("git")
             .env("LC_ALL", "C")
-            .args(["worktree", "remove"])
+            .args(["check-ref-format", "--branch", branch])
+            .current_dir(repo_path)
+            .output()
+            .with_context(|| format!("failed to run git in {}", repo_path.display()))?;
+        Ok(output.status.success())
+    }
+
+    fn remove_worktree(&self, repo_path: &Path, worktree_path: &Path, force: bool) -> Result<()> {
+        let canonical =
+            fs::canonicalize(worktree_path).unwrap_or_else(|_| worktree_path.to_path_buf());
+        let mut command = Command::new("git");
+        command.env("LC_ALL", "C").args(["worktree", "remove"]);
+        if force {
+            command.arg("--force");
+        }
+        let output = command
             .arg(&canonical)
             .current_dir(repo_path)
             .output()
@@ -149,6 +162,10 @@ impl GitProvider for CliGitProvider {
                 })?;
             }
             return Ok(());
+        }
+
+        if !force && dirty_worktree_refusal(&stderr) {
+            return Err(DirtyWorktreeRequiresForce.into());
         }
 
         bail!("git worktree remove failed: {}", stderr.trim())
@@ -366,6 +383,12 @@ fn fetch_command(repo_path: &Path, remote: &str) -> Command {
 
 fn tracking_branch_already_exists(stderr: &str, branch: &str) -> bool {
     stderr.contains(&format!("a branch named '{branch}' already exists"))
+}
+
+fn dirty_worktree_refusal(stderr: &str) -> bool {
+    stderr.contains("contains modified or untracked files")
+        || stderr.contains("contains modified files")
+        || stderr.contains("contains untracked files")
 }
 
 fn lines(bytes: &[u8]) -> Vec<String> {
@@ -642,10 +665,39 @@ mod tests {
         );
         let provider = CliGitProvider;
 
-        provider.remove_worktree(&repo, &linked).unwrap();
+        provider.remove_worktree(&repo, &linked, false).unwrap();
         provider.prune_worktrees(&repo).unwrap();
         assert!(!linked.exists());
         assert_eq!(provider.list_worktrees(&repo).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn validates_branch_names_with_git_check_ref_format() {
+        let temp = TempDir::new().unwrap();
+        let repo = repo_fixture(temp.path(), "repo");
+        let provider = CliGitProvider;
+        assert!(provider.is_valid_branch_name(&repo, "feat/valid").unwrap());
+        assert!(!provider.is_valid_branch_name(&repo, "bad..name").unwrap());
+    }
+
+    #[test]
+    fn dirty_worktree_refusal_is_typed_and_force_removes_it() {
+        let temp = TempDir::new().unwrap();
+        let repo = repo_fixture(temp.path(), "repo");
+        run_test_git(&repo, &["branch", "feature"]);
+        let linked = temp.path().join("feature-worktree");
+        run_test_git(
+            &repo,
+            &["worktree", "add", linked.to_str().unwrap(), "feature"],
+        );
+        fs::write(linked.join("untracked.txt"), "dirty").unwrap();
+        let provider = CliGitProvider;
+
+        let error = provider.remove_worktree(&repo, &linked, false).unwrap_err();
+        assert!(crate::git::is_dirty_worktree_requires_force(&error));
+        assert!(linked.exists());
+        provider.remove_worktree(&repo, &linked, true).unwrap();
+        assert!(!linked.exists());
     }
 
     #[test]
@@ -657,7 +709,7 @@ mod tests {
         fs::write(stale.join("untracked"), "data").unwrap();
         let provider = CliGitProvider;
 
-        provider.remove_worktree(&repo, &stale).unwrap();
+        provider.remove_worktree(&repo, &stale, false).unwrap();
         provider.prune_worktrees(&repo).unwrap();
         assert!(!stale.exists());
     }
