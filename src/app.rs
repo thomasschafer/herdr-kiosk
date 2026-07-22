@@ -489,7 +489,12 @@ fn process_app_event(event: AppEvent, state: &mut AppState, changes: &mut TickCh
             };
             state.push_toast(ToastKind::Error, message);
         }
-        AppEvent::RepoOpened => changes.workspace_opened = true,
+        AppEvent::RepoOpened { warning } => {
+            if let Some(warning) = warning {
+                state.push_toast(ToastKind::Warning, warning);
+            }
+            changes.workspace_opened = true;
+        }
         AppEvent::RepoOpenFailed(message)
             if matches!(state.mode, Mode::Loading { branch: None, .. }) =>
         {
@@ -1264,7 +1269,7 @@ fn begin_open_selected(
         message: format!("Opening {repo_name}…"),
         branch: None,
     };
-    spawn_open_repo(provider, sender, repo_path);
+    spawn_open_repo(provider, sender, repo_path, state.on_open.clone());
 }
 
 fn begin_branch_select(
@@ -1350,6 +1355,7 @@ fn begin_open_branch(
             context.repo_path,
             branch_name,
             remote,
+            state.on_open.clone(),
         );
     } else {
         spawn_open_branch(
@@ -1358,6 +1364,7 @@ fn begin_open_branch(
             context.repo_path,
             branch_name,
             has_worktree,
+            state.on_open.clone(),
         );
     }
 }
@@ -1412,7 +1419,14 @@ fn begin_create_new_branch(
         message: format!("Creating {branch_name} from {base}…"),
         branch: Some(context.clone()),
     };
-    spawn_create_new_branch(provider, sender, context.repo_path, branch_name, base);
+    spawn_create_new_branch(
+        provider,
+        sender,
+        context.repo_path,
+        branch_name,
+        base,
+        state.on_open.clone(),
+    );
 }
 
 fn begin_delete_worktree(state: &mut AppState) {
@@ -1747,8 +1761,8 @@ mod tests {
     use crate::{
         git::{Repo, Worktree, mock::MockGitProvider},
         herdr::{
-            AgentStatus, HerdrError, HerdrProvider, WorkspaceInfo, WorktreeCreateResponse,
-            WorktreeInfo, WorktreeOpenResponse, WorktreeRemoveResponse,
+            AgentStatus, HerdrError, HerdrProvider, PaneInfo, WorkspaceInfo,
+            WorktreeCreateResponse, WorktreeInfo, WorktreeOpenResponse, WorktreeRemoveResponse,
             mock::{HerdrCall, MockHerdrProvider},
         },
         state::BranchEntry,
@@ -2204,6 +2218,12 @@ mod tests {
         }
     }
 
+    fn root_pane() -> PaneInfo {
+        PaneInfo {
+            pane_id: "p_root".into(),
+        }
+    }
+
     fn sender() -> (EventSender, mpsc::Receiver<AppEvent>) {
         let (tx, rx) = mpsc::channel();
         (EventSender::new(tx, Arc::new(AtomicBool::new(false))), rx)
@@ -2304,6 +2324,7 @@ mod tests {
             .unwrap()
             .push_back(Ok(WorktreeOpenResponse {
                 workspace: workspace(),
+                root_pane: root_pane(),
                 worktree: worktree(),
                 already_open: false,
             }));
@@ -2331,6 +2352,25 @@ mod tests {
     }
 
     #[test]
+    fn on_open_warning_toasts_without_cancelling_open_success() {
+        let mut state = state_with_repo();
+        let mut changes = TickChanges::default();
+
+        process_app_event(
+            AppEvent::RepoOpened {
+                warning: Some("on_open: pane 1 run failed".into()),
+            },
+            &mut state,
+            &mut changes,
+        );
+
+        assert!(changes.workspace_opened);
+        assert!(state.toasts.front().is_some_and(|toast| {
+            toast.kind == ToastKind::Warning && toast.message.starts_with("on_open: ")
+        }));
+    }
+
+    #[test]
     fn missing_checkout_routes_to_create_without_base_or_path_and_success_exits() {
         let mock = Arc::new(MockHerdrProvider::default());
         mock.worktree_create_results
@@ -2338,6 +2378,7 @@ mod tests {
             .unwrap()
             .push_back(Ok(WorktreeCreateResponse {
                 workspace: workspace(),
+                root_pane: root_pane(),
                 worktree: worktree(),
             }));
         let provider: Arc<dyn HerdrProvider> = mock.clone();
@@ -2414,6 +2455,7 @@ mod tests {
             .unwrap()
             .push_back(Ok(WorktreeCreateResponse {
                 workspace: workspace(),
+                root_pane: root_pane(),
                 worktree: worktree(),
             }));
         let herdr: Arc<dyn HerdrProvider> = herdr_mock.clone();
@@ -2835,6 +2877,7 @@ mod tests {
             .unwrap()
             .push_back(Ok(WorktreeCreateResponse {
                 workspace: workspace(),
+                root_pane: root_pane(),
                 worktree: worktree(),
             }));
         let herdr: Arc<dyn HerdrProvider> = herdr_mock.clone();

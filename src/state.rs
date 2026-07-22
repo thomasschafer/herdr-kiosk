@@ -7,7 +7,9 @@ use std::{
 use serde::{Deserialize, Serialize};
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::{git::Repo, herdr::WorktreeInfo, pending_delete::PendingWorktreeDelete};
+use crate::{
+    config::OnOpenConfig, git::Repo, herdr::WorktreeInfo, pending_delete::PendingWorktreeDelete,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoEntry {
@@ -288,6 +290,7 @@ pub struct AppState {
     pub help_filter_generation: u64,
     pub pending_worktree_deletes: Vec<PendingWorktreeDelete>,
     pub in_flight_worktree_removals: HashSet<PathBuf>,
+    pub on_open: OnOpenConfig,
 }
 
 impl AppState {
@@ -320,6 +323,7 @@ impl AppState {
             help_filter_generation: 0,
             pending_worktree_deletes: Vec::new(),
             in_flight_worktree_removals: HashSet::new(),
+            on_open: OnOpenConfig::default(),
         }
     }
 

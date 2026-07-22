@@ -96,6 +96,19 @@ search_dirs = [
 ]
 ```
 
+Optional `on_open` panes are created in order after any workspace is opened or
+created. Each pane runs its command from the checkout directory without taking
+focus from the primary pane. `direction` accepts `left`, `right`, `up`, or `down`;
+`ratio` is optional and must be greater than `0` and less than `1`.
+
+```toml
+[on_open]
+panes = [
+  { command = "hx", direction = "right" },
+  { command = "cargo test", direction = "down", ratio = 0.35 },
+]
+```
+
 Keybindings are layered. Add entries under any of `[keys.general]`,
 `[keys.text_edit]`, `[keys.list_navigation]`, `[keys.modal]`,
 `[keys.repo_select]`, or `[keys.branch_select]`. A mode-specific binding wins over

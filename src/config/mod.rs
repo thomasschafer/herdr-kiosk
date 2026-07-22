@@ -67,12 +67,47 @@ impl Default for ThemeConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnOpenPaneDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+impl OnOpenPaneDirection {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Left => "left",
+            Self::Right => "right",
+            Self::Up => "up",
+            Self::Down => "down",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OnOpenPaneConfig {
+    pub command: String,
+    pub direction: OnOpenPaneDirection,
+    #[serde(default)]
+    pub ratio: Option<f32>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OnOpenConfig {
+    pub panes: Vec<OnOpenPaneConfig>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub search_dirs: Vec<SearchDirEntry>,
     pub keys: KeysConfig,
     pub theme: ThemeConfig,
+    pub on_open: OnOpenConfig,
 }
 
 impl Config {
@@ -123,7 +158,7 @@ pub struct ResolvedSearchDirs {
     pub warnings: Vec<ConfigWarning>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LoadedConfig {
     pub config: Config,
     pub path: Option<PathBuf>,
@@ -259,6 +294,20 @@ fn validate_config(config: &Config) -> Result<()> {
             bail!("search directory depth must be at least 1 for {path}");
         }
     }
+    for (index, pane) in config.on_open.panes.iter().enumerate() {
+        if pane.command.trim().is_empty() {
+            bail!("on_open pane {} command must not be empty", index + 1);
+        }
+        if pane
+            .ratio
+            .is_some_and(|ratio| !ratio.is_finite() || ratio <= 0.0 || ratio >= 1.0)
+        {
+            bail!(
+                "on_open pane {} ratio must be greater than 0 and less than 1",
+                index + 1
+            );
+        }
+    }
     Ok(())
 }
 
@@ -316,6 +365,78 @@ mod tests {
                     depth: None,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn parses_valid_on_open_panes() {
+        let (config, warnings) = parse_config(
+            r#"
+[on_open]
+panes = [
+    { command = "hx", direction = "right" },
+    { command = "cargo test", direction = "down", ratio = 0.35 },
+]
+"#,
+        )
+        .unwrap();
+
+        assert!(warnings.is_empty());
+        assert_eq!(
+            config.on_open.panes,
+            [
+                OnOpenPaneConfig {
+                    command: "hx".into(),
+                    direction: OnOpenPaneDirection::Right,
+                    ratio: None,
+                },
+                OnOpenPaneConfig {
+                    command: "cargo test".into(),
+                    direction: OnOpenPaneDirection::Down,
+                    ratio: Some(0.35),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_on_open_panes() {
+        let direction = parse_config(
+            r#"[on_open]
+panes = [{ command = "hx", direction = "diagonal" }]"#,
+        )
+        .unwrap_err();
+        assert!(format!("{direction:#}").contains("unknown variant `diagonal`"));
+
+        let command = parse_config(
+            r#"[on_open]
+panes = [{ command = "  ", direction = "right" }]"#,
+        )
+        .unwrap_err();
+        assert!(format!("{command:#}").contains("command must not be empty"));
+
+        for ratio in ["0", "1", "-0.1", "1.1", "nan"] {
+            let error = parse_config(&format!(
+                "[on_open]\npanes = [{{ command = \"hx\", direction = \"right\", ratio = {ratio} }}]"
+            ))
+            .unwrap_err();
+            assert!(
+                format!("{error:#}").contains("ratio must be greater than 0 and less than 1"),
+                "unexpected error for ratio {ratio}: {error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn absent_or_empty_on_open_has_no_panes() {
+        assert!(parse_config("").unwrap().0.on_open.panes.is_empty());
+        assert!(
+            parse_config("[on_open]")
+                .unwrap()
+                .0
+                .on_open
+                .panes
+                .is_empty()
         );
     }
 

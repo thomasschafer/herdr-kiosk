@@ -12,12 +12,15 @@ use std::{
 use rayon::ThreadPoolBuilder;
 
 use crate::{
+    config::OnOpenConfig,
     event::{AppEvent, WorktreeRemovalOutcome},
     git::{
         GitProvider, Repo, ScanWarning, is_dirty_worktree_requires_force,
         is_local_branch_already_exists,
     },
-    herdr::{HerdrError, HerdrProvider, WorktreeCreateRequest, WorktreeOpenTarget},
+    herdr::{
+        HerdrError, HerdrProvider, PaneSplitRequest, WorktreeCreateRequest, WorktreeOpenTarget,
+    },
     state::BranchEntry,
 };
 
@@ -184,6 +187,7 @@ pub fn spawn_open_repo(
     provider: &Arc<dyn HerdrProvider>,
     sender: &EventSender,
     repo_path: PathBuf,
+    on_open: OnOpenConfig,
 ) {
     let provider = Arc::clone(provider);
     let sender = sender.clone();
@@ -193,8 +197,14 @@ pub fn spawn_open_repo(
             &WorktreeOpenTarget::Path(repo_path.clone()),
             true,
         ) {
-            Ok(_) => {
-                sender.send(AppEvent::RepoOpened);
+            Ok(response) => {
+                let warning = apply_on_open(
+                    provider.as_ref(),
+                    &on_open,
+                    &response.root_pane.pane_id,
+                    &response.worktree.path,
+                );
+                sender.send(AppEvent::RepoOpened { warning });
             }
             Err(error) => {
                 sender.send(AppEvent::RepoOpenFailed(error.to_string()));
@@ -405,6 +415,7 @@ pub fn spawn_open_branch(
     repo_path: PathBuf,
     branch_name: String,
     has_worktree: bool,
+    on_open: OnOpenConfig,
 ) {
     let provider = Arc::clone(provider);
     let sender = sender.clone();
@@ -416,7 +427,7 @@ pub fn spawn_open_branch(
                     &WorktreeOpenTarget::Branch(branch_name.clone()),
                     true,
                 )
-                .map(|_| ())
+                .map(|response| (response.root_pane, response.worktree))
         } else {
             provider
                 .worktree_create(&WorktreeCreateRequest {
@@ -426,12 +437,18 @@ pub fn spawn_open_branch(
                     path: None,
                     focus: true,
                 })
-                .map(|_| ())
+                .map(|response| (response.root_pane, response.worktree))
         };
 
         match result {
-            Ok(()) => {
-                sender.send(AppEvent::RepoOpened);
+            Ok((root_pane, worktree)) => {
+                let warning = apply_on_open(
+                    provider.as_ref(),
+                    &on_open,
+                    &root_pane.pane_id,
+                    &worktree.path,
+                );
+                sender.send(AppEvent::RepoOpened { warning });
             }
             Err(error) => {
                 sender.send(AppEvent::BranchOperationFailed {
@@ -479,6 +496,7 @@ pub fn spawn_create_new_branch(
     repo_path: PathBuf,
     branch_name: String,
     base: String,
+    on_open: OnOpenConfig,
 ) {
     let provider = Arc::clone(provider);
     let sender = sender.clone();
@@ -490,8 +508,14 @@ pub fn spawn_create_new_branch(
             path: None,
             focus: true,
         }) {
-            Ok(_) => {
-                sender.send(AppEvent::RepoOpened);
+            Ok(response) => {
+                let warning = apply_on_open(
+                    provider.as_ref(),
+                    &on_open,
+                    &response.root_pane.pane_id,
+                    &response.worktree.path,
+                );
+                sender.send(AppEvent::RepoOpened { warning });
             }
             Err(error) => {
                 sender.send(AppEvent::BranchOperationFailed {
@@ -573,6 +597,7 @@ pub fn spawn_open_remote_branch(
     repo_path: PathBuf,
     branch_name: String,
     remote: String,
+    on_open: OnOpenConfig,
 ) {
     let git = Arc::clone(git);
     let provider = Arc::clone(provider);
@@ -596,10 +621,16 @@ pub fn spawn_open_remote_branch(
                 path: None,
                 focus: true,
             })
-            .map(|_| ());
+            .map(|response| (response.root_pane, response.worktree));
         match result {
-            Ok(()) => {
-                sender.send(AppEvent::RepoOpened);
+            Ok((root_pane, worktree)) => {
+                let warning = apply_on_open(
+                    provider.as_ref(),
+                    &on_open,
+                    &root_pane.pane_id,
+                    &worktree.path,
+                );
+                sender.send(AppEvent::RepoOpened { warning });
             }
             Err(error) => {
                 sender.send(AppEvent::BranchOperationFailed {
@@ -609,6 +640,33 @@ pub fn spawn_open_remote_branch(
             }
         }
     });
+}
+
+fn apply_on_open(
+    provider: &dyn HerdrProvider,
+    on_open: &OnOpenConfig,
+    root_pane_id: &str,
+    checkout_path: &str,
+) -> Option<String> {
+    let mut errors = Vec::new();
+    for (index, pane) in on_open.panes.iter().enumerate() {
+        let split = provider.pane_split(&PaneSplitRequest {
+            pane_id: root_pane_id.into(),
+            direction: pane.direction,
+            ratio: pane.ratio,
+            cwd: PathBuf::from(checkout_path),
+            focus: false,
+        });
+        match split {
+            Ok(response) => {
+                if let Err(error) = provider.pane_run(&response.pane_id, &pane.command) {
+                    errors.push(format!("pane {} run failed: {error}", index + 1));
+                }
+            }
+            Err(error) => errors.push(format!("pane {} split failed: {error}", index + 1)),
+        }
+    }
+    (!errors.is_empty()).then(|| format!("on_open: {}", errors.join("; ")))
 }
 
 fn friendly_branch_error(error: &HerdrError) -> String {
@@ -629,7 +687,15 @@ mod tests {
         time::Duration,
     };
 
-    use crate::git::{Repo, mock::MockGitProvider};
+    use crate::{
+        config::{OnOpenPaneConfig, OnOpenPaneDirection},
+        git::{Repo, mock::MockGitProvider},
+        herdr::{
+            AgentStatus, PaneInfo, PaneRunResponse, PaneSplitResponse, WorkspaceInfo, WorktreeInfo,
+            WorktreeOpenResponse,
+            mock::{HerdrCall, MockHerdrProvider},
+        },
+    };
 
     use super::*;
 
@@ -661,6 +727,136 @@ mod tests {
         assert!(!sender.send(AppEvent::GitError("cancelled".into())));
         assert!(rx.recv_timeout(Duration::from_secs(1)).is_ok());
         assert!(rx.try_recv().is_err());
+    }
+
+    fn on_open_config() -> OnOpenConfig {
+        OnOpenConfig {
+            panes: vec![
+                OnOpenPaneConfig {
+                    command: "hx".into(),
+                    direction: OnOpenPaneDirection::Right,
+                    ratio: Some(0.4),
+                },
+                OnOpenPaneConfig {
+                    command: "cargo test".into(),
+                    direction: OnOpenPaneDirection::Down,
+                    ratio: None,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn on_open_splits_then_runs_each_configured_pane_in_order() {
+        let mock = MockHerdrProvider::default();
+        mock.pane_split_results
+            .lock()
+            .unwrap()
+            .extend(["p_2", "p_3"].map(|pane_id| {
+                Ok(PaneSplitResponse {
+                    pane_id: pane_id.into(),
+                })
+            }));
+        mock.pane_run_results
+            .lock()
+            .unwrap()
+            .extend([Ok(PaneRunResponse), Ok(PaneRunResponse)]);
+
+        assert!(apply_on_open(&mock, &on_open_config(), "p_root", "/repo").is_none());
+        assert_eq!(
+            *mock.calls.lock().unwrap(),
+            [
+                HerdrCall::PaneSplit(PaneSplitRequest {
+                    pane_id: "p_root".into(),
+                    direction: OnOpenPaneDirection::Right,
+                    ratio: Some(0.4),
+                    cwd: "/repo".into(),
+                    focus: false,
+                }),
+                HerdrCall::PaneRun {
+                    pane_id: "p_2".into(),
+                    command: "hx".into(),
+                },
+                HerdrCall::PaneSplit(PaneSplitRequest {
+                    pane_id: "p_root".into(),
+                    direction: OnOpenPaneDirection::Down,
+                    ratio: None,
+                    cwd: "/repo".into(),
+                    focus: false,
+                }),
+                HerdrCall::PaneRun {
+                    pane_id: "p_3".into(),
+                    command: "cargo test".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn on_open_failures_warn_without_replacing_open_success() {
+        let mock = Arc::new(MockHerdrProvider::default());
+        mock.worktree_open_results
+            .lock()
+            .unwrap()
+            .push_back(Ok(WorktreeOpenResponse {
+                workspace: WorkspaceInfo {
+                    workspace_id: "w_1".into(),
+                    number: 1,
+                    label: "repo".into(),
+                    focused: true,
+                    pane_count: 1,
+                    tab_count: 1,
+                    active_tab_id: "w_1:1".into(),
+                    agent_status: AgentStatus::Idle,
+                    tokens: HashMap::new(),
+                    worktree: None,
+                },
+                root_pane: PaneInfo {
+                    pane_id: "p_root".into(),
+                },
+                worktree: WorktreeInfo {
+                    path: "/repo".into(),
+                    branch: Some("main".into()),
+                    is_bare: false,
+                    is_detached: false,
+                    is_prunable: false,
+                    is_linked_worktree: false,
+                    open_workspace_id: Some("w_1".into()),
+                    label: "repo".into(),
+                },
+                already_open: false,
+            }));
+        mock.pane_split_results.lock().unwrap().extend([
+            Err(HerdrError::Other {
+                code: "pane_split_failed".into(),
+                message: "too small".into(),
+            }),
+            Ok(PaneSplitResponse {
+                pane_id: "p_3".into(),
+            }),
+        ]);
+        mock.pane_run_results
+            .lock()
+            .unwrap()
+            .push_back(Err(HerdrError::Other {
+                code: "pane_run_failed".into(),
+                message: "shell closed".into(),
+            }));
+        let provider: Arc<dyn HerdrProvider> = mock;
+        let (tx, rx) = mpsc::channel();
+        let sender = EventSender::new(tx, Arc::new(AtomicBool::new(false)));
+
+        spawn_open_repo(&provider, &sender, "/repo".into(), on_open_config());
+
+        let AppEvent::RepoOpened {
+            warning: Some(warning),
+        } = rx.recv_timeout(Duration::from_secs(1)).unwrap()
+        else {
+            panic!("workspace open did not report success with a warning")
+        };
+        assert!(warning.starts_with("on_open: "));
+        assert!(warning.contains("pane 1 split failed"));
+        assert!(warning.contains("pane 2 run failed"));
     }
 
     #[test]

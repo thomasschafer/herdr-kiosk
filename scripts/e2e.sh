@@ -125,7 +125,8 @@ t send-keys -t "$SESSION" C-c
 wait_screen_absent "No search directories configured"
 printf 'existing empty search_dirs keeps the explicit empty-config screen: ok\n'
 
-cat >"$PLUGIN_CONFIG_DIR/config.toml" <<EOF
+write_picker_config() {
+    cat >"$PLUGIN_CONFIG_DIR/config.toml" <<EOF
 search_dirs = [
   { path = "$HK_ROOT/repos/alpha", depth = 1 },
   { path = "$HK_ROOT/repos/beta", depth = 1 },
@@ -136,6 +137,17 @@ search_dirs = [
 [keys.branch_select]
 "C-b" = "new_branch"
 "C-o" = "noop"
+EOF
+}
+
+ON_OPEN_SENTINEL="$HK_ROOT/on-open-sentinel"
+write_picker_config
+cat >>"$PLUGIN_CONFIG_DIR/config.toml" <<EOF
+
+[on_open]
+panes = [
+  { command = "printf ONOPEN_OK > $ON_OPEN_SENTINEL", direction = "right" },
+]
 EOF
 
 h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
@@ -175,6 +187,34 @@ printf '%s' "$WORKSPACES" | grep -Fq '"focused":true' \
     || printf '%s' "$WORKSPACES" | grep -Fq '"focused": true' \
     || fail "opened repository workspace was not focused"
 printf 'repo open and focus: ok\n'
+
+wait_path_exists "$ON_OPEN_SENTINEL"
+[ "$(cat "$ON_OPEN_SENTINEL")" = "ONOPEN_OK" ] \
+    || fail "on_open split pane did not write the expected sentinel"
+OPEN_WORKSPACE_ID=$(printf '%s' "$WORKSPACES" | /usr/bin/python3 -c '
+import json
+import os
+import sys
+
+checkout = os.path.realpath(sys.argv[1])
+for workspace in json.load(sys.stdin)["result"]["workspaces"]:
+    if os.path.realpath(workspace.get("worktree", {}).get("checkout_path", "")) == checkout:
+        print(workspace["workspace_id"])
+        break
+' "$HK_ROOT/repos/direct/open-me")
+[ -n "$OPEN_WORKSPACE_ID" ] || fail "could not find on_open workspace id"
+h pane list --workspace "$OPEN_WORKSPACE_ID" | /usr/bin/python3 -c '
+import json
+import sys
+
+panes = json.load(sys.stdin)["result"]["panes"]
+if len(panes) != 2:
+    raise SystemExit(f"expected 2 panes, got {len(panes)}")
+if sum(bool(pane.get("focused")) for pane in panes) != 1:
+    raise SystemExit("expected exactly one focused pane")
+' || fail "on_open pane count or focus was incorrect"
+write_picker_config
+printf 'on_open split, command, popup teardown, and focus: ok\n'
 
 h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
 wait_screen_contains "herdr-kiosk — select repo"

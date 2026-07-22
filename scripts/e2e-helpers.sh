@@ -145,6 +145,19 @@ wait_path_absent() {
     fail "path still existed: $path"
 }
 
+wait_path_exists() {
+    local path=$1
+    local attempts=${2:-120}
+    local count
+    for ((count = 0; count < attempts; count++)); do
+        if [ -e "$path" ]; then
+            return 0
+        fi
+        sleep 0.1
+    done
+    fail "path did not appear: $path"
+}
+
 assert_branch_exists() {
     local repo=$1
     local branch=$2

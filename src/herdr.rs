@@ -7,6 +7,8 @@ use std::{
 
 use serde::{Deserialize, de::DeserializeOwned};
 
+use crate::config::OnOpenPaneDirection;
+
 pub mod mock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -79,15 +81,39 @@ pub struct WorktreeListResponse {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeCreateResponse {
     pub workspace: WorkspaceInfo,
+    pub root_pane: PaneInfo,
     pub worktree: WorktreeInfo,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeOpenResponse {
     pub workspace: WorkspaceInfo,
+    pub root_pane: PaneInfo,
     pub worktree: WorktreeInfo,
     pub already_open: bool,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct PaneInfo {
+    pub pane_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PaneSplitRequest {
+    pub pane_id: String,
+    pub direction: OnOpenPaneDirection,
+    pub ratio: Option<f32>,
+    pub cwd: PathBuf,
+    pub focus: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneSplitResponse {
+    pub pane_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneRunResponse;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeRemoveResponse {
@@ -188,6 +214,8 @@ pub trait HerdrProvider: Send + Sync {
     ) -> Result<WorktreeRemoveResponse, HerdrError>;
     fn worktree_list(&self, cwd: &Path) -> Result<WorktreeListResponse, HerdrError>;
     fn workspace_list(&self) -> Result<Vec<WorkspaceInfo>, HerdrError>;
+    fn pane_split(&self, request: &PaneSplitRequest) -> Result<PaneSplitResponse, HerdrError>;
+    fn pane_run(&self, pane_id: &str, command: &str) -> Result<PaneRunResponse, HerdrError>;
 }
 
 #[derive(Debug, Clone)]
@@ -269,10 +297,12 @@ impl HerdrProvider for CliHerdrProvider {
         match self.invoke::<WorktreeOpenResult>(&args)? {
             WorktreeOpenResult::WorktreeOpened {
                 workspace,
+                root_pane,
                 worktree,
                 already_open,
             } => Ok(WorktreeOpenResponse {
                 workspace,
+                root_pane,
                 worktree,
                 already_open,
             }),
@@ -313,9 +343,11 @@ impl HerdrProvider for CliHerdrProvider {
         match self.invoke::<WorktreeCreateResult>(&args)? {
             WorktreeCreateResult::WorktreeCreated {
                 workspace,
+                root_pane,
                 worktree,
             } => Ok(WorktreeCreateResponse {
                 workspace,
+                root_pane,
                 worktree,
             }),
         }
@@ -371,6 +403,53 @@ impl HerdrProvider for CliHerdrProvider {
             WorkspaceListResult::WorkspaceList { workspaces } => Ok(workspaces),
         }
     }
+
+    fn pane_split(&self, request: &PaneSplitRequest) -> Result<PaneSplitResponse, HerdrError> {
+        require_nonempty("pane id", &request.pane_id)?;
+        require_absolute("cwd", &request.cwd)?;
+        if request
+            .ratio
+            .is_some_and(|ratio| !ratio.is_finite() || ratio <= 0.0 || ratio >= 1.0)
+        {
+            return Err(HerdrError::InvalidArgument(
+                "pane split ratio must be greater than 0 and less than 1".into(),
+            ));
+        }
+        let mut args = vec![
+            "pane".into(),
+            "split".into(),
+            request.pane_id.clone(),
+            "--direction".into(),
+            request.direction.as_str().into(),
+        ];
+        if let Some(ratio) = request.ratio {
+            args.extend(["--ratio".into(), ratio.to_string()]);
+        }
+        args.extend([
+            "--cwd".into(),
+            path_arg("cwd", &request.cwd)?,
+            if request.focus {
+                "--focus"
+            } else {
+                "--no-focus"
+            }
+            .into(),
+        ]);
+        match self.invoke::<PaneSplitResult>(&args)? {
+            PaneSplitResult::PaneInfo { pane } => Ok(PaneSplitResponse {
+                pane_id: pane.pane_id,
+            }),
+        }
+    }
+
+    fn pane_run(&self, pane_id: &str, command: &str) -> Result<PaneRunResponse, HerdrError> {
+        require_nonempty("pane id", pane_id)?;
+        require_nonempty("command", command)?;
+        let args = vec!["pane".into(), "run".into(), pane_id.into(), command.into()];
+        match self.invoke::<PaneRunResult>(&args)? {
+            PaneRunResult::Ok {} => Ok(PaneRunResponse),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -409,6 +488,7 @@ enum WorktreeListResult {
 enum WorktreeCreateResult {
     WorktreeCreated {
         workspace: WorkspaceInfo,
+        root_pane: PaneInfo,
         worktree: WorktreeInfo,
     },
 }
@@ -418,9 +498,22 @@ enum WorktreeCreateResult {
 enum WorktreeOpenResult {
     WorktreeOpened {
         workspace: WorkspaceInfo,
+        root_pane: PaneInfo,
         worktree: WorktreeInfo,
         already_open: bool,
     },
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum PaneSplitResult {
+    PaneInfo { pane: PaneInfo },
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum PaneRunResult {
+    Ok {},
 }
 
 #[derive(Deserialize)]
@@ -510,6 +603,8 @@ mod tests {
         "open_workspace_id":"w_2","label":"repo feature"
     }"#;
 
+    const ROOT_PANE: &str = r#"{"pane_id":"p_root"}"#;
+
     const WORKTREE_CLOSED: &str = r#"{
         "path":"/repo","branch":"main","is_bare":false,"is_detached":false,
         "is_prunable":false,"is_linked_worktree":false,"label":"repo"
@@ -564,17 +659,18 @@ mod tests {
     #[test]
     fn parses_create_open_and_remove_response_shapes() {
         let created = format!(
-            r#"{{"id":"create","result":{{"type":"worktree_created","workspace":{WORKSPACE_WITH_WORKTREE},"tab":{{}},"root_pane":{{}},"worktree":{WORKTREE_OPEN}}}}}"#
+            r#"{{"id":"create","result":{{"type":"worktree_created","workspace":{WORKSPACE_WITH_WORKTREE},"tab":{{}},"root_pane":{ROOT_PANE},"worktree":{WORKTREE_OPEN}}}}}"#
         );
         let WorktreeCreateResult::WorktreeCreated {
             workspace,
             worktree,
+            ..
         } = parse_success(&created);
         assert_eq!(workspace.workspace_id, "w_2");
         assert_eq!(worktree.branch.as_deref(), Some("feature"));
 
         let opened = format!(
-            r#"{{"id":"open","result":{{"type":"worktree_opened","workspace":{WORKSPACE_WITH_WORKTREE},"tab":{{}},"root_pane":{{}},"worktree":{WORKTREE_OPEN},"already_open":true}}}}"#
+            r#"{{"id":"open","result":{{"type":"worktree_opened","workspace":{WORKSPACE_WITH_WORKTREE},"tab":{{}},"root_pane":{ROOT_PANE},"worktree":{WORKTREE_OPEN},"already_open":true}}}}"#
         );
         let WorktreeOpenResult::WorktreeOpened { already_open, .. } = parse_success(&opened);
         assert!(already_open);
@@ -696,7 +792,7 @@ mod tests {
     #[test]
     fn cli_builds_exact_open_calls_for_path_and_branch() {
         let response = format!(
-            r#"{{"id":"open","result":{{"type":"worktree_opened","workspace":{WORKSPACE_WITH_WORKTREE},"worktree":{WORKTREE_OPEN},"already_open":false}}}}"#
+            r#"{{"id":"open","result":{{"type":"worktree_opened","workspace":{WORKSPACE_WITH_WORKTREE},"root_pane":{ROOT_PANE},"worktree":{WORKTREE_OPEN},"already_open":false}}}}"#
         );
 
         let path_temp = TempDir::new().unwrap();
@@ -734,7 +830,7 @@ mod tests {
     #[test]
     fn cli_builds_exact_create_and_remove_calls() {
         let create_response = format!(
-            r#"{{"id":"create","result":{{"type":"worktree_created","workspace":{WORKSPACE_WITH_WORKTREE},"worktree":{WORKTREE_OPEN}}}}}"#
+            r#"{{"id":"create","result":{{"type":"worktree_created","workspace":{WORKSPACE_WITH_WORKTREE},"root_pane":{ROOT_PANE},"worktree":{WORKTREE_OPEN}}}}}"#
         );
         let create_temp = TempDir::new().unwrap();
         let (binary, args_file) = fake_herdr(&create_temp, &create_response);
@@ -764,6 +860,40 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn cli_builds_exact_pane_split_and_run_calls() {
+        let split_temp = TempDir::new().unwrap();
+        let (binary, args_file) = fake_herdr(
+            &split_temp,
+            r#"{"id":"split","result":{"type":"pane_info","pane":{"pane_id":"p_2"}}}"#,
+        );
+        let provider = CliHerdrProvider::new(binary);
+        let response = retry_fake_herdr(|| {
+            provider.pane_split(&PaneSplitRequest {
+                pane_id: "p_root".into(),
+                direction: OnOpenPaneDirection::Right,
+                ratio: Some(0.4),
+                cwd: "/repo checkout".into(),
+                focus: false,
+            })
+        });
+        assert_eq!(response.pane_id, "p_2");
+        assert_eq!(
+            fs::read_to_string(args_file).unwrap().trim(),
+            "pane split p_root --direction right --ratio 0.4 --cwd /repo checkout --no-focus"
+        );
+
+        let run_temp = TempDir::new().unwrap();
+        let (binary, args_file) = fake_herdr(&run_temp, r#"{"id":"run","result":{"type":"ok"}}"#);
+        let provider = CliHerdrProvider::new(binary);
+        retry_fake_herdr(|| provider.pane_run("p_2", "printf ONOPEN_OK"));
+        assert_eq!(
+            fs::read_to_string(args_file).unwrap().trim(),
+            "pane run p_2 printf ONOPEN_OK"
+        );
+    }
+
     #[test]
     fn cli_rejects_relative_paths_before_invocation() {
         let provider = CliHerdrProvider::new("/does/not/exist");
@@ -780,7 +910,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let response = format!(
-            r#"{{"id":"open","result":{{"type":"worktree_opened","workspace":{WORKSPACE_WITH_WORKTREE},"worktree":{WORKTREE_OPEN},"already_open":false}}}}"#
+            r#"{{"id":"open","result":{{"type":"worktree_opened","workspace":{WORKSPACE_WITH_WORKTREE},"root_pane":{ROOT_PANE},"worktree":{WORKTREE_OPEN},"already_open":false}}}}"#
         );
         let (binary, args_file) = fake_herdr(&temp, &response);
         let provider = CliHerdrProvider::new(binary);
@@ -796,6 +926,20 @@ mod tests {
             })
             .unwrap_err();
 
+        assert!(
+            matches!(error, HerdrError::InvalidArgument(message) if message.contains("not valid UTF-8"))
+        );
+        assert!(!args_file.exists(), "herdr must not be invoked");
+
+        let error = provider
+            .pane_split(&PaneSplitRequest {
+                pane_id: "p_root".into(),
+                direction: OnOpenPaneDirection::Right,
+                ratio: None,
+                cwd: PathBuf::from(OsString::from_vec(b"/repo/invalid-\xff".to_vec())),
+                focus: false,
+            })
+            .unwrap_err();
         assert!(
             matches!(error, HerdrError::InvalidArgument(message) if message.contains("not valid UTF-8"))
         );

@@ -5,11 +5,12 @@ use std::{
 };
 
 use super::{
-    HerdrError, HerdrProvider, WorkspaceInfo, WorktreeCreateRequest, WorktreeCreateResponse,
-    WorktreeListResponse, WorktreeOpenResponse, WorktreeOpenTarget, WorktreeRemoveResponse,
+    HerdrError, HerdrProvider, PaneRunResponse, PaneSplitRequest, PaneSplitResponse, WorkspaceInfo,
+    WorktreeCreateRequest, WorktreeCreateResponse, WorktreeListResponse, WorktreeOpenResponse,
+    WorktreeOpenTarget, WorktreeRemoveResponse,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum HerdrCall {
     WorktreeOpen {
         cwd: PathBuf,
@@ -25,6 +26,11 @@ pub enum HerdrCall {
         cwd: PathBuf,
     },
     WorkspaceList,
+    PaneSplit(PaneSplitRequest),
+    PaneRun {
+        pane_id: String,
+        command: String,
+    },
 }
 
 #[derive(Default)]
@@ -35,6 +41,8 @@ pub struct MockHerdrProvider {
     pub worktree_remove_results: Mutex<VecDeque<Result<WorktreeRemoveResponse, HerdrError>>>,
     pub worktree_list_results: Mutex<VecDeque<Result<WorktreeListResponse, HerdrError>>>,
     pub workspace_list_results: Mutex<VecDeque<Result<Vec<WorkspaceInfo>, HerdrError>>>,
+    pub pane_split_results: Mutex<VecDeque<Result<PaneSplitResponse, HerdrError>>>,
+    pub pane_run_results: Mutex<VecDeque<Result<PaneRunResponse, HerdrError>>>,
 }
 
 fn next<T>(queue: &Mutex<VecDeque<Result<T, HerdrError>>>, method: &str) -> Result<T, HerdrError> {
@@ -93,6 +101,22 @@ impl HerdrProvider for MockHerdrProvider {
     fn workspace_list(&self) -> Result<Vec<WorkspaceInfo>, HerdrError> {
         self.calls.lock().unwrap().push(HerdrCall::WorkspaceList);
         next(&self.workspace_list_results, "workspace_list")
+    }
+
+    fn pane_split(&self, request: &PaneSplitRequest) -> Result<PaneSplitResponse, HerdrError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(HerdrCall::PaneSplit(request.clone()));
+        next(&self.pane_split_results, "pane_split")
+    }
+
+    fn pane_run(&self, pane_id: &str, command: &str) -> Result<PaneRunResponse, HerdrError> {
+        self.calls.lock().unwrap().push(HerdrCall::PaneRun {
+            pane_id: pane_id.into(),
+            command: command.into(),
+        });
+        next(&self.pane_run_results, "pane_run")
     }
 }
 

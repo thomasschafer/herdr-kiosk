@@ -106,7 +106,9 @@ pub enum AppEvent {
         generation: u64,
         message: String,
     },
-    RepoOpened,
+    RepoOpened {
+        warning: Option<String>,
+    },
     RepoOpenFailed(String),
     BranchOperationFailed {
         repo_path: PathBuf,
