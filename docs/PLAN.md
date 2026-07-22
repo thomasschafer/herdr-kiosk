@@ -174,9 +174,9 @@ they're discovered.
   `~/.codex/config.toml` already pins `gpt-5.6-sol` + `model_reasoning_effort = "high"`.
 - [x] Local herdr 0.7.4 binary built from `../herdr` via
   `nix develop --command cargo build --release`.
-- [ ] Check whether plugin actions appear in herdr 0.7.4 right-click menus (research doc
-  says not as of 0.7.0); document the finding in the README keybinding section.
-  (Needs mouse-event scripting or a hand-check; deferred to M7 polish.)
+- [x] Plugin actions in herdr 0.7.4 right-click menus: confirmed absent (herdr
+  `src/ui/menus.rs` contains no plugin-action entries), so keybindings remain the
+  only launch surface. Goes in the README keybinding section at M9.
 - [x] `ui_busy` from herdr's own modals: observed live during M1 verification (the
   first-run welcome dialog blocks popup opening; error surfaced in `plugin log list`).
   Harness must dismiss onboarding before invoking popup actions — see VERIFYING.md.
@@ -292,6 +292,12 @@ for help before its printable-character fallback, so `?` remains searchable here
 Strict fmt/clippy, 118 unit tests plus the startup integration test, and the full M3–M7
 tmux e2e pass, including first-run/relaunch, the explicit-empty-config path, remapped
 `Ctrl+B`, help content, and Esc return.
+
+Reviewed and independently verified (commit a991ce4): 119 tests, lints clean, full
+e2e PASS. Highlights from review: no-replace atomic config install via
+renameatx_np/renameat2 with portable fallback; OSC 11 probe is TTY-guarded with a
+bounded poll and cannot break rendering; light-background adaptation applies only
+when the user has not overridden the affected colors.
 
 ### M8 — Windows (early, then parity forever after)
 - [ ] Re-verify the file-viewer Windows findings against current herdr: relative pane
