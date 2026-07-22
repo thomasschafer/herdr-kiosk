@@ -653,7 +653,7 @@ fn apply_on_open(
         let split = provider.pane_split(&PaneSplitRequest {
             pane_id: root_pane_id.into(),
             direction: pane.direction,
-            ratio: pane.ratio,
+            ratio: pane.ratio.map(|ratio| 1.0 - ratio),
             cwd: PathBuf::from(checkout_path),
             focus: false,
         });
@@ -769,7 +769,7 @@ mod tests {
                 HerdrCall::PaneSplit(PaneSplitRequest {
                     pane_id: "p_root".into(),
                     direction: OnOpenPaneDirection::Right,
-                    ratio: Some(0.4),
+                    ratio: Some(0.6),
                     cwd: "/repo".into(),
                     focus: false,
                 }),
@@ -790,6 +790,36 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn on_open_ratio_is_the_new_pane_fraction() {
+        let mock = MockHerdrProvider::default();
+        mock.pane_split_results
+            .lock()
+            .unwrap()
+            .push_back(Ok(PaneSplitResponse {
+                pane_id: "p_2".into(),
+            }));
+        mock.pane_run_results
+            .lock()
+            .unwrap()
+            .push_back(Ok(PaneRunResponse));
+        let config = OnOpenConfig {
+            panes: vec![OnOpenPaneConfig {
+                command: "hx".into(),
+                direction: OnOpenPaneDirection::Right,
+                ratio: Some(0.35),
+            }],
+        };
+
+        assert!(apply_on_open(&mock, &config, "p_root", "/repo").is_none());
+        let calls = mock.calls.lock().unwrap();
+        let HerdrCall::PaneSplit(request) = &calls[0] else {
+            panic!("expected pane split call");
+        };
+        let ratio = request.ratio.expect("expected configured ratio");
+        assert!((ratio - 0.65).abs() < f32::EPSILON);
     }
 
     #[test]

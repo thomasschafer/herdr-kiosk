@@ -70,18 +70,14 @@ impl Default for ThemeConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OnOpenPaneDirection {
-    Left,
     Right,
-    Up,
     Down,
 }
 
 impl OnOpenPaneDirection {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Left => "left",
             Self::Right => "right",
-            Self::Up => "up",
             Self::Down => "down",
         }
     }
@@ -90,7 +86,9 @@ impl OnOpenPaneDirection {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OnOpenPaneConfig {
     pub command: String,
+    /// Split direction supported by herdr: `right` or `down`.
     pub direction: OnOpenPaneDirection,
+    /// Fraction of the split occupied by the new command pane; defaults to 0.5.
     #[serde(default)]
     pub ratio: Option<f32>,
 }
@@ -403,10 +401,12 @@ panes = [
     fn rejects_invalid_on_open_panes() {
         let direction = parse_config(
             r#"[on_open]
-panes = [{ command = "hx", direction = "diagonal" }]"#,
+panes = [{ command = "hx", direction = "left" }]"#,
         )
         .unwrap_err();
-        assert!(format!("{direction:#}").contains("unknown variant `diagonal`"));
+        let message = format!("{direction:#}");
+        assert!(message.contains("unknown variant `left`"));
+        assert!(message.contains("expected `right` or `down`"));
 
         let command = parse_config(
             r#"[on_open]

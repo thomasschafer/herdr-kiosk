@@ -66,8 +66,9 @@ search_dirs = [
 
 Optional `on_open` panes are created in order after any workspace is opened or
 created. Each pane runs its command from the checkout directory without taking
-focus from the primary pane. `direction` accepts `left`, `right`, `up`, or `down`;
-`ratio` is optional and must be greater than `0` and less than `1`.
+focus from the primary pane. `direction` supports `right` or `down`. `ratio` is the
+fraction of the split occupied by the new pane that runs the command, defaults to
+`0.5`, and must be greater than `0` and less than `1`.
 
 ```toml
 [on_open]
