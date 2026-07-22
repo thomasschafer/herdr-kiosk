@@ -243,12 +243,17 @@ where they are exercised)
   late-arriving loads from a previously viewed repo.
 
 ### M5 — remotes
-- [ ] `git fetch` per remote on entering branch view (pool of 4), streamed updates,
-  spinner while fetching (D8).
-- [ ] Remote-only branches streamed in, greyed, dedup against local names, ` (remote)`
+- [x] `git fetch` per remote on entering branch view (pool of 4), streamed updates,
+  spinner while fetching (D8). Hardening beyond kiosk: `GIT_TERMINAL_PROMPT=0` on
+  background fetches so credential prompts fail fast instead of hanging a thread.
+- [x] Remote-only branches streamed in, greyed, dedup against local names, ` (remote)`
   suffix; Enter → tracking two-step with `BranchEntry.remote` (not hardcoded origin) and
-  the branch-already-exists guard.
-- [ ] E2e with a local bare "remote" fixture.
+  the branch-already-exists guard (typed error via `LC_ALL=C` stderr matching, falls
+  through to worktree creation on the race).
+- [x] E2e with a local bare "remote" fixture, asserting dedup and that upstream
+  tracking is genuinely set (`git rev-parse <branch>@{upstream}`).
+- Reviewed and independently verified (commit 2ea01e7): 88 tests, lints clean, full
+  e2e PASS. No deviations.
 
 ### M6 — new branch + deletion
 - [ ] New-branch flow (D5): name input → base branch picker → `worktree create --base`.
