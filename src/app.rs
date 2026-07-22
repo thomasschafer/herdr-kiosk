@@ -271,7 +271,11 @@ fn process_app_event(event: AppEvent, state: &mut AppState, changes: &mut TickCh
             let message = if warning.path.as_os_str().is_empty() {
                 warning.message
             } else {
-                format!("{}: {}", warning.path.display(), warning.message)
+                format!(
+                    "{}: {}",
+                    crate::path::display(&warning.path),
+                    warning.message
+                )
             };
             state.push_toast(ToastKind::Warning, message);
         }
@@ -803,9 +807,11 @@ fn canonical_or_original(path: &Path) -> PathBuf {
 
 fn apply_open_indicators(state: &mut AppState) {
     for entry in &mut state.repos {
+        let repo_path = canonical_or_original(&entry.repo.path);
         entry.is_open = state
             .open_repo_roots
-            .contains(&canonical_or_original(&entry.repo.path));
+            .iter()
+            .any(|open_path| crate::path::equivalent(open_path, &repo_path));
     }
 }
 
@@ -1455,12 +1461,15 @@ fn draw_delete_dialog(
                     .fg(theme.warning)
                     .add_modifier(Modifier::BOLD),
             )),
-            Line::raw(format!("Force-remove {}?", target.worktree_path.display())),
+            Line::raw(format!(
+                "Force-remove {}?",
+                crate::path::display(&target.worktree_path)
+            )),
         ]
     } else {
         vec![Line::raw(format!(
             "Remove checkout {}?",
-            target.worktree_path.display()
+            crate::path::display(&target.worktree_path)
         ))]
     };
     if target.open_workspace_id.is_some() {

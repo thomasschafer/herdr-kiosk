@@ -300,14 +300,52 @@ bounded poll and cannot break rendering; light-background adaptation applies onl
 when the user has not overridden the affected colors.
 
 ### M8 — Windows (early, then parity forever after)
-- [ ] Re-verify the file-viewer Windows findings against current herdr: relative pane
-  command spawn (CreateProcessW against herdr's dir), `\\?\` plugin root paths, no
-  `.exe` appending. Herdr is moving fast — the 0.7.1-era findings may be stale.
-- [ ] Whatever the findings, ship: platform-gated manifest entries (`-windows` suffixed
-  ids where needed), PowerShell shim(s), pane spawn by absolute path.
-- [ ] Windows CI (build + test at minimum; e2e if the harness ports).
-- [ ] From here on, every milestone's work lands with Windows parity or a tracked
+- [x] Re-verified against the current herdr 0.7.4 checkout (`a9b28f9`). The relative
+  pane-program problem remains: plugin panes pass manifest argv unchanged through
+  `TerminalRuntime::spawn_argv_command` (`../herdr/src/app/api/plugins/panes.rs:27-31`,
+  `../herdr/src/pane.rs:1659-1669`) and Windows ultimately supplies that program as
+  `CreateProcessW.lpApplicationName` with cwd separately
+  (`../herdr/vendor/portable-pty/src/win/psuedocon.rs:126-145`). Plugin roots are still
+  `canonicalize()` plus `display()` with no verbatim-prefix cleanup
+  (`../herdr/src/app/api/plugins/manifest.rs:128-139,208-216`), so Windows can expose
+  `\\?\` roots. The old "no `.exe` appending" finding is stale: current portable-pty
+  searches `PATH`/`PATHEXT` and tries extension candidates before `CreateProcessW`
+  (`../herdr/vendor/portable-pty/src/cmdbuilder.rs:598-623,685-701`).
+- [x] Confirmed popup plugin panes have no Unix gate. The shared placement dispatch
+  accepts `Popup` (`../herdr/src/app/api/plugins/mod.rs:385-445`), the shared popup path
+  spawns argv (`../herdr/src/app/api/plugins/panes.rs:11-41`,
+  `../herdr/src/app/popup.rs:86-115`), and PTY spawning has a Windows backend
+  (`../herdr/src/pty/backend.rs:7-39`).
+- [x] Shipped platform-gated `picker-windows` / `open-picker-windows` entries and
+  PowerShell shims. `powershell.exe` is PATH-resolved; the pane shim strips any `\\?\`
+  prefix and launches `herdr-kiosk.exe` by absolute path. The Unix action shim is
+  unchanged. Build invocation is direct `cargo build --release`, without a shell.
+- [x] Added `windows-latest` to normal CI formatting, PowerShell syntax validation,
+  clippy, build, and unit/startup tests. The tmux e2e remains Unix-only.
+- [x] From here on, every milestone's work lands with Windows parity or a tracked
   exception.
+
+Real-Windows hand-test checklist (compilation and CI unit tests do not cover these):
+
+- Install and link flows, including a plugin root containing spaces; invoke
+  `open-picker-windows` and confirm the 90% session-modal popup opens and exits cleanly.
+- Confirm managed-install and linked-plugin roots work when herdr reports `\\?\` and
+  `\\?\UNC\` paths, and that no verbatim prefix leaks into picker dialogs/errors.
+- Complete first-run setup with drive-letter and UNC search paths, including Tab
+  completion with backslashes; verify guarded config creation never overwrites a file
+  created concurrently.
+- Exercise repo discovery, case-insensitive collision labels (rendered with `/`),
+  current/open indicators, local and remote branch flows, background fetch with auth
+  prompts disabled, new-branch creation, and clean/dirty worktree removal.
+- Git stderr classification assumes the standard English Git-for-Windows messages.
+- The Windows pane command references `scripts/run-picker.ps1` cwd-relative; herdr
+  runs plugin commands with the plugin directory as cwd, but a launcher passing an
+  explicit `--cwd` override would break that resolution. If the hand-test shows
+  breakage, switch the pane command to `powershell -Command` with
+  `$env:HERDR_PLUGIN_ROOT` expansion so it becomes cwd-independent.
+  Verify the existing-branch, stale-worktree, and dirty-worktree paths on the supported
+  Git for Windows installation; `LC_ALL=C` is not relied on to change Windows Git's
+  locale. Also confirm `GIT_TERMINAL_PROMPT=0` prevents interactive fetch prompts.
 
 ### M9 — distribution and publishing
 - [ ] `fetch-or-build.sh`: version-matched prebuilt download + SHA-256 verify, cargo

@@ -264,7 +264,7 @@ fn expand_tilde(path: &str, home: Option<&Path>) -> Result<PathBuf> {
             .map(Path::to_path_buf)
             .ok_or_else(|| anyhow::anyhow!("cannot expand '~' because HOME is unavailable"));
     }
-    if let Some(rest) = path.strip_prefix("~/") {
+    if let Some(rest) = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\")) {
         return home
             .map(|home| home.join(rest))
             .ok_or_else(|| anyhow::anyhow!("cannot expand '{path}' because HOME is unavailable"));
@@ -277,6 +277,16 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
+
+    fn absolute_test_path(name: &str) -> PathBuf {
+        std::env::temp_dir()
+            .join("herdr-kiosk-config-tests")
+            .join(name)
+    }
+
+    fn path_string(path: &Path) -> String {
+        path.to_string_lossy().into_owned()
+    }
 
     #[test]
     fn parses_simple_and_depth_search_directory_forms() {
@@ -344,16 +354,16 @@ mod tests {
 
     #[test]
     fn config_path_uses_documented_precedence() {
+        let plugin = absolute_test_path("plugin-config");
+        let xdg = absolute_test_path("xdg");
+        let home = absolute_test_path("home");
         let values = HashMap::from([
-            ("HERDR_PLUGIN_CONFIG_DIR", "/plugin/config"),
-            ("XDG_CONFIG_HOME", "/xdg"),
-            ("HOME", "/home/tester"),
+            ("HERDR_PLUGIN_CONFIG_DIR", path_string(&plugin)),
+            ("XDG_CONFIG_HOME", path_string(&xdg)),
+            ("HOME", path_string(&home)),
         ]);
-        let resolution = resolve_config_path(|name| values.get(name).map(ToString::to_string));
-        assert_eq!(
-            resolution.path,
-            Some(PathBuf::from("/plugin/config/config.toml"))
-        );
+        let resolution = resolve_config_path(|name| values.get(name).cloned());
+        assert_eq!(resolution.path, Some(plugin.join("config.toml")));
     }
 
     #[test]
@@ -376,15 +386,13 @@ mod tests {
 
     #[test]
     fn relative_higher_priority_value_falls_through_to_absolute_xdg() {
+        let xdg = absolute_test_path("xdg-fallback");
         let values = HashMap::from([
-            ("HERDR_PLUGIN_CONFIG_DIR", "plugin-config"),
-            ("XDG_CONFIG_HOME", "/xdg"),
+            ("HERDR_PLUGIN_CONFIG_DIR", "plugin-config".to_string()),
+            ("XDG_CONFIG_HOME", path_string(&xdg)),
         ]);
-        let resolution = resolve_config_path(|name| values.get(name).map(ToString::to_string));
-        assert_eq!(
-            resolution.path,
-            Some(PathBuf::from("/xdg/herdr-kiosk/config.toml"))
-        );
+        let resolution = resolve_config_path(|name| values.get(name).cloned());
+        assert_eq!(resolution.path, Some(xdg.join("herdr-kiosk/config.toml")));
         assert_eq!(resolution.warnings.len(), 1);
     }
 
@@ -441,13 +449,12 @@ highlight_fg = "reset"
 
     #[test]
     fn injected_reader_loads_config() {
+        let home = absolute_test_path("injected-home");
+        let expected = home.join(".config/herdr-kiosk/config.toml");
         let loaded = load_config_with(
-            |name| (name == "HOME").then(|| "/home/tester".into()),
+            |name| (name == "HOME").then(|| path_string(&home)),
             |path| {
-                assert_eq!(
-                    path,
-                    Path::new("/home/tester/.config/herdr-kiosk/config.toml")
-                );
+                assert_eq!(path, expected);
                 Ok(Some("search_dirs = [\"/repos\"]".into()))
             },
         )
@@ -458,19 +465,20 @@ highlight_fg = "reset"
 
     #[test]
     fn resolved_but_missing_and_existing_empty_configs_are_distinguished() {
+        let config_dir = absolute_test_path("resolved-config");
         let missing = load_config_with(
-            |name| (name == "HERDR_PLUGIN_CONFIG_DIR").then(|| "/config".into()),
+            |name| (name == "HERDR_PLUGIN_CONFIG_DIR").then(|| path_string(&config_dir)),
             |_| Ok(None),
         )
         .unwrap();
         assert_eq!(
             missing.path.as_deref(),
-            Some(Path::new("/config/config.toml"))
+            Some(config_dir.join("config.toml").as_path())
         );
         assert!(!missing.exists);
 
         let empty = load_config_with(
-            |name| (name == "HERDR_PLUGIN_CONFIG_DIR").then(|| "/config".into()),
+            |name| (name == "HERDR_PLUGIN_CONFIG_DIR").then(|| path_string(&config_dir)),
             |_| Ok(Some("search_dirs = []".into())),
         )
         .unwrap();

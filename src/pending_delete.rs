@@ -136,6 +136,16 @@ mod tests {
 
     use super::*;
 
+    fn absolute_test_path(name: &str) -> PathBuf {
+        std::env::temp_dir()
+            .join("herdr-kiosk-state-tests")
+            .join(name)
+    }
+
+    fn path_string(path: &Path) -> String {
+        path.to_string_lossy().into_owned()
+    }
+
     #[test]
     fn pending_delete_round_trips_and_empty_save_removes_file() {
         let temp = tempdir().unwrap();
@@ -164,44 +174,47 @@ mod tests {
 
     #[test]
     fn state_path_uses_plugin_directory_before_xdg_and_home() {
+        let plugin = absolute_test_path("plugin-state");
+        let xdg_path = absolute_test_path("xdg-state");
+        let home_path = absolute_test_path("home");
         let values = HashMap::from([
-            ("HERDR_PLUGIN_STATE_DIR", "/plugin/state"),
-            ("XDG_STATE_HOME", "/xdg/state"),
-            ("HOME", "/home/tester"),
+            ("HERDR_PLUGIN_STATE_DIR", path_string(&plugin)),
+            ("XDG_STATE_HOME", path_string(&xdg_path)),
+            ("HOME", path_string(&home_path)),
         ]);
-        let resolution = resolve_state_path(|name| values.get(name).map(ToString::to_string));
-        assert_eq!(
-            resolution.path,
-            Some(PathBuf::from("/plugin/state/pending_deletes.toml"))
-        );
+        let resolution = resolve_state_path(|name| values.get(name).cloned());
+        assert_eq!(resolution.path, Some(plugin.join("pending_deletes.toml")));
         assert!(resolution.warnings.is_empty());
 
-        let xdg = HashMap::from([("XDG_STATE_HOME", "/xdg/state"), ("HOME", "/home/tester")]);
+        let xdg = HashMap::from([
+            ("XDG_STATE_HOME", path_string(&xdg_path)),
+            ("HOME", path_string(&home_path)),
+        ]);
         assert_eq!(
-            resolve_state_path(|name| xdg.get(name).map(ToString::to_string)).path,
-            Some(PathBuf::from("/xdg/state/herdr-kiosk/pending_deletes.toml"))
+            resolve_state_path(|name| xdg.get(name).cloned()).path,
+            Some(xdg_path.join("herdr-kiosk/pending_deletes.toml"))
         );
 
-        let home = HashMap::from([("HOME", "/home/tester")]);
+        let home = HashMap::from([("HOME", path_string(&home_path))]);
         assert_eq!(
-            resolve_state_path(|name| home.get(name).map(ToString::to_string)).path,
-            Some(PathBuf::from(
-                "/home/tester/.local/state/herdr-kiosk/pending_deletes.toml"
-            ))
+            resolve_state_path(|name| home.get(name).cloned()).path,
+            Some(home_path.join(".local/state/herdr-kiosk/pending_deletes.toml"))
         );
     }
 
     #[test]
     fn relative_state_paths_are_refused_and_fall_through() {
+        let xdg_path = absolute_test_path("xdg-fallback");
+        let home_path = absolute_test_path("home-fallback");
         let values = HashMap::from([
-            ("HERDR_PLUGIN_STATE_DIR", "plugin-state"),
-            ("XDG_STATE_HOME", "/xdg/state"),
-            ("HOME", "/home/tester"),
+            ("HERDR_PLUGIN_STATE_DIR", "plugin-state".to_string()),
+            ("XDG_STATE_HOME", path_string(&xdg_path)),
+            ("HOME", path_string(&home_path)),
         ]);
-        let resolution = resolve_state_path(|name| values.get(name).map(ToString::to_string));
+        let resolution = resolve_state_path(|name| values.get(name).cloned());
         assert_eq!(
             resolution.path,
-            Some(PathBuf::from("/xdg/state/herdr-kiosk/pending_deletes.toml"))
+            Some(xdg_path.join("herdr-kiosk/pending_deletes.toml"))
         );
         assert_eq!(resolution.warnings.len(), 1);
         assert!(

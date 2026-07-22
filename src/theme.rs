@@ -1,8 +1,11 @@
 use ratatui::style::Color;
 
+use std::time::Duration;
+
+#[cfg(unix)]
 use std::{
     io::{IsTerminal, Read, Write},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use crate::config::{ThemeColor, ThemeConfig};

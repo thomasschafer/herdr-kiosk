@@ -350,7 +350,7 @@ impl AppState {
             std::fs::canonicalize(&worktree_path).unwrap_or_else(|_| worktree_path.clone());
         let canonical_repo =
             std::fs::canonicalize(&context.repo_path).unwrap_or_else(|_| context.repo_path.clone());
-        if canonical_worktree == canonical_repo {
+        if crate::path::equivalent(&canonical_worktree, &canonical_repo) {
             return Err("Cannot delete the main checkout");
         }
         if self.in_flight_worktree_removals.contains(&worktree_path)
@@ -509,7 +509,7 @@ impl AppState {
             .filtered
             .iter()
             .enumerate()
-            .filter(|(_, (index, _))| cwd.starts_with(&self.repos[*index].repo.path))
+            .filter(|(_, (index, _))| crate::path::starts_with(cwd, &self.repos[*index].repo.path))
             .max_by_key(|(_, (index, _))| self.repos[*index].repo.path.components().count())
             .map(|(position, _)| position);
         if best.is_some() {
@@ -519,9 +519,21 @@ impl AppState {
 }
 
 pub fn collision_disambiguators(repos: &[Repo]) -> Vec<Option<String>> {
-    let mut groups: HashMap<&str, Vec<usize>> = HashMap::new();
+    collision_disambiguators_with_case(repos, cfg!(windows))
+}
+
+fn collision_disambiguators_with_case(
+    repos: &[Repo],
+    case_insensitive: bool,
+) -> Vec<Option<String>> {
+    let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
     for (index, repo) in repos.iter().enumerate() {
-        groups.entry(&repo.name).or_default().push(index);
+        let key = if case_insensitive {
+            repo.name.to_lowercase()
+        } else {
+            repo.name.clone()
+        };
+        groups.entry(key).or_default().push(index);
     }
     let parents: Vec<Vec<OsString>> = repos
         .iter()
@@ -556,7 +568,11 @@ pub fn collision_disambiguators(repos: &[Repo]) -> Vec<Option<String>> {
                     indices.iter().all(|other| {
                         *other == index
                             || parents[*other].len() < *depth
-                            || parents[*other][parents[*other].len() - depth..] != *suffix
+                            || !path_components_equal(
+                                &parents[*other][parents[*other].len() - depth..],
+                                suffix,
+                                case_insensitive,
+                            )
                     })
                 })
                 .unwrap_or_else(|| {
@@ -578,6 +594,16 @@ pub fn collision_disambiguators(repos: &[Repo]) -> Vec<Option<String>> {
         }
     }
     result
+}
+
+fn path_components_equal(left: &[OsString], right: &[OsString], case_insensitive: bool) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right).all(|(left, right)| {
+            left == right
+                || case_insensitive
+                    && left.to_string_lossy().to_lowercase()
+                        == right.to_string_lossy().to_lowercase()
+        })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -607,7 +633,7 @@ impl BranchEntry {
             .and_then(|path| {
                 repo.worktrees
                     .iter()
-                    .filter(|worktree| path.starts_with(&worktree.path))
+                    .filter(|worktree| crate::path::starts_with(path, &worktree.path))
                     .max_by_key(|worktree| worktree.path.components().count())
             })
             .and_then(|worktree| worktree.branch.as_deref());
@@ -657,7 +683,7 @@ impl BranchEntry {
         };
         self.open_workspace_id = worktrees
             .iter()
-            .find(|worktree| Path::new(&worktree.path) == path)
+            .find(|worktree| crate::path::equivalent(Path::new(&worktree.path), path))
             .and_then(|worktree| worktree.open_workspace_id.clone());
     }
 
@@ -755,6 +781,15 @@ mod tests {
     fn collision_leaves_unique_names_unchanged() {
         let repos = [repo("/one/alpha"), repo("/two/beta")];
         assert_eq!(collision_disambiguators(&repos), [None, None]);
+    }
+
+    #[test]
+    fn collision_windows_mode_is_case_insensitive_and_uses_forward_slashes() {
+        let repos = [repo("C:/One/Team/API"), repo("c:/two/team/api")];
+        assert_eq!(
+            collision_disambiguators_with_case(&repos, true),
+            [Some("…/One/Team".into()), Some("…/two/team".into())]
+        );
     }
 
     #[test]

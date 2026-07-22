@@ -29,6 +29,7 @@ pub mod git;
 pub mod herdr;
 pub mod keyboard;
 pub mod keymap;
+pub mod path;
 pub mod pending_delete;
 pub mod setup;
 pub mod spawn;
@@ -78,12 +79,10 @@ fn start() -> Result<()> {
         return run_no_search_dirs(&mut terminal, loaded.path.as_ref());
     }
 
-    let resolved = loaded.config.resolved_search_dirs_with(
-        std::env::var_os("HOME")
-            .as_deref()
-            .map(std::path::Path::new),
-        std::path::Path::is_dir,
-    )?;
+    let home = user_home_dir();
+    let resolved = loaded
+        .config
+        .resolved_search_dirs_with(home.as_deref(), std::path::Path::is_dir)?;
     let mut warnings = loaded.warnings;
     warnings.extend(resolved.warnings);
     let current_cwd = context
@@ -115,8 +114,8 @@ fn run_setup_wizard(
     theme: &Theme,
 ) -> Result<Option<Vec<config::SearchDirEntry>>> {
     let mut state = SetupState::default();
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let path_display = config_path.display().to_string();
+    let home = user_home_dir();
+    let path_display = path::display(config_path).into_owned();
     loop {
         terminal.draw(|frame| components::setup::draw(frame, &state, theme, &path_display))?;
         let Event::Key(key) = ct_event::read()? else {
@@ -231,7 +230,7 @@ fn handle_directory_key(
 fn run_no_search_dirs(terminal: &mut DefaultTerminal, path: Option<&PathBuf>) -> Result<()> {
     let location = path.map_or_else(
         || "No trusted config path could be resolved.".to_string(),
-        |path| format!("Config path: {}", path.display()),
+        |path| format!("Config path: {}", crate::path::display(path)),
     );
     loop {
         terminal.draw(|frame| draw_no_search_dirs(frame, &location))?;
@@ -243,6 +242,13 @@ fn run_no_search_dirs(terminal: &mut DefaultTerminal, path: Option<&PathBuf>) ->
             return Ok(());
         }
     }
+}
+
+fn user_home_dir() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").filter(|value| !value.is_empty());
+    #[cfg(windows)]
+    let home = home.or_else(|| std::env::var_os("USERPROFILE").filter(|value| !value.is_empty()));
+    home.map(PathBuf::from)
 }
 
 fn draw_no_search_dirs(frame: &mut Frame, location: &str) {

@@ -3,7 +3,7 @@ name = "Kiosk"
 version = "0.1.0"
 min_herdr_version = "0.7.4"
 description = "Fuzzy-find Git repositories and branches and open them as Herdr workspaces."
-platforms = ["linux", "macos"]
+platforms = ["linux", "macos", "windows"]
 
 [[panes]]
 id = "picker"
@@ -11,13 +11,31 @@ title = "Repos"
 placement = "popup"
 width = "90%"
 height = "90%"
+platforms = ["linux", "macos"]
 command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-kiosk\""]
+
+[[panes]]
+id = "picker-windows"
+title = "Repos"
+placement = "popup"
+width = "90%"
+height = "90%"
+platforms = ["windows"]
+command = ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "scripts/run-picker.ps1"]
 
 [[actions]]
 id = "open-picker"
 title = "Open repo picker"
 contexts = ["workspace", "global"]
+platforms = ["linux", "macos"]
 command = ["sh", "scripts/open-picker.sh"]
 
+[[actions]]
+id = "open-picker-windows"
+title = "Open repo picker"
+contexts = ["workspace", "global"]
+platforms = ["windows"]
+command = ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "scripts/open-picker.ps1"]
+
 [[build]]
-command = ["sh", "-c", "cargo build --release"]
+command = ["cargo", "build", "--release"]

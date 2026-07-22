@@ -54,7 +54,12 @@ impl SetupState {
     }
 
     pub fn begin_depth(&mut self) -> Result<(), &'static str> {
-        let path = self.input.text.trim().trim_end_matches('/').to_string();
+        let path = self
+            .input
+            .text
+            .trim()
+            .trim_end_matches(['/', '\\'])
+            .to_string();
         if path.is_empty() {
             if self.dirs.is_empty() {
                 return Err("Add at least one search directory");
@@ -144,7 +149,7 @@ impl SetupState {
 }
 
 pub fn split_input(input: &str) -> (String, String) {
-    input.rfind('/').map_or_else(
+    input.rfind(['/', '\\']).map_or_else(
         || ("./".into(), input.into()),
         |slash| (input[..=slash].into(), input[slash + 1..].into()),
     )
@@ -154,10 +159,12 @@ fn expand_for_fs(path: &str, home: Option<&Path>) -> PathBuf {
     if path == "~" {
         return home.unwrap_or_else(|| Path::new(".")).to_path_buf();
     }
-    path.strip_prefix("~/").map_or_else(
-        || PathBuf::from(path),
-        |rest| home.unwrap_or_else(|| Path::new(".")).join(rest),
-    )
+    path.strip_prefix("~/")
+        .or_else(|| path.strip_prefix("~\\"))
+        .map_or_else(
+            || PathBuf::from(path),
+            |rest| home.unwrap_or_else(|| Path::new(".")).join(rest),
+        )
 }
 
 pub fn complete_paths(input: &str, home: Option<&Path>) -> Vec<String> {
@@ -301,12 +308,19 @@ fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
     }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(windows)]
 fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
-    if to.exists() {
-        return Err(io::ErrorKind::AlreadyExists.into());
-    }
-    fs::rename(from, to)
+    // A same-directory hard link is atomic and fails if the destination exists.
+    // This preserves the setup writer's no-clobber guarantee without relying on
+    // Windows rename replacement semantics.
+    fs::hard_link(from, to)?;
+    fs::remove_file(from)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+    fs::hard_link(from, to)?;
+    fs::remove_file(from)
 }
 
 pub fn write_config_atomic_with(
@@ -391,6 +405,23 @@ mod tests {
         });
         assert_eq!(values, ["~/Desktop", "~/Development"]);
         assert_eq!(common_prefix(&values), "~/De");
+    }
+
+    #[test]
+    fn path_input_accepts_windows_separators_and_preserves_the_typed_style() {
+        assert_eq!(
+            split_input(r"C:\\Users\\Tom\\Dev"),
+            (r"C:\\Users\\Tom\\".into(), "Dev".into())
+        );
+        assert_eq!(
+            split_input("C:/Users/Tom/Dev"),
+            ("C:/Users/Tom/".into(), "Dev".into())
+        );
+        let values = complete_paths_with(r"~\De", Some(Path::new("/home/tester")), |parent| {
+            assert_eq!(parent, Path::new("/home/tester"));
+            Ok(vec!["Development".into()])
+        });
+        assert_eq!(values, [r"~\Development"]);
     }
 
     #[test]

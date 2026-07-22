@@ -478,8 +478,10 @@ fn parse_error_envelope(bytes: &[u8]) -> Option<HerdrError> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::{fs, os::unix::fs::PermissionsExt};
 
+    #[cfg(unix)]
     use tempfile::TempDir;
 
     use super::*;
@@ -621,6 +623,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     fn fake_herdr(temp: &TempDir, response: &str) -> (PathBuf, PathBuf) {
         let binary = temp.path().join("fake-herdr");
         let args_file = temp.path().join("args");
@@ -634,6 +637,7 @@ mod tests {
         (binary, args_file)
     }
 
+    #[cfg(unix)]
     #[test]
     fn cli_uses_workspace_list_without_json_flag() {
         let temp = TempDir::new().unwrap();
@@ -649,6 +653,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn cli_uses_json_flag_only_for_worktree_list() {
         let temp = TempDir::new().unwrap();
@@ -664,6 +669,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn cli_builds_exact_open_calls_for_path_and_branch() {
         let response = format!(
@@ -701,6 +707,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn cli_builds_exact_create_and_remove_calls() {
         let create_response = format!(
