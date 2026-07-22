@@ -8,7 +8,8 @@ HK_HOME_DIR="$HK_ROOT/home"
 TMUX_SOCKET="$HK_ROOT/tmux.sock"
 SESSION=hk-m7
 LAST_SCREEN="$HK_ROOT/last-screen.txt"
-CARGO_PATH=/Users/tomschafer/.cargo/bin:/etc/profiles/per-user/tomschafer/bin:/usr/bin:/bin:/usr/sbin:/sbin
+TMUX_BIN=${TMUX:-$(command -v tmux || true)}
+CARGO_PATH=/Users/tomschafer/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin
 export PATH="$CARGO_PATH"
 
 case "$HK_ROOT" in
@@ -21,6 +22,10 @@ esac
 
 if [ ! -x "$HERDR_BIN" ]; then
     printf 'Herdr binary is not executable: %s\n' "$HERDR_BIN" >&2
+    exit 2
+fi
+if [ ! -x "$TMUX_BIN" ]; then
+    printf 'tmux binary is not executable: %s\n' "$TMUX_BIN" >&2
     exit 2
 fi
 
@@ -66,7 +71,7 @@ git -C "$HK_ROOT/remote-seed" push -q upstream master remote-only
 
 printf 'building plugin...\n'
 (cd "$PROJECT_ROOT" && env PATH="$CARGO_PATH" cargo build --release)
-h plugin link "$PROJECT_ROOT" >/dev/null
+(cd "$PROJECT_ROOT" && h plugin link . >/dev/null)
 PLUGIN_CONFIG_DIR=$(h plugin config-dir thomasschafer.herdr-kiosk)
 mkdir -p "$PLUGIN_CONFIG_DIR"
 

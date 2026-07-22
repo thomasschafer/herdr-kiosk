@@ -11,7 +11,10 @@ test:
     cargo test
 
 readme:
-    cargo run --example update-readme
+    cargo xtask readme
+
+readme-check:
+    cargo xtask readme --check
 
 e2e:
     ./scripts/e2e.sh

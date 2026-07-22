@@ -250,12 +250,29 @@ impl FromStr for Command {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// Layered key bindings for the picker and its dialogs. Keys use lowercase
+/// `ctrl+`, `alt+`, and `shift+` modifiers with a character or a named key such as
+/// `enter`, `esc`, `tab`, `backspace`, `delete`, an arrow name, `home`, `end`,
+/// `pageup`, `pagedown`, or `space`. User bindings extend the defaults; assign
+/// `"noop"` to unbind an inherited key.
 pub struct KeysConfig {
+    /// Bindings active everywhere. Accepted actions are `quit`, `help`,
+    /// `dismiss_toast`, and `noop`.
     general: HashMap<KeyChord, Command>,
+    /// Bindings active while editing search or name text. Accepted actions are
+    /// `clear`, `backspace`, `delete_word`, `cursor_left`, `cursor_right`, and `noop`.
     text_edit: HashMap<KeyChord, Command>,
+    /// Bindings active in navigable lists. Accepted actions are `move_up`,
+    /// `move_down`, and `noop`.
     list_navigation: HashMap<KeyChord, Command>,
+    /// Bindings active in confirmation dialogs and the base-branch picker. Accepted
+    /// actions are `open`, `back`, and `noop`.
     modal: HashMap<KeyChord, Command>,
+    /// Bindings specific to the repository picker. Accepted actions are `open`,
+    /// `branches_view`, `quit`, and `noop`.
     repo_select: HashMap<KeyChord, Command>,
+    /// Bindings specific to the branch picker. Accepted actions are `open`, `back`,
+    /// `new_branch`, `delete`, and `noop`.
     branch_select: HashMap<KeyChord, Command>,
 }
 
@@ -588,25 +605,6 @@ impl<'de> Deserialize<'de> for KeysConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const KEYS_START: &str = "<!-- KEYS:START -->";
-    const KEYS_END: &str = "<!-- KEYS:END -->";
-
-    #[test]
-    fn readme_default_keys_are_current() {
-        let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))
-            .expect("read README.md");
-        let (_, after_start) = readme
-            .split_once(KEYS_START)
-            .expect("README keys start marker");
-        let (block, _) = after_start
-            .strip_prefix('\n')
-            .expect("newline after README keys start marker")
-            .split_once(KEYS_END)
-            .expect("README keys end marker");
-
-        assert_eq!(block, default_keys_toml());
-    }
 
     #[test]
     fn parses_and_displays_valid_chords() {

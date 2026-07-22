@@ -39,6 +39,9 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
+      - name: Check generated README
+        run: cargo xtask readme --check
+
       - name: Validate PowerShell syntax
         if: runner.os == 'Windows'
         shell: powershell

@@ -14,13 +14,28 @@ pub const DEFAULT_SEARCH_DEPTH: u16 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
+/// A repository search root, written either as a path string or an inline table.
 pub enum SearchDirEntry {
-    Simple(String),
-    Rich { path: String, depth: Option<u16> },
+    /// String form.
+    Simple(
+        /// Directory to scan with the default depth of 1. `~` and paths beginning
+        /// with `~/` expand from the user's home directory.
+        String,
+    ),
+    /// A path with an optional per-directory scan depth.
+    Rich {
+        /// Directory to scan. `~` and paths beginning with `~/` expand from the
+        /// user's home directory; other relative paths are accepted as written.
+        path: String,
+        /// Maximum directory depth to scan. The value must be at least 1 and
+        /// defaults to 1 when omitted.
+        depth: Option<u16>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// A color from the terminal's ANSI palette.
 pub enum ThemeColor {
     Black,
     Red,
@@ -37,16 +52,31 @@ pub enum ThemeColor {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
+/// Every field is optional and falls back to the default shown below.
 pub struct ThemeConfig {
+    /// Repository-picker accent, used for its active border and selected row.
     pub accent: ThemeColor,
+    /// Branch and new-branch accent, used for active borders, selections, and
+    /// branch status markers.
     pub secondary: ThemeColor,
+    /// Help-view accent, used for its border and selected row.
     pub tertiary: ThemeColor,
+    /// Error notification title color.
     pub error: ThemeColor,
+    /// Warning notification title and setup-warning color.
     pub warning: ThemeColor,
+    /// De-emphasized text color for metadata, counts, inactive content, and
+    /// explanatory labels. The untouched default becomes `gray` when a light
+    /// terminal background is detected.
     pub muted: ThemeColor,
+    /// Inactive list-border color. The untouched default becomes `gray` when a
+    /// light terminal background is detected.
     pub border: ThemeColor,
+    /// Keyboard-hint color in dialogs, setup, and notifications.
     pub hint: ThemeColor,
+    /// Foreground color for text on selected-row accent backgrounds in every view.
     pub highlight_fg: ThemeColor,
+    /// Color of the marker shown beside an open repository or worktree.
     pub open: ThemeColor,
 }
 
@@ -69,6 +99,7 @@ impl Default for ThemeConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Direction in which Herdr creates a configured pane.
 pub enum OnOpenPaneDirection {
     Right,
     Down,
@@ -84,28 +115,42 @@ impl OnOpenPaneDirection {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// A command pane created after a new workspace is opened.
 pub struct OnOpenPaneConfig {
+    /// Shell command Herdr runs in the opened checkout. The command must not be empty.
     pub command: String,
-    /// Split direction supported by herdr: `right` or `down`.
+    /// Split direction: `right` or `down`.
     pub direction: OnOpenPaneDirection,
-    /// Fraction of the split occupied by the new command pane; defaults to 0.5.
+    /// Fraction of the resulting split occupied by the new command pane. The value
+    /// must be greater than 0 and less than 1, and defaults to 0.5 when omitted.
     #[serde(default)]
     pub ratio: Option<f32>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+/// The section is optional and contains no pane definitions by default.
 pub struct OnOpenConfig {
+    /// Pane definitions, created in order without moving focus from the primary
+    /// pane. Commands run from the opened repository or worktree. They run only
+    /// when a workspace is newly opened, not when an existing workspace is focused.
     pub panes: Vec<OnOpenPaneConfig>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+/// User configuration loaded from the plugin's `config.toml`.
 pub struct Config {
+    /// Directories searched recursively for Git repositories. Entries can be simple
+    /// strings such as `"~/Code"` or inline tables such as
+    /// `{ path = "~/Work", depth = 3 }`, and both forms can be mixed.
     pub search_dirs: Vec<SearchDirEntry>,
-    pub keys: KeysConfig,
+    /// Customize terminal-palette colors used by the picker.
     pub theme: ThemeConfig,
+    /// Configure command panes created after opening a new workspace.
     pub on_open: OnOpenConfig,
+    /// Customize key bindings grouped by where they are active.
+    pub keys: KeysConfig,
 }
 
 impl Config {

@@ -8,7 +8,7 @@ h() {
 }
 
 t() {
-    tmux -S "$TMUX_SOCKET" "$@"
+    "$TMUX_BIN" -S "$TMUX_SOCKET" "$@"
 }
 
 capture() {
