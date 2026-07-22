@@ -252,12 +252,12 @@ impl HerdrProvider for CliHerdrProvider {
             "worktree".into(),
             "open".into(),
             "--cwd".into(),
-            path_arg(cwd),
+            path_arg("cwd", cwd)?,
         ];
         match target {
             WorktreeOpenTarget::Path(path) => {
                 require_absolute("worktree path", path)?;
-                args.extend(["--path".into(), path_arg(path)]);
+                args.extend(["--path".into(), path_arg("worktree path", path)?]);
             }
             WorktreeOpenTarget::Branch(branch) => {
                 require_nonempty("branch", branch)?;
@@ -289,7 +289,7 @@ impl HerdrProvider for CliHerdrProvider {
             "worktree".into(),
             "create".into(),
             "--cwd".into(),
-            path_arg(&request.cwd),
+            path_arg("cwd", &request.cwd)?,
             "--branch".into(),
             request.branch.clone(),
         ];
@@ -299,7 +299,7 @@ impl HerdrProvider for CliHerdrProvider {
         }
         if let Some(path) = &request.path {
             require_absolute("worktree path", path)?;
-            args.extend(["--path".into(), path_arg(path)]);
+            args.extend(["--path".into(), path_arg("worktree path", path)?]);
         }
         args.push(
             if request.focus {
@@ -355,7 +355,7 @@ impl HerdrProvider for CliHerdrProvider {
             "worktree".into(),
             "list".into(),
             "--cwd".into(),
-            path_arg(cwd),
+            path_arg("cwd", cwd)?,
             "--json".into(),
         ];
         match self.invoke::<WorktreeListResult>(&args)? {
@@ -454,8 +454,12 @@ fn require_nonempty(name: &str, value: &str) -> Result<(), HerdrError> {
     }
 }
 
-fn path_arg(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
+fn path_arg(name: &str, path: &Path) -> Result<String, HerdrError> {
+    path.to_str().map(str::to_owned).ok_or_else(|| {
+        HerdrError::InvalidArgument(format!(
+            "{name} is not valid UTF-8 and cannot be passed to herdr"
+        ))
+    })
 }
 
 fn parse_error_envelope(bytes: &[u8]) -> Option<HerdrError> {
@@ -767,5 +771,34 @@ mod tests {
             provider.worktree_list(Path::new("relative")),
             Err(HerdrError::InvalidArgument(_))
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_rejects_non_utf8_paths_before_invocation() {
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+
+        let temp = TempDir::new().unwrap();
+        let response = format!(
+            r#"{{"id":"open","result":{{"type":"worktree_opened","workspace":{WORKSPACE_WITH_WORKTREE},"worktree":{WORKTREE_OPEN},"already_open":false}}}}"#
+        );
+        let (binary, args_file) = fake_herdr(&temp, &response);
+        let provider = CliHerdrProvider::new(binary);
+        let path = PathBuf::from(OsString::from_vec(b"/repo/invalid-\xff".to_vec()));
+
+        let error = provider
+            .worktree_create(&WorktreeCreateRequest {
+                cwd: path,
+                branch: "feature".into(),
+                base: None,
+                path: None,
+                focus: true,
+            })
+            .unwrap_err();
+
+        assert!(
+            matches!(error, HerdrError::InvalidArgument(message) if message.contains("not valid UTF-8"))
+        );
+        assert!(!args_file.exists(), "herdr must not be invoked");
     }
 }

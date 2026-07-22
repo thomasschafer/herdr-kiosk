@@ -207,6 +207,7 @@ pub fn spawn_branch_loading(
     sender: &EventSender,
     mut repo: Repo,
     cwd: Option<PathBuf>,
+    generation: u64,
 ) {
     let git = Arc::clone(git);
     let sender = sender.clone();
@@ -231,6 +232,7 @@ pub fn spawn_branch_loading(
             Ok((branches, worktrees)) => {
                 sender.send(AppEvent::BranchesLoaded {
                     repo_path,
+                    generation,
                     branches,
                     worktrees,
                 });
@@ -238,6 +240,7 @@ pub fn spawn_branch_loading(
             Err(error) => {
                 sender.send(AppEvent::BranchLoadFailed {
                     repo_path,
+                    generation,
                     message: format!("could not load branches: {error:#}"),
                 });
             }
@@ -250,6 +253,7 @@ pub fn spawn_remote_branch_loading(
     sender: &EventSender,
     repo_path: PathBuf,
     local_names: Vec<String>,
+    generation: u64,
 ) {
     let git = Arc::clone(git);
     let sender = sender.clone();
@@ -259,6 +263,7 @@ pub fn spawn_remote_branch_loading(
             Err(error) => {
                 sender.send(AppEvent::RemoteBranchLoadFailed {
                     repo_path,
+                    generation,
                     message: format!("could not list remote branches: {error:#}"),
                 });
                 return;
@@ -272,6 +277,7 @@ pub fn spawn_remote_branch_loading(
                 Ok(remote_names) => {
                     sender.send(AppEvent::RemoteBranchesLoaded {
                         repo_path: repo_path.clone(),
+                        generation,
                         branches: BranchEntry::build_remote(&remote, &remote_names, &local_names),
                         remote,
                     });
@@ -279,6 +285,7 @@ pub fn spawn_remote_branch_loading(
                 Err(error) => {
                     sender.send(AppEvent::RemoteBranchLoadFailed {
                         repo_path: repo_path.clone(),
+                        generation,
                         message: format!("could not list branches for remote {remote}: {error:#}"),
                     });
                 }
@@ -292,6 +299,7 @@ pub fn spawn_git_fetch(
     sender: &EventSender,
     repo_path: PathBuf,
     local_names: Vec<String>,
+    generation: u64,
 ) {
     let git = Arc::clone(git);
     let sender = sender.clone();
@@ -303,6 +311,7 @@ pub fn spawn_git_fetch(
                     remote: None,
                     branches: Vec::new(),
                     repo_path,
+                    generation,
                     error: Some(format!("could not list remotes for fetch: {error:#}")),
                     is_final: true,
                 });
@@ -314,6 +323,7 @@ pub fn spawn_git_fetch(
                 remote: None,
                 branches: Vec::new(),
                 repo_path,
+                generation,
                 error: None,
                 is_final: true,
             });
@@ -353,6 +363,7 @@ pub fn spawn_git_fetch(
                     remote: Some(remote),
                     branches,
                     repo_path,
+                    generation,
                     error,
                     is_final,
                 });
@@ -365,6 +376,7 @@ pub fn spawn_open_worktrees(
     provider: &Arc<dyn HerdrProvider>,
     sender: &EventSender,
     repo_path: PathBuf,
+    generation: u64,
 ) {
     let provider = Arc::clone(provider);
     let sender = sender.clone();
@@ -372,12 +384,14 @@ pub fn spawn_open_worktrees(
         Ok(response) => {
             sender.send(AppEvent::OpenWorktreesLoaded {
                 repo_path,
+                generation,
                 worktrees: response.worktrees,
             });
         }
         Err(error) => {
             sender.send(AppEvent::OpenWorktreesFailed {
                 repo_path,
+                generation,
                 message: format!("could not load open branch indicators: {error}"),
             });
         }
@@ -661,7 +675,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let sender = EventSender::new(tx, Arc::new(AtomicBool::new(false)));
 
-        spawn_remote_branch_loading(&git, &sender, "/repo".into(), vec!["main".into()]);
+        spawn_remote_branch_loading(&git, &sender, "/repo".into(), vec!["main".into()], 7);
 
         let events = [
             rx.recv_timeout(Duration::from_secs(1)).unwrap(),
@@ -669,15 +683,17 @@ mod tests {
         ];
         assert!(matches!(
             &events[0],
-            AppEvent::RemoteBranchesLoaded { repo_path, remote, branches }
+            AppEvent::RemoteBranchesLoaded { repo_path, generation, remote, branches }
                 if repo_path == Path::new("/repo")
+                    && *generation == 7
                     && remote == "origin"
                     && branches.iter().map(|branch| branch.name.as_str()).eq(["one"])
         ));
         assert!(matches!(
             &events[1],
-            AppEvent::RemoteBranchesLoaded { repo_path, remote, branches }
+            AppEvent::RemoteBranchesLoaded { repo_path, generation, remote, branches }
                 if repo_path == Path::new("/repo")
+                    && *generation == 7
                     && remote == "upstream"
                     && branches.iter().map(|branch| branch.name.as_str()).eq(["two"])
         ));
@@ -697,7 +713,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let sender = EventSender::new(tx, Arc::new(AtomicBool::new(false)));
 
-        spawn_git_fetch(&git, &sender, "/repo".into(), Vec::new());
+        spawn_git_fetch(&git, &sender, "/repo".into(), Vec::new(), 7);
 
         let events = [
             rx.recv_timeout(Duration::from_secs(1)).unwrap(),

@@ -73,8 +73,8 @@ impl GitProvider for CliGitProvider {
     }
 
     fn list_worktrees(&self, repo_path: &Path) -> Result<Vec<Worktree>> {
-        let output = run_git(repo_path, ["worktree", "list", "--porcelain"])?;
-        let worktrees = parse_worktree_porcelain(&String::from_utf8_lossy(&output.stdout));
+        let output = run_git(repo_path, ["worktree", "list", "--porcelain", "-z"])?;
+        let worktrees = parse_worktree_porcelain(&output.stdout)?;
         if worktrees.is_empty() {
             bail!(
                 "git worktree list returned no worktrees for {}",
@@ -156,12 +156,13 @@ impl GitProvider for CliGitProvider {
 
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.contains("is not a working tree") {
-            if canonical.exists() {
-                fs::remove_dir_all(&canonical).with_context(|| {
-                    format!("failed to remove stale worktree {}", canonical.display())
-                })?;
+            if !canonical.exists() {
+                return Ok(());
             }
-            return Ok(());
+            bail!(
+                "git no longer tracks this checkout; not deleting {}",
+                canonical.display()
+            );
         }
 
         if !force && dirty_worktree_refusal(&stderr) {
@@ -701,7 +702,7 @@ mod tests {
     }
 
     #[test]
-    fn removes_unregistered_directory_with_not_working_tree_fallback() {
+    fn refuses_to_remove_an_existing_unregistered_directory_but_accepts_an_absent_path() {
         let temp = TempDir::new().unwrap();
         let repo = repo_fixture(temp.path(), "repo");
         let stale = temp.path().join("stale-worktree");
@@ -709,9 +710,19 @@ mod tests {
         fs::write(stale.join("untracked"), "data").unwrap();
         let provider = CliGitProvider;
 
-        provider.remove_worktree(&repo, &stale, false).unwrap();
+        let error = provider.remove_worktree(&repo, &stale, false).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("git no longer tracks this checkout; not deleting")
+        );
+        assert!(stale.exists());
+        assert_eq!(fs::read_to_string(stale.join("untracked")).unwrap(), "data");
+
+        let absent = temp.path().join("already-removed-worktree");
+        provider.remove_worktree(&repo, &absent, false).unwrap();
         provider.prune_worktrees(&repo).unwrap();
-        assert!(!stale.exists());
+        assert!(!absent.exists());
     }
 
     #[test]

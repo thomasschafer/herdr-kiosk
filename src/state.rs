@@ -246,6 +246,13 @@ pub enum ToastKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpenWorktreeLoadState {
+    Unknown,
+    Loaded { repo_path: PathBuf, generation: u64 },
+    Failed { repo_path: PathBuf, generation: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Toast {
     pub kind: ToastKind,
     pub message: String,
@@ -270,8 +277,10 @@ pub struct AppState {
     pub active_list_rows: usize,
     pub repo_filter_generation: u64,
     pub branch_filter_generation: u64,
+    pub branch_view_generation: u64,
     pub open_worktrees: Vec<WorktreeInfo>,
     pub open_worktrees_repo: Option<PathBuf>,
+    pub open_worktree_load_state: OpenWorktreeLoadState,
     pub remote_branches: BTreeMap<String, Vec<BranchEntry>>,
     pub fetching_remote_repo: Option<PathBuf>,
     pub fetch_warning_remotes: HashSet<String>,
@@ -300,8 +309,10 @@ impl AppState {
             active_list_rows: 1,
             repo_filter_generation: 0,
             branch_filter_generation: 0,
+            branch_view_generation: 0,
             open_worktrees: Vec::new(),
             open_worktrees_repo: None,
+            open_worktree_load_state: OpenWorktreeLoadState::Unknown,
             remote_branches: BTreeMap::new(),
             fetching_remote_repo: None,
             fetch_warning_remotes: HashSet::new(),
@@ -384,6 +395,21 @@ impl AppState {
             })
         {
             return Err("Worktree deletion already in progress");
+        }
+        match &self.open_worktree_load_state {
+            OpenWorktreeLoadState::Loaded {
+                repo_path,
+                generation,
+            } if repo_path == &context.repo_path && *generation == self.branch_view_generation => {}
+            OpenWorktreeLoadState::Failed {
+                repo_path,
+                generation,
+            } if repo_path == &context.repo_path && *generation == self.branch_view_generation => {
+                return Err(
+                    "Cannot delete checkout because open checkout state could not be loaded",
+                );
+            }
+            _ => return Err("Open checkout state is still loading; deletion is disabled"),
         }
         Ok(DeleteWorktreeTarget {
             branch_name: branch.name.clone(),

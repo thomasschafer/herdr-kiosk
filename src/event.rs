@@ -50,26 +50,31 @@ pub enum AppEvent {
     },
     BranchesLoaded {
         repo_path: PathBuf,
+        generation: u64,
         branches: Vec<BranchEntry>,
         worktrees: Vec<Worktree>,
     },
     BranchLoadFailed {
         repo_path: PathBuf,
+        generation: u64,
         message: String,
     },
     RemoteBranchesLoaded {
         repo_path: PathBuf,
+        generation: u64,
         remote: String,
         branches: Vec<BranchEntry>,
     },
     RemoteBranchLoadFailed {
         repo_path: PathBuf,
+        generation: u64,
         message: String,
     },
     GitFetchCompleted {
         remote: Option<String>,
         branches: Vec<BranchEntry>,
         repo_path: PathBuf,
+        generation: u64,
         error: Option<String>,
         is_final: bool,
     },
@@ -93,10 +98,12 @@ pub enum AppEvent {
     },
     OpenWorktreesLoaded {
         repo_path: PathBuf,
+        generation: u64,
         worktrees: Vec<WorktreeInfo>,
     },
     OpenWorktreesFailed {
         repo_path: PathBuf,
+        generation: u64,
         message: String,
     },
     RepoOpened,

@@ -38,7 +38,7 @@ use crate::{
     },
     state::{
         AppState, BaseBranchSelection, BranchContext, DeleteWorktreeTarget, Mode, NewBranchRoute,
-        RepoEntry, SearchableList, ToastKind, collision_disambiguators,
+        OpenWorktreeLoadState, RepoEntry, SearchableList, ToastKind, collision_disambiguators,
     },
     theme::Theme,
 };
@@ -197,15 +197,22 @@ pub fn run(
                 changes.pinned_branch_selection.take(),
             );
         }
-        if let Some((repo_path, local_names)) = changes.start_remote_loading.take() {
-            spawn_remote_branch_loading(git, &sender, repo_path.clone(), local_names.clone());
-            spawn_git_fetch(git, &sender, repo_path, local_names);
+        if let Some((repo_path, generation, local_names)) = changes.start_remote_loading.take() {
+            spawn_remote_branch_loading(
+                git,
+                &sender,
+                repo_path.clone(),
+                local_names.clone(),
+                generation,
+            );
+            spawn_git_fetch(git, &sender, repo_path, local_names, generation);
         }
         if let Some(repo) = changes.refresh_branch.take() {
             let repo_path = repo.path.clone();
-            spawn_branch_loading(git, &sender, repo, state.current_cwd.clone());
+            let generation = state.branch_view_generation;
+            spawn_branch_loading(git, &sender, repo, state.current_cwd.clone(), generation);
             if let Some(provider) = herdr {
-                spawn_open_worktrees(provider, &sender, repo_path);
+                spawn_open_worktrees(provider, &sender, repo_path, generation);
             }
         }
         if changes.resume_pending_deletes {
@@ -242,7 +249,7 @@ struct TickChanges {
     collision_pass: bool,
     workspace_opened: bool,
     pinned_branch_selection: Option<String>,
-    start_remote_loading: Option<(PathBuf, Vec<String>)>,
+    start_remote_loading: Option<(PathBuf, u64, Vec<String>)>,
     refresh_branch: Option<Repo>,
     resume_pending_deletes: bool,
 }
@@ -364,9 +371,10 @@ fn process_app_event(event: AppEvent, state: &mut AppState, changes: &mut TickCh
         }
         AppEvent::BranchesLoaded {
             repo_path,
+            generation,
             branches,
             worktrees,
-        } if branch_view_matches(state, &repo_path) => {
+        } if branch_view_generation_matches(state, &repo_path, generation) => {
             if let Some(entry) = state
                 .repos
                 .iter_mut()
@@ -384,6 +392,7 @@ fn process_app_event(event: AppEvent, state: &mut AppState, changes: &mut TickCh
             state.fetching_remote_repo = Some(repo_path.clone());
             changes.start_remote_loading = Some((
                 repo_path.clone(),
+                generation,
                 state
                     .branches
                     .iter()
@@ -391,30 +400,39 @@ fn process_app_event(event: AppEvent, state: &mut AppState, changes: &mut TickCh
                     .collect(),
             ));
             changes.branches_changed = true;
-            changes.resume_pending_deletes =
-                state.open_worktrees_repo.as_deref() == Some(repo_path.as_path());
+            changes.resume_pending_deletes = matches!(
+                &state.open_worktree_load_state,
+                OpenWorktreeLoadState::Loaded {
+                    repo_path: loaded_repo,
+                    generation: loaded_generation,
+                } if loaded_repo == &repo_path && *loaded_generation == generation
+            );
         }
         AppEvent::RemoteBranchesLoaded {
             repo_path,
+            generation,
             remote,
             branches,
-        } if branch_context_matches(state, &repo_path) => {
+        } if branch_context_generation_matches(state, &repo_path, generation) => {
             merge_remote_snapshot(state, changes, remote, branches);
             apply_branch_open_indicators(state);
             changes.branches_changed = true;
         }
-        AppEvent::RemoteBranchLoadFailed { repo_path, message }
-            if branch_context_matches(state, &repo_path) =>
-        {
+        AppEvent::RemoteBranchLoadFailed {
+            repo_path,
+            generation,
+            message,
+        } if branch_context_generation_matches(state, &repo_path, generation) => {
             state.push_toast(ToastKind::Warning, message);
         }
         AppEvent::GitFetchCompleted {
             remote,
             branches,
             repo_path,
+            generation,
             error,
             is_final,
-        } if branch_context_matches(state, &repo_path) => {
+        } if branch_context_generation_matches(state, &repo_path, generation) => {
             if let Some(remote) = remote {
                 merge_remote_snapshot(state, changes, remote.clone(), branches);
                 apply_branch_open_indicators(state);
@@ -434,25 +452,41 @@ fn process_app_event(event: AppEvent, state: &mut AppState, changes: &mut TickCh
                 state.fetching_remote_repo = None;
             }
         }
-        AppEvent::BranchLoadFailed { repo_path, message }
-            if branch_view_matches(state, &repo_path) =>
-        {
+        AppEvent::BranchLoadFailed {
+            repo_path,
+            generation,
+            message,
+        } if branch_view_generation_matches(state, &repo_path, generation) => {
             state.loading_branches = false;
             state.mode = Mode::RepoSelect;
             state.push_toast(ToastKind::Error, message);
         }
         AppEvent::OpenWorktreesLoaded {
             repo_path,
+            generation,
             worktrees,
-        } if branch_context_matches(state, &repo_path) => {
+        } if branch_context_generation_matches(state, &repo_path, generation) => {
             state.open_worktrees = worktrees;
             state.open_worktrees_repo = Some(repo_path.clone());
+            state.open_worktree_load_state = OpenWorktreeLoadState::Loaded {
+                repo_path,
+                generation,
+            };
             apply_branch_open_indicators(state);
+            refresh_delete_target_open_state(state);
             changes.resume_pending_deletes = true;
         }
-        AppEvent::OpenWorktreesFailed { repo_path, message }
-            if branch_context_matches(state, &repo_path) =>
-        {
+        AppEvent::OpenWorktreesFailed {
+            repo_path,
+            generation,
+            message,
+        } if branch_context_generation_matches(state, &repo_path, generation) => {
+            state.open_worktrees.clear();
+            state.open_worktrees_repo = None;
+            state.open_worktree_load_state = OpenWorktreeLoadState::Failed {
+                repo_path,
+                generation,
+            };
             state.push_toast(ToastKind::Error, message);
         }
         AppEvent::RepoOpened => changes.workspace_opened = true,
@@ -545,6 +579,7 @@ fn process_app_event(event: AppEvent, state: &mut AppState, changes: &mut TickCh
                     state.reset_remote_branches();
                     state.open_worktrees.clear();
                     state.open_worktrees_repo = None;
+                    state.open_worktree_load_state = OpenWorktreeLoadState::Unknown;
                     if let Some(branch) = state
                         .branches
                         .iter_mut()
@@ -712,10 +747,18 @@ fn branch_view_matches(state: &AppState, repo_path: &Path) -> bool {
     matches!(&state.mode, Mode::BranchSelect(context) if context.repo_path == repo_path)
 }
 
+fn branch_view_generation_matches(state: &AppState, repo_path: &Path, generation: u64) -> bool {
+    branch_view_matches(state, repo_path) && state.branch_view_generation == generation
+}
+
 fn branch_context_matches(state: &AppState, repo_path: &Path) -> bool {
     state
         .branch_context()
         .is_some_and(|context| context.repo_path == repo_path)
+}
+
+fn branch_context_generation_matches(state: &AppState, repo_path: &Path, generation: u64) -> bool {
+    branch_context_matches(state, repo_path) && state.branch_view_generation == generation
 }
 
 fn delete_event_matches(
@@ -767,6 +810,15 @@ fn resume_pending_deletes(
         return;
     };
     let repo_path = context.repo_path.clone();
+    if !matches!(
+        &state.open_worktree_load_state,
+        OpenWorktreeLoadState::Loaded {
+            repo_path: loaded_repo,
+            generation,
+        } if loaded_repo == &repo_path && *generation == state.branch_view_generation
+    ) {
+        return;
+    }
     let pending = state
         .pending_worktree_deletes
         .iter()
@@ -839,6 +891,23 @@ fn apply_open_indicators(state: &mut AppState) {
 fn apply_branch_open_indicators(state: &mut AppState) {
     for branch in &mut state.branches {
         branch.apply_open_worktrees(&state.open_worktrees);
+    }
+}
+
+fn refresh_delete_target_open_state(state: &mut AppState) {
+    let Mode::ConfirmWorktreeDelete { target, .. } = &state.mode else {
+        return;
+    };
+    let workspace_id = state
+        .branches
+        .iter()
+        .find(|branch| {
+            branch.name == target.branch_name
+                && branch.worktree_path.as_ref() == Some(&target.worktree_path)
+        })
+        .and_then(|branch| branch.open_workspace_id.clone());
+    if let Mode::ConfirmWorktreeDelete { target, .. } = &mut state.mode {
+        target.open_workspace_id = workspace_id;
     }
 }
 
@@ -1198,12 +1267,18 @@ fn begin_branch_select(
     state.branch_list = SearchableList::new(0);
     state.open_worktrees.clear();
     state.open_worktrees_repo = None;
+    state.open_worktree_load_state = OpenWorktreeLoadState::Unknown;
     state.loading_branches = true;
     state.reset_remote_branches();
     state.branch_filter_generation = state.branch_filter_generation.wrapping_add(1);
-    spawn_branch_loading(git, sender, repo, state.current_cwd.clone());
+    state.branch_view_generation = state
+        .branch_view_generation
+        .checked_add(1)
+        .expect("branch view generation overflow");
+    let generation = state.branch_view_generation;
+    spawn_branch_loading(git, sender, repo, state.current_cwd.clone(), generation);
     if let Some(provider) = herdr {
-        spawn_open_worktrees(provider, sender, repo_path);
+        spawn_open_worktrees(provider, sender, repo_path, generation);
     }
 }
 
@@ -1339,14 +1414,52 @@ fn confirm_delete_worktree(
     herdr: Option<&Arc<dyn HerdrProvider>>,
     sender: &EventSender,
 ) {
-    let Mode::ConfirmWorktreeDelete { context, target } = &mut state.mode else {
+    let Mode::ConfirmWorktreeDelete { context, target } = &state.mode else {
         return;
     };
     if target.in_progress {
         return;
     }
     let context = context.clone();
-    let target_snapshot = target.clone();
+    let mut target_snapshot = target.clone();
+    match &state.open_worktree_load_state {
+        OpenWorktreeLoadState::Loaded {
+            repo_path,
+            generation,
+        } if repo_path == &context.repo_path && *generation == state.branch_view_generation => {}
+        OpenWorktreeLoadState::Failed { .. } => {
+            state.push_toast(
+                ToastKind::Error,
+                "Cannot delete checkout because open checkout state could not be loaded",
+            );
+            return;
+        }
+        OpenWorktreeLoadState::Unknown | OpenWorktreeLoadState::Loaded { .. } => {
+            state.push_toast(
+                ToastKind::Error,
+                "Open checkout state is stale or still loading; deletion was not started",
+            );
+            return;
+        }
+    }
+    let Some(current_branch) = state.branches.iter().find(|branch| {
+        branch.name == target_snapshot.branch_name
+            && branch.worktree_path.as_ref() == Some(&target_snapshot.worktree_path)
+    }) else {
+        state.push_toast(
+            ToastKind::Error,
+            "Checkout state changed; cancel deletion and try again",
+        );
+        return;
+    };
+    target_snapshot
+        .open_workspace_id
+        .clone_from(&current_branch.open_workspace_id);
+    if let Mode::ConfirmWorktreeDelete { target, .. } = &mut state.mode {
+        target
+            .open_workspace_id
+            .clone_from(&target_snapshot.open_workspace_id);
+    }
     let mut pending = PendingWorktreeDelete::new(
         context.repo_path.clone(),
         target_snapshot.branch_name.clone(),
@@ -1775,6 +1888,10 @@ mod tests {
             open_workspace_id: None,
         }];
         state.branch_list = SearchableList::new(1);
+        state.open_worktree_load_state = OpenWorktreeLoadState::Loaded {
+            repo_path: "/repo".into(),
+            generation: state.branch_view_generation,
+        };
         state
     }
 
@@ -2136,6 +2253,7 @@ mod tests {
                     &["feature".into()],
                 ),
                 repo_path: "/repo".into(),
+                generation: state.branch_view_generation,
                 error: None,
                 is_final: false,
             },
@@ -2167,6 +2285,7 @@ mod tests {
         process_app_event(
             AppEvent::RemoteBranchesLoaded {
                 repo_path: "/other".into(),
+                generation: state.branch_view_generation,
                 remote: "origin".into(),
                 branches: remote_branch.clone(),
             },
@@ -2178,6 +2297,7 @@ mod tests {
                 remote: Some("origin".into()),
                 branches: remote_branch,
                 repo_path: "/other".into(),
+                generation: state.branch_view_generation,
                 error: Some("boom".into()),
                 is_final: true,
             },
@@ -2195,6 +2315,75 @@ mod tests {
     }
 
     #[test]
+    fn same_repo_reentry_drops_every_prior_visit_load_result() {
+        let mut state = state_with_branch(false);
+        state.branch_view_generation = 2;
+        state.open_worktree_load_state = OpenWorktreeLoadState::Loaded {
+            repo_path: "/repo".into(),
+            generation: 2,
+        };
+        state.fetching_remote_repo = Some("/repo".into());
+        let stale_branch = BranchEntry {
+            name: "stale".into(),
+            worktree_path: Some("/repo-stale".into()),
+            is_current: false,
+            is_default: false,
+            remote: None,
+            open_workspace_id: None,
+        };
+        let stale_remote = BranchEntry::build_remote("origin", &["remote".into()], &[]);
+        let mut changes = TickChanges::default();
+
+        for event in [
+            AppEvent::BranchesLoaded {
+                repo_path: "/repo".into(),
+                generation: 1,
+                branches: vec![stale_branch],
+                worktrees: Vec::new(),
+            },
+            AppEvent::RemoteBranchesLoaded {
+                repo_path: "/repo".into(),
+                generation: 1,
+                remote: "origin".into(),
+                branches: stale_remote.clone(),
+            },
+            AppEvent::GitFetchCompleted {
+                remote: Some("origin".into()),
+                branches: stale_remote,
+                repo_path: "/repo".into(),
+                generation: 1,
+                error: Some("stale fetch".into()),
+                is_final: true,
+            },
+            AppEvent::OpenWorktreesLoaded {
+                repo_path: "/repo".into(),
+                generation: 1,
+                worktrees: vec![worktree()],
+            },
+        ] {
+            process_app_event(event, &mut state, &mut changes);
+        }
+
+        assert_eq!(
+            state
+                .branches
+                .iter()
+                .map(|branch| branch.name.as_str())
+                .collect::<Vec<_>>(),
+            ["feature"]
+        );
+        assert!(state.branches[0].open_workspace_id.is_none());
+        assert!(state.remote_branches.is_empty());
+        assert_eq!(
+            state.fetching_remote_repo.as_deref(),
+            Some(Path::new("/repo"))
+        );
+        assert!(state.toasts.is_empty());
+        assert!(!changes.branches_changed);
+        assert!(changes.start_remote_loading.is_none());
+    }
+
+    #[test]
     fn fetch_failure_toasts_are_deduplicated_per_remote() {
         let mut state = state_with_branch(false);
         state.fetching_remote_repo = Some("/repo".into());
@@ -2204,6 +2393,7 @@ mod tests {
                     remote: Some("origin".into()),
                     branches: Vec::new(),
                     repo_path: "/repo".into(),
+                    generation: state.branch_view_generation,
                     error: Some(message.into()),
                     is_final: false,
                 },
@@ -2226,6 +2416,7 @@ mod tests {
                 remote: None,
                 branches: Vec::new(),
                 repo_path: "/repo".into(),
+                generation: state.branch_view_generation,
                 error: None,
                 is_final: true,
             },
@@ -2243,6 +2434,7 @@ mod tests {
         process_app_event(
             AppEvent::OpenWorktreesFailed {
                 repo_path: "/repo".into(),
+                generation: state.branch_view_generation,
                 message: "indicator unavailable".into(),
             },
             &mut state,
@@ -2254,6 +2446,7 @@ mod tests {
         process_app_event(
             AppEvent::BranchLoadFailed {
                 repo_path: "/repo".into(),
+                generation: state.branch_view_generation,
                 message: "git unavailable".into(),
             },
             &mut state,
@@ -2403,6 +2596,93 @@ mod tests {
             path: "/repo-feature".into(),
             forced,
         }
+    }
+
+    #[test]
+    fn delete_before_open_state_load_is_refused() {
+        let git_mock = Arc::new(MockGitProvider::default());
+        let herdr_mock = Arc::new(MockHerdrProvider::default());
+        let mut state = state_with_branch(true);
+        state.open_worktree_load_state = OpenWorktreeLoadState::Unknown;
+
+        begin_delete_worktree(&mut state);
+
+        assert!(matches!(state.mode, Mode::BranchSelect(_)));
+        assert!(
+            state
+                .toasts
+                .back()
+                .is_some_and(|toast| toast.message.contains("still loading"))
+        );
+        assert!(git_mock.remove_calls.lock().unwrap().is_empty());
+        assert!(herdr_mock.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn delete_after_open_state_failure_is_refused() {
+        let mut state = state_with_branch(true);
+        state.open_worktree_load_state = OpenWorktreeLoadState::Failed {
+            repo_path: "/repo".into(),
+            generation: state.branch_view_generation,
+        };
+
+        begin_delete_worktree(&mut state);
+
+        assert!(matches!(state.mode, Mode::BranchSelect(_)));
+        assert!(state.toasts.back().is_some_and(|toast| {
+            toast
+                .message
+                .contains("open checkout state could not be loaded")
+        }));
+    }
+
+    #[test]
+    fn late_open_state_updates_dialog_and_routes_removal_through_herdr() {
+        let git_mock = Arc::new(MockGitProvider::default());
+        let git: Arc<dyn GitProvider> = git_mock.clone();
+        let herdr_mock = Arc::new(MockHerdrProvider::default());
+        herdr_mock
+            .worktree_remove_results
+            .lock()
+            .unwrap()
+            .push_back(Ok(remove_response(false)));
+        let herdr: Arc<dyn HerdrProvider> = herdr_mock.clone();
+        let (sender, rx) = sender();
+        let mut state = state_with_branch(true);
+
+        begin_delete_worktree(&mut state);
+        assert!(matches!(
+            &state.mode,
+            Mode::ConfirmWorktreeDelete { target, .. }
+                if target.open_workspace_id.is_none()
+        ));
+
+        process_app_event(
+            AppEvent::OpenWorktreesLoaded {
+                repo_path: "/repo".into(),
+                generation: state.branch_view_generation,
+                worktrees: vec![worktree()],
+            },
+            &mut state,
+            &mut TickChanges::default(),
+        );
+        assert!(matches!(
+            &state.mode,
+            Mode::ConfirmWorktreeDelete { target, .. }
+                if target.open_workspace_id.as_deref() == Some("w_1")
+        ));
+
+        confirm_delete_worktree(&mut state, &git, Some(&herdr), &sender);
+        let _event = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        assert_eq!(
+            *herdr_mock.calls.lock().unwrap(),
+            [HerdrCall::WorktreeRemove {
+                workspace_id: "w_1".into(),
+                force: false,
+            }]
+        );
+        assert!(git_mock.remove_calls.lock().unwrap().is_empty());
     }
 
     #[test]
