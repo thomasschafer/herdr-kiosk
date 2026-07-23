@@ -102,7 +102,7 @@ fn render_curated_example(docs: &mut String, name: &str) {
             "Example:\n\n```toml\ninclude_non_git = false\nsearch_dirs = [\n  \"~/Code\",\n  { path = \"~/Work\", depth = 2, include_non_git = true },\n]\n```\n\n",
         ),
         "on_open" => docs.push_str(
-            "Example:\n\n```toml\n[on_open]\npanes = [\n  { command = \"hx\", direction = \"right\" },\n]\n```\n\n",
+            "Legacy example:\n\n```toml\n[on_open]\npanes = [\n  { command = \"hx\", direction = \"right\" },\n]\n```\n\nDeclarative layout example:\n\n```toml\n[on_open]\non = \"created\"\nfocus = \"editor\"\n\n[[on_open.tabs]]\nname = \"code\"\ncommand = \"hx .\"\n\n[[on_open.tabs.panes]]\nid = \"editor\"\ncommand = \"lazygit\"\ndirection = \"right\"\nratio = 0.3\n\n[[on_open.tabs]]\nname = \"server\"\ncommand = \"npm run dev\"\n\n[on_open.repos.\"my-service\"]\non = \"every_open\"\nfocus = \"service-logs\"\n\n[[on_open.repos.\"my-service\".tabs]]\nname = \"service\"\n\n[[on_open.repos.\"my-service\".tabs.panes]]\nid = \"service-logs\"\ncommand = \"tail -f service.log\"\ndirection = \"down\"\n```\n\n",
         ),
         _ => {}
     }

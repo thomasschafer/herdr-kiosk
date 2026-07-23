@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -12,15 +12,15 @@ use std::{
 use rayon::ThreadPoolBuilder;
 
 use crate::{
-    config::{OnOpenConfig, ResolvedSearchDir},
+    config::{OnOpenConfig, OnOpenPaneConfig, OnOpenTabConfig, OnOpenWhen, ResolvedSearchDir},
     event::{AppEvent, BranchOperationFailure, WorktreeRemovalOutcome},
     git::{
         GitProvider, Repo, ScanWarning, is_dirty_worktree_requires_force,
         is_local_branch_already_exists,
     },
     herdr::{
-        HerdrError, HerdrProvider, OpenedWorktree, PaneSplitRequest, WorktreeCreateRequest,
-        WorktreeOpenTarget,
+        HerdrError, HerdrProvider, OpenedWorktree, PaneSplitRequest, TabCreateRequest,
+        WorktreeCreateRequest, WorktreeOpenTarget,
     },
     state::BranchEntry,
 };
@@ -29,6 +29,12 @@ use crate::{
 pub const FETCH_POOL_SIZE: usize = 4;
 
 type FetchKey = (PathBuf, String);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoOpenTarget {
+    pub path: PathBuf,
+    pub name: String,
+}
 
 #[derive(Clone, Default)]
 pub struct FetchDeduplicator {
@@ -204,30 +210,31 @@ pub fn spawn_open_folder_panes(provider: &Arc<dyn HerdrProvider>, sender: &Event
 pub fn spawn_open_repo(
     provider: &Arc<dyn HerdrProvider>,
     sender: &EventSender,
-    repo_path: PathBuf,
+    repo: RepoOpenTarget,
     on_open: OnOpenConfig,
 ) {
     let provider = Arc::clone(provider);
     let sender = sender.clone();
     thread::spawn(move || {
+        let RepoOpenTarget {
+            path: repo_path,
+            name: repo_name,
+        } = repo;
         match provider.worktree_open(
             &repo_path,
             &WorktreeOpenTarget::Path(repo_path.clone()),
             true,
         ) {
             Ok(response) => {
-                let on_open_warning = response
-                    .opened
-                    .as_ref()
-                    .filter(|_| response.already_open == Some(false))
-                    .and_then(|opened| {
-                        apply_on_open(
-                            provider.as_ref(),
-                            &on_open,
-                            &opened.root_pane_id,
-                            &opened.path,
-                        )
-                    });
+                let on_open_warning = response.opened.as_ref().and_then(|opened| {
+                    apply_on_open(
+                        provider.as_ref(),
+                        &on_open,
+                        &repo_name,
+                        response.already_open == Some(false),
+                        opened,
+                    )
+                });
                 let warning = combine_warnings(response.warning, on_open_warning);
                 sender.send(AppEvent::RepoOpened { warning });
             }
@@ -502,7 +509,7 @@ pub fn spawn_open_worktrees(
 pub fn spawn_open_branch(
     provider: &Arc<dyn HerdrProvider>,
     sender: &EventSender,
-    repo_path: PathBuf,
+    repo: RepoOpenTarget,
     branch_name: String,
     has_worktree: bool,
     on_open: OnOpenConfig,
@@ -510,6 +517,10 @@ pub fn spawn_open_branch(
     let provider = Arc::clone(provider);
     let sender = sender.clone();
     thread::spawn(move || {
+        let RepoOpenTarget {
+            path: repo_path,
+            name: repo_name,
+        } = repo;
         let route = if has_worktree {
             BranchOpenRoute::Open
         } else {
@@ -519,18 +530,9 @@ pub fn spawn_open_branch(
 
         match result {
             Ok((opened, run_on_open, response_warning)) => {
-                let on_open_warning = if run_on_open {
-                    opened.as_ref().and_then(|opened| {
-                        apply_on_open(
-                            provider.as_ref(),
-                            &on_open,
-                            &opened.root_pane_id,
-                            &opened.path,
-                        )
-                    })
-                } else {
-                    None
-                };
+                let on_open_warning = opened.as_ref().and_then(|opened| {
+                    apply_on_open(provider.as_ref(), &on_open, &repo_name, run_on_open, opened)
+                });
                 let warning = combine_warnings(response_warning, on_open_warning);
                 sender.send(AppEvent::RepoOpened { warning });
             }
@@ -577,7 +579,7 @@ pub fn spawn_validate_branch_name(
 pub fn spawn_create_new_branch(
     provider: &Arc<dyn HerdrProvider>,
     sender: &EventSender,
-    repo_path: PathBuf,
+    repo: RepoOpenTarget,
     branch_name: String,
     base: String,
     on_open: OnOpenConfig,
@@ -585,6 +587,10 @@ pub fn spawn_create_new_branch(
     let provider = Arc::clone(provider);
     let sender = sender.clone();
     thread::spawn(move || {
+        let RepoOpenTarget {
+            path: repo_path,
+            name: repo_name,
+        } = repo;
         match provider.worktree_create(&WorktreeCreateRequest {
             cwd: repo_path.clone(),
             branch: branch_name,
@@ -594,12 +600,7 @@ pub fn spawn_create_new_branch(
         }) {
             Ok(response) => {
                 let on_open_warning = response.opened.as_ref().and_then(|opened| {
-                    apply_on_open(
-                        provider.as_ref(),
-                        &on_open,
-                        &opened.root_pane_id,
-                        &opened.path,
-                    )
+                    apply_on_open(provider.as_ref(), &on_open, &repo_name, true, opened)
                 });
                 let warning = combine_warnings(response.warning, on_open_warning);
                 sender.send(AppEvent::RepoOpened { warning });
@@ -707,7 +708,7 @@ pub fn spawn_open_remote_branch(
     git: &Arc<dyn GitProvider>,
     provider: &Arc<dyn HerdrProvider>,
     sender: &EventSender,
-    repo_path: PathBuf,
+    repo: RepoOpenTarget,
     branch_name: String,
     remote: String,
     on_open: OnOpenConfig,
@@ -716,6 +717,10 @@ pub fn spawn_open_remote_branch(
     let provider = Arc::clone(provider);
     let sender = sender.clone();
     thread::spawn(move || {
+        let RepoOpenTarget {
+            path: repo_path,
+            name: repo_name,
+        } = repo;
         let tracking_created = match git.create_tracking_branch(&repo_path, &branch_name, &remote) {
             Ok(()) => true,
             Err(error) if is_local_branch_already_exists(&error) => false,
@@ -736,18 +741,9 @@ pub fn spawn_open_remote_branch(
         );
         match result {
             Ok((opened, run_on_open, response_warning)) => {
-                let on_open_warning = run_on_open
-                    .then(|| {
-                        opened.as_ref().and_then(|opened| {
-                            apply_on_open(
-                                provider.as_ref(),
-                                &on_open,
-                                &opened.root_pane_id,
-                                &opened.path,
-                            )
-                        })
-                    })
-                    .flatten();
+                let on_open_warning = opened.as_ref().and_then(|opened| {
+                    apply_on_open(provider.as_ref(), &on_open, &repo_name, run_on_open, opened)
+                });
                 let warning = combine_warnings(response_warning, on_open_warning);
                 sender.send(AppEvent::RepoOpened { warning });
             }
@@ -845,20 +841,70 @@ fn is_wrong_route_failure(route: BranchOpenRoute, error: &HerdrError) -> bool {
 fn apply_on_open(
     provider: &dyn HerdrProvider,
     on_open: &OnOpenConfig,
-    root_pane_id: &str,
-    checkout_path: &str,
+    repo_name: &str,
+    newly_created: bool,
+    opened: &OpenedWorktree,
 ) -> Option<String> {
+    let layout = effective_on_open(on_open, repo_name);
+    if layout.on == OnOpenWhen::Created && !newly_created {
+        return None;
+    }
+
     let mut errors = Vec::new();
-    for (index, pane) in on_open.panes.iter().enumerate() {
+    if layout.tabs.is_empty() {
+        apply_legacy_on_open(provider, layout.panes, layout.focus, opened, &mut errors);
+    } else {
+        apply_tab_layout(provider, &layout, opened, &mut errors);
+    }
+    (!errors.is_empty()).then(|| format!("on_open: {}", errors.join("; ")))
+}
+
+struct EffectiveOnOpen<'a> {
+    on: OnOpenWhen,
+    focus: Option<&'a str>,
+    panes: &'a [OnOpenPaneConfig],
+    tabs: &'a [OnOpenTabConfig],
+}
+
+fn effective_on_open<'a>(on_open: &'a OnOpenConfig, repo_name: &str) -> EffectiveOnOpen<'a> {
+    if let Some(repo) = on_open.repos.get(repo_name) {
+        EffectiveOnOpen {
+            on: repo.on,
+            focus: repo.focus.as_deref(),
+            panes: &[],
+            tabs: &repo.tabs,
+        }
+    } else {
+        EffectiveOnOpen {
+            on: on_open.on,
+            focus: on_open.focus.as_deref(),
+            panes: &on_open.panes,
+            tabs: &on_open.tabs,
+        }
+    }
+}
+
+fn apply_legacy_on_open(
+    provider: &dyn HerdrProvider,
+    panes: &[OnOpenPaneConfig],
+    focus: Option<&str>,
+    opened: &OpenedWorktree,
+    errors: &mut Vec<String>,
+) {
+    let mut pane_ids = HashMap::new();
+    for (index, pane) in panes.iter().enumerate() {
         let split = provider.pane_split(&PaneSplitRequest {
-            pane_id: root_pane_id.into(),
+            pane_id: opened.root_pane_id.clone(),
             direction: pane.direction,
             ratio: pane.ratio.map(|ratio| 1.0 - ratio),
-            cwd: PathBuf::from(checkout_path),
+            cwd: PathBuf::from(&opened.path),
             focus: false,
         });
         match split {
             Ok(response) => {
+                if let Some(id) = &pane.id {
+                    pane_ids.insert(id.as_str(), response.pane_id.clone());
+                }
                 if let Err(error) = provider.pane_run(&response.pane_id, &pane.command) {
                     errors.push(format!("pane {} run failed: {error}", index + 1));
                 }
@@ -866,7 +912,88 @@ fn apply_on_open(
             Err(error) => errors.push(format!("pane {} split failed: {error}", index + 1)),
         }
     }
-    (!errors.is_empty()).then(|| format!("on_open: {}", errors.join("; ")))
+    apply_focus(provider, focus, &pane_ids, errors);
+}
+
+fn apply_tab_layout(
+    provider: &dyn HerdrProvider,
+    layout: &EffectiveOnOpen<'_>,
+    opened: &OpenedWorktree,
+    errors: &mut Vec<String>,
+) {
+    let mut pane_ids = HashMap::new();
+    for (tab_index, tab) in layout.tabs.iter().enumerate() {
+        let root_pane_id = if tab_index == 0 {
+            opened.root_pane_id.clone()
+        } else {
+            match provider.tab_create(&TabCreateRequest {
+                workspace_id: opened.workspace_id.clone(),
+                cwd: PathBuf::from(&opened.path),
+                label: tab.name.clone(),
+            }) {
+                Ok(response) => response.root_pane_id,
+                Err(error) => {
+                    errors.push(format!("tab {} create failed: {error}", tab_index + 1));
+                    continue;
+                }
+            }
+        };
+
+        if let Some(command) = &tab.command
+            && let Err(error) = provider.pane_run(&root_pane_id, command)
+        {
+            errors.push(format!("tab {} root run failed: {error}", tab_index + 1));
+        }
+
+        let mut previous_pane_id = root_pane_id;
+        for (pane_index, pane) in tab.panes.iter().enumerate() {
+            match provider.pane_split(&PaneSplitRequest {
+                pane_id: previous_pane_id.clone(),
+                direction: pane.direction,
+                ratio: pane.ratio.map(|ratio| 1.0 - ratio),
+                cwd: PathBuf::from(&opened.path),
+                focus: false,
+            }) {
+                Ok(response) => {
+                    previous_pane_id.clone_from(&response.pane_id);
+                    if let Some(id) = &pane.id {
+                        pane_ids.insert(id.as_str(), response.pane_id.clone());
+                    }
+                    if let Err(error) = provider.pane_run(&response.pane_id, &pane.command) {
+                        errors.push(format!(
+                            "tab {} pane {} run failed: {error}",
+                            tab_index + 1,
+                            pane_index + 1
+                        ));
+                    }
+                }
+                Err(error) => errors.push(format!(
+                    "tab {} pane {} split failed: {error}",
+                    tab_index + 1,
+                    pane_index + 1
+                )),
+            }
+        }
+    }
+    apply_focus(provider, layout.focus, &pane_ids, errors);
+}
+
+fn apply_focus(
+    provider: &dyn HerdrProvider,
+    focus: Option<&str>,
+    pane_ids: &HashMap<&str, String>,
+    errors: &mut Vec<String>,
+) {
+    let Some(focus) = focus else {
+        return;
+    };
+    let Some(pane_id) = pane_ids.get(focus) else {
+        errors.push(format!("focus pane {focus} was not created"));
+        return;
+    };
+    if let Err(error) = provider.pane_focus(pane_id) {
+        errors.push(format!("focus pane {focus} failed: {error}"));
+    }
 }
 
 fn combine_warnings(first: Option<String>, second: Option<String>) -> Option<String> {
@@ -896,11 +1023,13 @@ mod tests {
     };
 
     use crate::{
-        config::{OnOpenPaneConfig, OnOpenPaneDirection},
+        config::{
+            OnOpenPaneConfig, OnOpenPaneDirection, OnOpenRepoConfig, OnOpenTabConfig, OnOpenWhen,
+        },
         git::{Repo, Worktree, mock::MockGitProvider},
         herdr::{
-            OpenedWorktree, PaneRunResponse, PaneSplitResponse, WorktreeInfo, WorktreeListResponse,
-            WorktreeOpenResponse,
+            OpenedWorktree, PaneRunResponse, PaneSplitResponse, TabCreateResponse, WorktreeInfo,
+            WorktreeListResponse, WorktreeOpenResponse,
             mock::{HerdrCall, MockHerdrProvider},
         },
     };
@@ -1047,16 +1176,27 @@ mod tests {
         OnOpenConfig {
             panes: vec![
                 OnOpenPaneConfig {
+                    id: None,
                     command: "hx".into(),
                     direction: OnOpenPaneDirection::Right,
                     ratio: Some(0.4),
                 },
                 OnOpenPaneConfig {
+                    id: None,
                     command: "cargo test".into(),
                     direction: OnOpenPaneDirection::Down,
                     ratio: None,
                 },
             ],
+            ..OnOpenConfig::default()
+        }
+    }
+
+    fn opened_worktree() -> OpenedWorktree {
+        OpenedWorktree {
+            workspace_id: "w_1".into(),
+            root_pane_id: "p_root".into(),
+            path: "/repo".into(),
         }
     }
 
@@ -1076,7 +1216,9 @@ mod tests {
             .unwrap()
             .extend([Ok(PaneRunResponse), Ok(PaneRunResponse)]);
 
-        assert!(apply_on_open(&mock, &on_open_config(), "p_root", "/repo").is_none());
+        assert!(
+            apply_on_open(&mock, &on_open_config(), "repo", true, &opened_worktree()).is_none()
+        );
         assert_eq!(
             *mock.calls.lock().unwrap(),
             [
@@ -1121,13 +1263,15 @@ mod tests {
             .push_back(Ok(PaneRunResponse));
         let config = OnOpenConfig {
             panes: vec![OnOpenPaneConfig {
+                id: None,
                 command: "hx".into(),
                 direction: OnOpenPaneDirection::Right,
                 ratio: Some(0.35),
             }],
+            ..OnOpenConfig::default()
         };
 
-        assert!(apply_on_open(&mock, &config, "p_root", "/repo").is_none());
+        assert!(apply_on_open(&mock, &config, "repo", true, &opened_worktree()).is_none());
         let calls = mock.calls.lock().unwrap();
         let HerdrCall::PaneSplit(request) = &calls[0] else {
             panic!("expected pane split call");
@@ -1136,9 +1280,236 @@ mod tests {
         assert!((ratio - 0.65).abs() < f32::EPSILON);
     }
 
+    fn tab_layout_config() -> OnOpenConfig {
+        OnOpenConfig {
+            focus: Some("editor".into()),
+            tabs: vec![
+                OnOpenTabConfig {
+                    name: Some("code".into()),
+                    command: Some("hx .".into()),
+                    panes: vec![
+                        OnOpenPaneConfig {
+                            id: Some("editor".into()),
+                            command: "lazygit".into(),
+                            direction: OnOpenPaneDirection::Right,
+                            ratio: Some(0.3),
+                        },
+                        OnOpenPaneConfig {
+                            id: Some("tests".into()),
+                            command: "cargo test".into(),
+                            direction: OnOpenPaneDirection::Down,
+                            ratio: None,
+                        },
+                    ],
+                },
+                OnOpenTabConfig {
+                    name: Some("server".into()),
+                    command: Some("npm run dev".into()),
+                    panes: vec![OnOpenPaneConfig {
+                        id: Some("logs".into()),
+                        command: "tail -f service.log".into(),
+                        direction: OnOpenPaneDirection::Down,
+                        ratio: Some(0.4),
+                    }],
+                },
+            ],
+            ..OnOpenConfig::default()
+        }
+    }
+
+    #[test]
+    fn on_open_builds_chained_tabs_and_focuses_the_configured_pane() {
+        let mock = MockHerdrProvider::default();
+        mock.tab_create_results
+            .lock()
+            .unwrap()
+            .push_back(Ok(TabCreateResponse {
+                root_pane_id: "p_4".into(),
+            }));
+        mock.pane_split_results
+            .lock()
+            .unwrap()
+            .extend(["p_2", "p_3", "p_5"].map(|pane_id| {
+                Ok(PaneSplitResponse {
+                    pane_id: pane_id.into(),
+                })
+            }));
+        mock.pane_run_results
+            .lock()
+            .unwrap()
+            .extend((0..5).map(|_| Ok(PaneRunResponse)));
+        mock.pane_focus_results.lock().unwrap().push_back(Ok(()));
+        let config = tab_layout_config();
+
+        assert!(apply_on_open(&mock, &config, "repo", true, &opened_worktree()).is_none());
+        assert_eq!(
+            *mock.calls.lock().unwrap(),
+            [
+                HerdrCall::PaneRun {
+                    pane_id: "p_root".into(),
+                    command: "hx .".into(),
+                },
+                HerdrCall::PaneSplit(PaneSplitRequest {
+                    pane_id: "p_root".into(),
+                    direction: OnOpenPaneDirection::Right,
+                    ratio: Some(0.7),
+                    cwd: "/repo".into(),
+                    focus: false,
+                }),
+                HerdrCall::PaneRun {
+                    pane_id: "p_2".into(),
+                    command: "lazygit".into(),
+                },
+                HerdrCall::PaneSplit(PaneSplitRequest {
+                    pane_id: "p_2".into(),
+                    direction: OnOpenPaneDirection::Down,
+                    ratio: None,
+                    cwd: "/repo".into(),
+                    focus: false,
+                }),
+                HerdrCall::PaneRun {
+                    pane_id: "p_3".into(),
+                    command: "cargo test".into(),
+                },
+                HerdrCall::TabCreate(TabCreateRequest {
+                    workspace_id: "w_1".into(),
+                    cwd: "/repo".into(),
+                    label: Some("server".into()),
+                }),
+                HerdrCall::PaneRun {
+                    pane_id: "p_4".into(),
+                    command: "npm run dev".into(),
+                },
+                HerdrCall::PaneSplit(PaneSplitRequest {
+                    pane_id: "p_4".into(),
+                    direction: OnOpenPaneDirection::Down,
+                    ratio: Some(0.6),
+                    cwd: "/repo".into(),
+                    focus: false,
+                }),
+                HerdrCall::PaneRun {
+                    pane_id: "p_5".into(),
+                    command: "tail -f service.log".into(),
+                },
+                HerdrCall::PaneFocus {
+                    pane_id: "p_2".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn on_open_trigger_controls_existing_workspace_application() {
+        let created = OnOpenConfig {
+            tabs: vec![OnOpenTabConfig {
+                command: Some("hx .".into()),
+                ..OnOpenTabConfig::default()
+            }],
+            ..OnOpenConfig::default()
+        };
+        let mock = MockHerdrProvider::default();
+        assert!(apply_on_open(&mock, &created, "repo", false, &opened_worktree()).is_none());
+        assert!(mock.calls.lock().unwrap().is_empty());
+
+        let every_open = OnOpenConfig {
+            on: OnOpenWhen::EveryOpen,
+            ..created
+        };
+        mock.pane_run_results
+            .lock()
+            .unwrap()
+            .push_back(Ok(PaneRunResponse));
+        assert!(apply_on_open(&mock, &every_open, "repo", false, &opened_worktree()).is_none());
+        assert_eq!(
+            *mock.calls.lock().unwrap(),
+            [HerdrCall::PaneRun {
+                pane_id: "p_root".into(),
+                command: "hx .".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn on_open_repo_override_replaces_the_global_layout_by_exact_name() {
+        let config = OnOpenConfig {
+            tabs: vec![OnOpenTabConfig {
+                command: Some("global".into()),
+                ..OnOpenTabConfig::default()
+            }],
+            repos: [(
+                "my-service".into(),
+                OnOpenRepoConfig {
+                    tabs: vec![OnOpenTabConfig {
+                        command: Some("override".into()),
+                        ..OnOpenTabConfig::default()
+                    }],
+                    ..OnOpenRepoConfig::default()
+                },
+            )]
+            .into(),
+            ..OnOpenConfig::default()
+        };
+        let mock = MockHerdrProvider::default();
+        mock.pane_run_results
+            .lock()
+            .unwrap()
+            .push_back(Ok(PaneRunResponse));
+
+        assert!(apply_on_open(&mock, &config, "my-service", true, &opened_worktree()).is_none());
+        assert_eq!(
+            *mock.calls.lock().unwrap(),
+            [HerdrCall::PaneRun {
+                pane_id: "p_root".into(),
+                command: "override".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn on_open_tab_failure_warns_and_continues_with_later_tabs() {
+        let config = OnOpenConfig {
+            tabs: vec![
+                OnOpenTabConfig::default(),
+                OnOpenTabConfig {
+                    name: Some("broken".into()),
+                    ..OnOpenTabConfig::default()
+                },
+                OnOpenTabConfig {
+                    name: Some("later".into()),
+                    command: Some("still runs".into()),
+                    ..OnOpenTabConfig::default()
+                },
+            ],
+            ..OnOpenConfig::default()
+        };
+        let mock = MockHerdrProvider::default();
+        mock.tab_create_results.lock().unwrap().extend([
+            Err(HerdrError::Other {
+                code: "tab_create_failed".into(),
+                message: "unavailable".into(),
+            }),
+            Ok(TabCreateResponse {
+                root_pane_id: "p_later".into(),
+            }),
+        ]);
+        mock.pane_run_results
+            .lock()
+            .unwrap()
+            .push_back(Ok(PaneRunResponse));
+
+        let warning = apply_on_open(&mock, &config, "repo", true, &opened_worktree()).unwrap();
+        assert!(warning.starts_with("on_open: "));
+        assert!(warning.contains("tab 2 create failed"));
+        assert!(mock.calls.lock().unwrap().contains(&HerdrCall::PaneRun {
+            pane_id: "p_later".into(),
+            command: "still runs".into(),
+        }));
+    }
+
     fn worktree_open_response(already_open: bool) -> WorktreeOpenResponse {
         WorktreeOpenResponse {
             opened: Some(OpenedWorktree {
+                workspace_id: "w_1".into(),
                 root_pane_id: "p_root".into(),
                 path: "/repo".into(),
             }),
@@ -1186,7 +1557,15 @@ mod tests {
             let (tx, rx) = mpsc::channel();
             let sender = EventSender::new(tx, Arc::new(AtomicBool::new(false)));
 
-            spawn_open_repo(&provider, &sender, "/repo".into(), on_open_config());
+            spawn_open_repo(
+                &provider,
+                &sender,
+                RepoOpenTarget {
+                    path: "/repo".into(),
+                    name: "repo".into(),
+                },
+                on_open_config(),
+            );
 
             assert!(matches!(
                 rx.recv_timeout(Duration::from_secs(1)).unwrap(),
@@ -1218,7 +1597,10 @@ mod tests {
             spawn_open_branch(
                 &provider,
                 &sender,
-                "/repo".into(),
+                RepoOpenTarget {
+                    path: "/repo".into(),
+                    name: "repo".into(),
+                },
                 "main".into(),
                 true,
                 on_open_config(),
@@ -1263,7 +1645,15 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let sender = EventSender::new(tx, Arc::new(AtomicBool::new(false)));
 
-        spawn_open_repo(&provider, &sender, "/repo".into(), on_open_config());
+        spawn_open_repo(
+            &provider,
+            &sender,
+            RepoOpenTarget {
+                path: "/repo".into(),
+                name: "repo".into(),
+            },
+            on_open_config(),
+        );
 
         let AppEvent::RepoOpened {
             warning: Some(warning),
