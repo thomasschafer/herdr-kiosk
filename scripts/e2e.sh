@@ -168,7 +168,27 @@ assert_focused_workspace "$FOLDER_WORKSPACE_ID"
 FOLDER_WORKSPACE_COUNT_REOPENED=$(workspace_count)
 [ "$FOLDER_WORKSPACE_COUNT_REOPENED" = "$FOLDER_WORKSPACE_COUNT_CREATED" ] \
     || fail "reopening a plain folder created a duplicate workspace"
-printf 'plain folder discovery marker, create, focus, and reopen idempotence: ok\n'
+
+FOLDER_PANE_ID=$(pane_id_for_workspace "$FOLDER_WORKSPACE_ID")
+[ -n "$FOLDER_PANE_ID" ] || fail "plain folder pane id was empty"
+h pane run "$FOLDER_PANE_ID" "cd /" >/dev/null
+wait_workspace_pane_cwd "$FOLDER_WORKSPACE_ID" /
+OTHER_WORKSPACE_ID=$(workspace_id_other_than "$FOLDER_WORKSPACE_ID")
+[ -n "$OTHER_WORKSPACE_ID" ] || fail "could not find another workspace to focus"
+h workspace focus "$OTHER_WORKSPACE_ID" >/dev/null
+assert_focused_workspace "$OTHER_WORKSPACE_ID"
+
+h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
+wait_screen_contains "herdr-kiosk — select repo"
+t send-keys -t "$SESSION" notes-folder
+wait_screen_contains "1 of 1 repos"
+t send-keys -t "$SESSION" Enter
+wait_screen_absent "herdr-kiosk — select repo" 120
+assert_focused_workspace "$FOLDER_WORKSPACE_ID"
+FOLDER_WORKSPACE_COUNT_BOUND=$(workspace_count)
+[ "$FOLDER_WORKSPACE_COUNT_BOUND" = "$FOLDER_WORKSPACE_COUNT_REOPENED" ] \
+    || fail "bound plain folder created a duplicate after its pane changed cwd"
+printf 'plain folder discovery marker, binding focus, and reopen idempotence: ok\n'
 
 write_picker_config() {
     cat >"$PLUGIN_CONFIG_DIR/config.toml" <<EOF

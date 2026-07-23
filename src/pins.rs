@@ -1,20 +1,28 @@
-use std::{
-    fs, io,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
+
+#[cfg(test)]
+use std::fs;
 
 use serde::{Deserialize, Serialize};
 
-use crate::recency::RecencyKey;
+use crate::{
+    recency::RecencyKey,
+    state_store::{self, STATE_VERSION, VersionedState},
+};
 
 const FILE_NAME: &str = "pins.json";
-const STATE_VERSION: u32 = 1;
 const MAX_ENTRIES: usize = 200;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 struct PinFile {
     version: u32,
     entries: Vec<RecencyKey>,
+}
+
+impl VersionedState for PinFile {
+    fn version(&self) -> u32 {
+        self.version
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -25,24 +33,13 @@ pub struct PinStore {
 
 impl PinStore {
     pub fn load() -> Self {
-        let Some(directory) = std::env::var_os("HERDR_PLUGIN_STATE_DIR")
-            .filter(|directory| !directory.is_empty())
-            .map(PathBuf::from)
-        else {
+        let Some(path) = state_store::state_path(FILE_NAME) else {
             return Self::default();
         };
-        if !directory.is_absolute() {
-            warn(format!(
-                "refusing relative state directory from HERDR_PLUGIN_STATE_DIR: {}",
-                directory.display()
-            ));
-            return Self::default();
-        }
-        let path = directory.join(FILE_NAME);
         let (mut store, warning) = Self::load_from(&path);
         store.path = Some(path);
         if let Some(warning) = warning {
-            warn(warning);
+            state_store::warn(warning);
         }
         store
     }
@@ -69,7 +66,7 @@ impl PinStore {
         if let Some(path) = self.path.as_deref()
             && let Err(error) = self.save_to(path)
         {
-            warn(format!(
+            state_store::warn(format!(
                 "could not persist pin state at {}: {error}",
                 path.display()
             ));
@@ -86,59 +83,23 @@ impl PinStore {
     }
 
     pub(crate) fn load_from(path: &Path) -> (Self, Option<String>) {
-        let contents = match fs::read(path) {
-            Ok(contents) => contents,
-            Err(error) => {
-                return (
-                    Self::default(),
-                    Some(format!(
-                        "pin state at {} could not be read: {error}; using an empty store",
-                        path.display()
-                    )),
-                );
-            }
-        };
-        let file = match serde_json::from_slice::<PinFile>(&contents) {
-            Ok(file) if file.version == STATE_VERSION => file,
-            Ok(file) => {
-                return (
-                    Self::default(),
-                    Some(format!(
-                        "pin state at {} uses unsupported version {} (expected {STATE_VERSION}); using an empty store",
-                        path.display(),
-                        file.version
-                    )),
-                );
-            }
-            Err(error) => {
-                return (
-                    Self::default(),
-                    Some(format!(
-                        "pin state at {} is corrupt: {error}; using an empty store",
-                        path.display()
-                    )),
-                );
-            }
-        };
+        let (file, warning) = state_store::load_from::<PinFile>(path, "pin state");
         let mut store = Self::default();
         for entry in file.entries {
             store.insert(entry);
         }
-        (store, None)
+        (store, warning)
     }
 
-    fn save_to(&self, path: &Path) -> io::Result<()> {
-        let contents = serde_json::to_vec_pretty(&PinFile {
-            version: STATE_VERSION,
-            entries: self.entries.clone(),
-        })
-        .map_err(io::Error::other)?;
-        fs::write(path, contents)
+    fn save_to(&self, path: &Path) -> std::io::Result<()> {
+        state_store::save_to(
+            path,
+            &PinFile {
+                version: STATE_VERSION,
+                entries: self.entries.clone(),
+            },
+        )
     }
-}
-
-fn warn(message: impl AsRef<str>) {
-    eprintln!("herdr-kiosk: warning: {}", message.as_ref());
 }
 
 #[cfg(test)]

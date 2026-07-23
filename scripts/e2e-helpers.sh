@@ -147,6 +147,39 @@ else:
 ' "$cwd"
 }
 
+pane_id_for_workspace() {
+    local workspace_id=$1
+    h pane list | /usr/bin/python3 -c '
+import json
+import sys
+
+workspace_id = sys.argv[1]
+for pane in json.load(sys.stdin)["result"]["panes"]:
+    if pane["workspace_id"] == workspace_id:
+        print(pane["pane_id"])
+        break
+else:
+    raise SystemExit(1)
+' "$workspace_id"
+}
+
+workspace_id_other_than() {
+    local excluded_workspace_id=$1
+    h workspace list | /usr/bin/python3 -c '
+import json
+import sys
+
+excluded_workspace_id = sys.argv[1]
+for workspace in json.load(sys.stdin)["result"]["workspaces"]:
+    workspace_id = workspace.get("workspace_id")
+    if workspace_id and workspace_id != excluded_workspace_id:
+        print(workspace_id)
+        break
+else:
+    raise SystemExit(1)
+' "$excluded_workspace_id"
+}
+
 wait_pane_cwd() {
     local cwd=$1
     local attempts=${2:-120}
@@ -158,6 +191,34 @@ wait_pane_cwd() {
         sleep 0.1
     done
     fail "pane cwd did not resolve: $cwd"
+}
+
+wait_workspace_pane_cwd() {
+    local workspace_id=$1
+    local cwd=$2
+    local attempts=${3:-120}
+    local count
+    for ((count = 0; count < attempts; count++)); do
+        if h pane list | /usr/bin/python3 -c '
+import json
+import os
+import sys
+
+workspace_id = sys.argv[1]
+cwd = os.path.realpath(sys.argv[2])
+if not any(
+    pane["workspace_id"] == workspace_id
+    and pane.get("cwd")
+    and os.path.realpath(pane["cwd"]) == cwd
+    for pane in json.load(sys.stdin)["result"]["panes"]
+):
+    raise SystemExit(1)
+' "$workspace_id" "$cwd"; then
+            return 0
+        fi
+        sleep 0.1
+    done
+    fail "workspace pane cwd did not resolve: $workspace_id -> $cwd"
 }
 
 assert_focused_workspace() {

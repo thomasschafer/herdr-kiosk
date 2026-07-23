@@ -1,14 +1,17 @@
-use std::{
-    fs, io,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
+
+#[cfg(test)]
+use std::fs;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{path::canonical_or_original, state::BranchId};
+use crate::{
+    path::canonical_or_original,
+    state::BranchId,
+    state_store::{self, STATE_VERSION, VersionedState},
+};
 
 const FILE_NAME: &str = "recency.json";
-const STATE_VERSION: u32 = 1;
 const MAX_ENTRIES: usize = 200;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -38,10 +41,16 @@ impl RecencyKey {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 struct RecencyFile {
     version: u32,
     entries: Vec<RecencyKey>,
+}
+
+impl VersionedState for RecencyFile {
+    fn version(&self) -> u32 {
+        self.version
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -51,22 +60,12 @@ pub struct RecencyStore {
 
 impl RecencyStore {
     pub fn load() -> Self {
-        let Some(directory) = std::env::var_os("HERDR_PLUGIN_STATE_DIR")
-            .filter(|directory| !directory.is_empty())
-            .map(PathBuf::from)
-        else {
+        let Some(path) = state_store::state_path(FILE_NAME) else {
             return Self::default();
         };
-        if !directory.is_absolute() {
-            warn(format!(
-                "refusing relative state directory from HERDR_PLUGIN_STATE_DIR: {}",
-                directory.display()
-            ));
-            return Self::default();
-        }
-        let (store, warning) = Self::load_from(&directory.join(FILE_NAME));
+        let (store, warning) = Self::load_from(&path);
         if let Some(warning) = warning {
-            warn(warning);
+            state_store::warn(warning);
         }
         store
     }
@@ -90,90 +89,43 @@ impl RecencyStore {
     }
 
     fn load_from(path: &Path) -> (Self, Option<String>) {
-        let contents = match fs::read(path) {
-            Ok(contents) => contents,
-            Err(error) => {
-                return (
-                    Self::default(),
-                    Some(format!(
-                        "recency state at {} could not be read: {error}; using an empty store",
-                        path.display()
-                    )),
-                );
-            }
-        };
-        let file = match serde_json::from_slice::<RecencyFile>(&contents) {
-            Ok(file) if file.version == STATE_VERSION => file,
-            Ok(file) => {
-                return (
-                    Self::default(),
-                    Some(format!(
-                        "recency state at {} uses unsupported version {} (expected {STATE_VERSION}); using an empty store",
-                        path.display(),
-                        file.version
-                    )),
-                );
-            }
-            Err(error) => {
-                return (
-                    Self::default(),
-                    Some(format!(
-                        "recency state at {} is corrupt: {error}; using an empty store",
-                        path.display()
-                    )),
-                );
-            }
-        };
+        let (file, warning) = state_store::load_from::<RecencyFile>(path, "recency state");
         let mut store = Self::default();
         for entry in file.entries.into_iter().rev() {
             store.record(entry);
         }
-        (store, None)
+        (store, warning)
     }
 
-    fn save_to(&self, path: &Path) -> io::Result<()> {
-        let contents = serde_json::to_vec_pretty(&RecencyFile {
-            version: STATE_VERSION,
-            entries: self.entries.clone(),
-        })
-        .map_err(io::Error::other)?;
-        fs::write(path, contents)
+    fn save_to(&self, path: &Path) -> std::io::Result<()> {
+        state_store::save_to(
+            path,
+            &RecencyFile {
+                version: STATE_VERSION,
+                entries: self.entries.clone(),
+            },
+        )
     }
 }
 
 pub fn record_success(key: RecencyKey) {
-    let Some(directory) = std::env::var_os("HERDR_PLUGIN_STATE_DIR")
-        .filter(|directory| !directory.is_empty())
-        .map(PathBuf::from)
-    else {
+    let Some(path) = state_store::state_path(FILE_NAME) else {
         return;
     };
-    if !directory.is_absolute() {
-        warn(format!(
-            "could not persist recency state: refusing relative HERDR_PLUGIN_STATE_DIR {}",
-            directory.display()
-        ));
-        return;
-    }
-    let path = directory.join(FILE_NAME);
     let (mut store, warning) = RecencyStore::load_from(&path);
     if let Some(warning) = warning {
-        warn(warning);
+        state_store::warn(warning);
     }
     if let RecencyKey::Branch { repo_path, .. } = &key {
         store.record(RecencyKey::repo(repo_path));
     }
     store.record(key);
     if let Err(error) = store.save_to(&path) {
-        warn(format!(
+        state_store::warn(format!(
             "could not persist recency state at {}: {error}",
             path.display()
         ));
     }
-}
-
-fn warn(message: impl AsRef<str>) {
-    eprintln!("herdr-kiosk: warning: {}", message.as_ref());
 }
 
 #[cfg(test)]
