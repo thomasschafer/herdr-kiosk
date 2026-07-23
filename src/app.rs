@@ -25,20 +25,18 @@ use ratatui::{
 use crate::{
     components,
     config::keys::{BindingMode, Command, KeysConfig},
-    event::{AppEvent, FilterKey, FilterTarget, WorktreeRemovalOutcome},
+    event::{AppEvent, FilterKey, FilterTarget},
     git::{GitProvider, Repo},
     herdr::HerdrProvider,
     keyboard::Action,
-    pending_delete::PendingWorktreeDelete,
     spawn::{
         EventSender, FetchDeduplicator, spawn_create_new_branch, spawn_git_fetch, spawn_open_repo,
         spawn_remote_branch_loading, spawn_repo_discovery, spawn_validate_branch_name,
-        spawn_workspace_list, spawn_worktree_removal,
+        spawn_workspace_list,
     },
     state::{
-        AppState, BaseBranchSelection, BranchContext, BranchId, DeleteWorktreeTarget, Mode,
-        NewBranchRoute, OpenWorktreeLoadState, RepoEntry, SearchableList, ToastKind,
-        collision_disambiguators,
+        AppState, BaseBranchSelection, BranchId, Mode, NewBranchRoute, RepoEntry, SearchableList,
+        ToastKind, collision_disambiguators,
     },
     theme::Theme,
 };
@@ -248,7 +246,7 @@ pub fn run(
             crate::screens::branch::refresh(state, git, herdr, &sender, repo);
         }
         if changes.resume_pending_deletes {
-            resume_pending_deletes(state, git, herdr, &sender);
+            crate::screens::delete::resume(state, git, herdr, &sender);
         }
 
         if event::poll(EVENT_POLL_INTERVAL)? {
@@ -292,6 +290,9 @@ pub(crate) struct TickChanges {
 #[allow(clippy::too_many_lines)]
 pub(crate) fn process_app_event(event: AppEvent, state: &mut AppState, changes: &mut TickChanges) {
     let Some(event) = crate::screens::branch::handle_event(event, state, changes) else {
+        return;
+    };
+    let Some(event) = crate::screens::delete::handle_event(event, state, changes) else {
         return;
     };
     match event {
@@ -394,119 +395,6 @@ pub(crate) fn process_app_event(event: AppEvent, state: &mut AppState, changes: 
             state.mode = Mode::RepoSelect;
             state.push_toast(ToastKind::Error, message);
         }
-        AppEvent::WorktreeRemovalFinished {
-            repo_path,
-            branch_name,
-            worktree_path,
-            outcome,
-        } if delete_event_matches(state, &repo_path, &branch_name, &worktree_path)
-            || state.in_flight_worktree_removals.contains(&worktree_path) =>
-        {
-            let ui_matches = delete_event_matches(state, &repo_path, &branch_name, &worktree_path)
-                || crate::screens::branch::matches_repo(state, &repo_path);
-            state.in_flight_worktree_removals.remove(&worktree_path);
-            match outcome {
-                WorktreeRemovalOutcome::DirtyRequiresForce => {
-                    if let Mode::ConfirmWorktreeDelete { target, .. } = &mut state.mode {
-                        if target.worktree_path == worktree_path {
-                            target.force = true;
-                            target.in_progress = false;
-                        }
-                    } else if ui_matches && let Mode::BranchSelect(context) = &state.mode {
-                        let context = context.clone();
-                        let open_workspace_id = state
-                            .branch_view
-                            .entries
-                            .iter()
-                            .find(|branch| branch.name == branch_name)
-                            .and_then(|branch| branch.open_workspace_id.clone());
-                        state.mode = Mode::ConfirmWorktreeDelete {
-                            context,
-                            target: DeleteWorktreeTarget {
-                                branch_name: branch_name.clone(),
-                                worktree_path: worktree_path.clone(),
-                                open_workspace_id,
-                                force: true,
-                                in_progress: false,
-                            },
-                        };
-                    }
-                }
-                WorktreeRemovalOutcome::Removed { warning } => {
-                    state.clear_pending_worktree_delete(&worktree_path);
-                    persist_pending_deletes(state);
-                    if let Some(entry) = state
-                        .repos
-                        .iter_mut()
-                        .find(|entry| entry.repo.path == repo_path)
-                    {
-                        entry
-                            .repo
-                            .worktrees
-                            .retain(|worktree| worktree.path != worktree_path);
-                    }
-                    if !ui_matches {
-                        if let Some(warning) = warning {
-                            state.push_toast(ToastKind::Warning, warning);
-                        }
-                        return;
-                    }
-                    let context = BranchContext {
-                        repo_path: repo_path.clone(),
-                        repo_name: state
-                            .repos
-                            .iter()
-                            .find(|entry| entry.repo.path == repo_path)
-                            .map_or_else(|| "repository".into(), |entry| entry.repo.name.clone()),
-                    };
-                    state.mode = Mode::BranchSelect(context);
-                    state.branch_view.loading = true;
-                    state.branch_view.reset_remotes();
-                    state.branch_view.open_worktrees.clear();
-                    state.branch_view.open_worktree_load_state = OpenWorktreeLoadState::Unknown;
-                    if let Some(branch) = state
-                        .branch_view
-                        .entries
-                        .iter_mut()
-                        .find(|branch| branch.name == branch_name)
-                    {
-                        branch.worktree_path = None;
-                        branch.open_workspace_id = None;
-                    }
-                    changes.refresh_branch = state
-                        .repos
-                        .iter()
-                        .find(|entry| entry.repo.path == repo_path)
-                        .map(|entry| entry.repo.clone());
-                    if let Some(warning) = warning {
-                        state.push_toast(ToastKind::Warning, warning);
-                    }
-                }
-                WorktreeRemovalOutcome::Failed(error) => {
-                    state.clear_pending_worktree_delete(&worktree_path);
-                    persist_pending_deletes(state);
-                    if !ui_matches {
-                        state.push_toast(
-                            ToastKind::Error,
-                            format!("Failed to remove checkout for {branch_name}: {error}"),
-                        );
-                        return;
-                    }
-                    let context = BranchContext {
-                        repo_path,
-                        repo_name: state.branch_context().map_or_else(
-                            || "repository".into(),
-                            |context| context.repo_name.clone(),
-                        ),
-                    };
-                    state.mode = Mode::BranchSelect(context);
-                    state.push_toast(
-                        ToastKind::Error,
-                        format!("Failed to remove checkout for {branch_name}: {error}"),
-                    );
-                }
-            }
-        }
         AppEvent::OpenWorkspacesFailed(message) => {
             state.push_toast(ToastKind::Warning, message);
         }
@@ -577,9 +465,9 @@ pub(crate) fn process_action(
         Action::OpenBranch => crate::screens::branch::open_selected(state, git, herdr, sender),
         Action::StartNewBranch => begin_start_new_branch(state, git, herdr, sender),
         Action::CreateNewBranch => begin_create_new_branch(state, herdr, sender),
-        Action::DeleteWorktree => begin_delete_worktree(state),
+        Action::DeleteWorktree => crate::screens::delete::begin(state),
         Action::ConfirmDeleteWorktree => {
-            confirm_delete_worktree(state, git, herdr, sender);
+            crate::screens::delete::confirm(state, git, herdr, sender);
         }
         Action::CancelOverlay => cancel_overlay(state),
         Action::BackToRepos => {
@@ -610,7 +498,7 @@ fn active_list_mut(state: &mut AppState) -> &mut SearchableList {
         Mode::RepoSelect
         | Mode::Loading { .. }
         | Mode::ValidatingNewBranch { .. }
-        | Mode::ConfirmWorktreeDelete { .. } => &mut state.repo_list,
+        | Mode::ConfirmWorktreeDelete(_) => &mut state.repo_list,
     }
 }
 
@@ -641,90 +529,7 @@ fn edit_active_list(
         }
         Mode::Loading { .. }
         | Mode::ValidatingNewBranch { .. }
-        | Mode::ConfirmWorktreeDelete { .. } => {}
-    }
-}
-
-fn delete_event_matches(
-    state: &AppState,
-    repo_path: &Path,
-    branch_name: &str,
-    worktree_path: &Path,
-) -> bool {
-    matches!(
-        &state.mode,
-        Mode::ConfirmWorktreeDelete { context, target }
-            if context.repo_path == repo_path
-                && target.branch_name == branch_name
-                && target.worktree_path == worktree_path
-                && target.in_progress
-    )
-}
-
-pub(crate) fn persist_pending_deletes(state: &mut AppState) {
-    if let Err(error) = save_pending_deletes(&state.pending_worktree_deletes) {
-        state.push_toast(
-            ToastKind::Error,
-            format!("Could not persist pending deletions: {error:#}"),
-        );
-    }
-}
-
-#[cfg(not(test))]
-fn save_pending_deletes(entries: &[PendingWorktreeDelete]) -> anyhow::Result<()> {
-    crate::pending_delete::save_pending_worktree_deletes(entries)
-}
-
-#[cfg(test)]
-#[allow(clippy::unnecessary_wraps)]
-fn save_pending_deletes(_entries: &[PendingWorktreeDelete]) -> anyhow::Result<()> {
-    Ok(())
-}
-
-fn resume_pending_deletes(
-    state: &mut AppState,
-    git: &Arc<dyn GitProvider>,
-    herdr: Option<&Arc<dyn HerdrProvider>>,
-    sender: &EventSender,
-) {
-    if state.branch_view.loading {
-        return;
-    }
-    let Mode::BranchSelect(context) = &state.mode else {
-        return;
-    };
-    let repo_path = context.repo_path.clone();
-    if !matches!(
-        &state.branch_view.open_worktree_load_state,
-        OpenWorktreeLoadState::Loaded {
-            repo_path: loaded_repo,
-            generation,
-        } if loaded_repo == &repo_path && *generation == state.branch_view.generation
-    ) {
-        return;
-    }
-    let pending = state
-        .pending_worktree_deletes
-        .iter()
-        .filter(|pending| pending.repo_path == repo_path)
-        .cloned()
-        .collect::<Vec<_>>();
-    for pending in pending {
-        if !state
-            .in_flight_worktree_removals
-            .insert(pending.worktree_path.clone())
-        {
-            continue;
-        }
-        spawn_worktree_removal(
-            git,
-            herdr,
-            sender,
-            repo_path.clone(),
-            pending.branch_name,
-            pending.worktree_path,
-            pending.force,
-        );
+        | Mode::ConfirmWorktreeDelete(_) => {}
     }
 }
 
@@ -1064,115 +869,13 @@ fn begin_create_new_branch(
     );
 }
 
-fn begin_delete_worktree(state: &mut AppState) {
-    let context = match &state.mode {
-        Mode::BranchSelect(context) => context.clone(),
-        _ => return,
-    };
-    match state.selected_worktree_for_delete() {
-        Ok(target) => {
-            state.mode = Mode::ConfirmWorktreeDelete { context, target };
-        }
-        Err(message) => state.push_toast(ToastKind::Error, message),
-    }
-}
-
-fn confirm_delete_worktree(
-    state: &mut AppState,
-    git: &Arc<dyn GitProvider>,
-    herdr: Option<&Arc<dyn HerdrProvider>>,
-    sender: &EventSender,
-) {
-    let Mode::ConfirmWorktreeDelete { context, target } = &state.mode else {
-        return;
-    };
-    if target.in_progress {
-        return;
-    }
-    let context = context.clone();
-    let mut target_snapshot = target.clone();
-    match &state.branch_view.open_worktree_load_state {
-        OpenWorktreeLoadState::Loaded {
-            repo_path,
-            generation,
-        } if repo_path == &context.repo_path && *generation == state.branch_view.generation => {}
-        OpenWorktreeLoadState::Failed { .. } => {
-            state.push_toast(
-                ToastKind::Error,
-                "Cannot delete checkout because open checkout state could not be loaded",
-            );
-            return;
-        }
-        OpenWorktreeLoadState::Unknown | OpenWorktreeLoadState::Loaded { .. } => {
-            state.push_toast(
-                ToastKind::Error,
-                "Open checkout state is stale or still loading; deletion was not started",
-            );
-            return;
-        }
-    }
-    let Some(current_branch) = state.branch_view.entries.iter().find(|branch| {
-        branch.name == target_snapshot.branch_name
-            && branch.worktree_path.as_ref() == Some(&target_snapshot.worktree_path)
-    }) else {
-        state.push_toast(
-            ToastKind::Error,
-            "Checkout state changed; cancel deletion and try again",
-        );
-        return;
-    };
-    target_snapshot
-        .open_workspace_id
-        .clone_from(&current_branch.open_workspace_id);
-    if let Mode::ConfirmWorktreeDelete { target, .. } = &mut state.mode {
-        target
-            .open_workspace_id
-            .clone_from(&target_snapshot.open_workspace_id);
-    }
-    let mut pending = PendingWorktreeDelete::new(
-        context.repo_path.clone(),
-        target_snapshot.branch_name.clone(),
-        target_snapshot.worktree_path.clone(),
-    );
-    pending.force = target_snapshot.force;
-    state.mark_pending_worktree_delete(pending);
-    if let Err(error) = save_pending_deletes(&state.pending_worktree_deletes) {
-        state.clear_pending_worktree_delete(&target_snapshot.worktree_path);
-        state.push_toast(
-            ToastKind::Error,
-            format!("Could not persist pending deletion: {error:#}"),
-        );
-        return;
-    }
-    if let Mode::ConfirmWorktreeDelete { target, .. } = &mut state.mode {
-        target.in_progress = true;
-    }
-    state
-        .in_flight_worktree_removals
-        .insert(target_snapshot.worktree_path.clone());
-    spawn_worktree_removal(
-        git,
-        herdr,
-        sender,
-        context.repo_path,
-        target_snapshot.branch_name,
-        target_snapshot.worktree_path,
-        target_snapshot.force,
-    );
-}
-
 fn cancel_overlay(state: &mut AppState) {
+    if crate::screens::delete::cancel(state) {
+        return;
+    }
     let mode = state.mode.clone();
-    match mode {
-        Mode::SelectBaseBranch { context, .. } => state.mode = Mode::BranchSelect(context),
-        Mode::ConfirmWorktreeDelete { context, target } if !target.in_progress => {
-            if target.force {
-                state.clear_pending_worktree_delete(&target.worktree_path);
-                persist_pending_deletes(state);
-            }
-            state.mode = Mode::BranchSelect(context);
-        }
-        _ => {}
+    if let Mode::SelectBaseBranch { context, .. } = mode {
+        state.mode = Mode::BranchSelect(context);
     }
 }
 
@@ -1228,9 +931,9 @@ fn draw(
             components::branch_picker::draw(frame, main_area, state, theme, spinner_start);
             components::new_branch::draw(frame, main_area, state, theme, spinner_start);
         }
-        Mode::ConfirmWorktreeDelete { target, .. } => {
+        Mode::ConfirmWorktreeDelete(flow) => {
             components::branch_picker::draw(frame, main_area, state, theme, spinner_start);
-            draw_delete_dialog(frame, main_area, target, theme, keys, spinner_start);
+            crate::screens::delete::draw_dialog(frame, main_area, flow, theme, keys, spinner_start);
         }
         Mode::Loading { .. } => {
             unreachable!("loading mode returned above")
@@ -1256,22 +959,13 @@ fn animation_active(state: &AppState) -> bool {
         Mode::RepoSelect => state.loading_repos,
         Mode::BranchSelect(_) | Mode::SelectBaseBranch { .. } => branch_spinner,
         Mode::ValidatingNewBranch { .. } | Mode::Loading { .. } => true,
-        Mode::ConfirmWorktreeDelete { target, .. } => branch_spinner || target.in_progress,
+        Mode::ConfirmWorktreeDelete(flow) => branch_spinner || flow.in_progress(),
     }
 }
 
 fn loading_hint(keys: &KeysConfig) -> Option<String> {
     keys.first_key(BindingMode::Modal, Command::Quit)
         .map(|key| format!("{key} to close (operation continues)"))
-}
-
-fn delete_dialog_hints(keys: &KeysConfig) -> (Option<String>, Option<String>) {
-    (
-        keys.first_key(BindingMode::Modal, Command::Open)
-            .map(|key| key.to_string()),
-        keys.first_key(BindingMode::Modal, Command::Back)
-            .map(|key| key.to_string()),
-    )
 }
 
 fn footer_spans<'a>(
@@ -1307,7 +1001,7 @@ fn footer_spans<'a>(
         Command::Open,
         if matches!(
             mode,
-            Mode::SelectBaseBranch { .. } | Mode::ConfirmWorktreeDelete { .. }
+            Mode::SelectBaseBranch { .. } | Mode::ConfirmWorktreeDelete(_)
         ) {
             "confirm"
         } else {
@@ -1323,7 +1017,7 @@ fn footer_spans<'a>(
     }
     if matches!(
         mode,
-        Mode::BranchSelect(_) | Mode::SelectBaseBranch { .. } | Mode::ConfirmWorktreeDelete { .. }
+        Mode::BranchSelect(_) | Mode::SelectBaseBranch { .. } | Mode::ConfirmWorktreeDelete(_)
     ) {
         add(Command::Back, "back");
     } else {
@@ -1334,83 +1028,17 @@ fn footer_spans<'a>(
     hints
 }
 
-fn draw_delete_dialog(
-    frame: &mut Frame,
-    area: ratatui::layout::Rect,
-    target: &DeleteWorktreeTarget,
-    theme: &Theme,
-    keys: &KeysConfig,
-    spinner_start: Instant,
-) {
-    let mut lines = if target.force {
-        vec![
-            Line::from(Span::styled(
-                "This checkout has uncommitted changes.",
-                Style::default()
-                    .fg(theme.warning)
-                    .add_modifier(Modifier::BOLD),
-            )),
-            Line::raw(format!(
-                "Force-remove {}?",
-                crate::display::sanitize(&crate::path::display(&target.worktree_path))
-            )),
-        ]
-    } else {
-        vec![Line::raw(format!(
-            "Remove checkout {}?",
-            crate::display::sanitize(&crate::path::display(&target.worktree_path))
-        ))]
-    };
-    if target.open_workspace_id.is_some() {
-        lines.push(Line::raw("Its herdr workspace will also be closed."));
-    }
-    lines.push(Line::raw(""));
-    if target.in_progress {
-        let spinner =
-            components::repo_list::SPINNER_FOR_LOADING[(spinner_start.elapsed().as_millis() / 80)
-                as usize
-                % components::repo_list::SPINNER_FOR_LOADING.len()];
-        lines.push(Line::from(Span::styled(
-            format!("{spinner} Removing checkout…"),
-            Style::default().fg(theme.secondary),
-        )));
-    } else {
-        let (confirm, cancel) = delete_dialog_hints(keys);
-        let mut hints = Vec::new();
-        if let Some(confirm) = confirm {
-            hints.push(Span::styled(confirm, Style::default().fg(theme.hint)));
-            hints.push(Span::raw(" confirm"));
-        }
-        if let Some(cancel) = cancel {
-            if !hints.is_empty() {
-                hints.push(Span::raw(" / "));
-            }
-            hints.push(Span::styled(cancel, Style::default().fg(theme.hint)));
-            hints.push(Span::raw(" cancel"));
-        }
-        if !hints.is_empty() {
-            lines.push(Line::from(hints));
-        }
-    }
-    components::dialog::Dialog::new(" Confirm delete ", lines, theme.secondary).render(frame, area);
-}
-
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::HashSet,
-        sync::atomic::{AtomicBool, Ordering},
-        time::Duration,
-    };
+    use std::{collections::HashSet, sync::atomic::AtomicBool, time::Duration};
 
     use crate::{
-        git::{Repo, Worktree, mock::MockGitProvider},
+        git::{Repo, mock::MockGitProvider},
         herdr::{
-            HerdrError, HerdrProvider, OpenedWorktree, WorktreeCreateResponse, WorktreeInfo,
-            WorktreeListResponse, WorktreeRemoveResponse,
+            HerdrError, HerdrProvider, OpenedWorktree, WorktreeCreateResponse,
             mock::{HerdrCall, MockHerdrProvider},
         },
-        state::{BranchEntry, BranchId},
+        state::{BranchContext, BranchEntry, BranchId, OpenWorktreeLoadState},
     };
     use ratatui::{Terminal, backend::TestBackend};
 
@@ -1570,7 +1198,7 @@ mod tests {
             Some("ctrl+q to close (operation continues)")
         );
         assert_eq!(
-            delete_dialog_hints(&keys),
+            crate::screens::delete::dialog_hints(&keys),
             (Some("ctrl+y".into()), Some("ctrl+g".into()))
         );
     }
@@ -1820,14 +1448,6 @@ mod tests {
         assert!(rendered.contains("Validating branch name…"));
     }
 
-    fn worktree() -> WorktreeInfo {
-        WorktreeInfo {
-            path: "/repo-feature".into(),
-            branch: Some("feature".into()),
-            open_workspace_id: Some("w_1".into()),
-        }
-    }
-
     fn opened_worktree() -> OpenedWorktree {
         OpenedWorktree {
             root_pane_id: "p_root".into(),
@@ -1842,17 +1462,9 @@ mod tests {
         }
     }
 
-    fn worktree_list_response(worktrees: Vec<WorktreeInfo>) -> WorktreeListResponse {
-        WorktreeListResponse { worktrees }
-    }
-
     fn sender() -> (EventSender, mpsc::Receiver<AppEvent>) {
         let (tx, rx) = mpsc::channel();
         (EventSender::new(tx, Arc::new(AtomicBool::new(false))), rx)
-    }
-
-    fn git_provider() -> Arc<dyn GitProvider> {
-        Arc::new(MockGitProvider::default())
     }
 
     #[test]
@@ -2065,320 +1677,5 @@ mod tests {
         assert_eq!(request.branch, "feat/new");
         assert_eq!(request.base.as_deref(), Some("feature"));
         assert!(request.focus);
-    }
-
-    fn remove_response(_forced: bool) -> WorktreeRemoveResponse {
-        WorktreeRemoveResponse { warning: None }
-    }
-
-    #[test]
-    fn delete_before_open_state_load_is_refused() {
-        let git_mock = Arc::new(MockGitProvider::default());
-        let herdr_mock = Arc::new(MockHerdrProvider::default());
-        let mut state = state_with_branch(true);
-        state.branch_view.open_worktree_load_state = OpenWorktreeLoadState::Unknown;
-
-        begin_delete_worktree(&mut state);
-
-        assert!(matches!(state.mode, Mode::BranchSelect(_)));
-        assert!(
-            state
-                .toasts
-                .back()
-                .is_some_and(|toast| toast.message.contains("still loading"))
-        );
-        assert!(git_mock.remove_calls.lock().unwrap().is_empty());
-        assert!(herdr_mock.calls.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn delete_after_open_state_failure_is_refused() {
-        let mut state = state_with_branch(true);
-        state.branch_view.open_worktree_load_state = OpenWorktreeLoadState::Failed {
-            repo_path: "/repo".into(),
-            generation: state.branch_view.generation,
-        };
-
-        begin_delete_worktree(&mut state);
-
-        assert!(matches!(state.mode, Mode::BranchSelect(_)));
-        assert!(state.toasts.back().is_some_and(|toast| {
-            toast
-                .message
-                .contains("open checkout state could not be loaded")
-        }));
-    }
-
-    #[test]
-    fn checkout_becoming_open_after_confirmation_routes_removal_through_herdr() {
-        let git_mock = Arc::new(MockGitProvider::default());
-        let git: Arc<dyn GitProvider> = git_mock.clone();
-        let herdr_mock = Arc::new(MockHerdrProvider::default());
-        herdr_mock
-            .worktree_list_results
-            .lock()
-            .unwrap()
-            .push_back(Ok(worktree_list_response(vec![worktree()])));
-        herdr_mock
-            .worktree_remove_results
-            .lock()
-            .unwrap()
-            .push_back(Ok(remove_response(false)));
-        let herdr: Arc<dyn HerdrProvider> = herdr_mock.clone();
-        let (sender, rx) = sender();
-        let mut state = state_with_branch(true);
-
-        begin_delete_worktree(&mut state);
-        assert!(matches!(
-            &state.mode,
-            Mode::ConfirmWorktreeDelete { target, .. }
-                if target.open_workspace_id.is_none()
-        ));
-
-        confirm_delete_worktree(&mut state, &git, Some(&herdr), &sender);
-        let _event = rx.recv_timeout(Duration::from_secs(1)).unwrap();
-
-        assert_eq!(
-            *herdr_mock.calls.lock().unwrap(),
-            [
-                HerdrCall::WorktreeList {
-                    cwd: "/repo".into(),
-                },
-                HerdrCall::WorktreeRemove {
-                    workspace_id: "w_1".into(),
-                    force: false,
-                },
-            ]
-        );
-        assert!(git_mock.remove_calls.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn fresh_open_state_failure_refuses_removal_without_falling_back_to_git() {
-        let git_mock = Arc::new(MockGitProvider::default());
-        let git: Arc<dyn GitProvider> = git_mock.clone();
-        let herdr_mock = Arc::new(MockHerdrProvider::default());
-        herdr_mock
-            .worktree_list_results
-            .lock()
-            .unwrap()
-            .push_back(Err(HerdrError::Invocation("herdr unavailable".into())));
-        let herdr: Arc<dyn HerdrProvider> = herdr_mock.clone();
-        let (sender, rx) = sender();
-        let mut state = state_with_branch(true);
-
-        begin_delete_worktree(&mut state);
-        confirm_delete_worktree(&mut state, &git, Some(&herdr), &sender);
-        let event = rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        process_app_event(event, &mut state, &mut TickChanges::default());
-
-        assert!(matches!(state.mode, Mode::BranchSelect(_)));
-        assert!(state.toasts.back().is_some_and(|toast| {
-            toast
-                .message
-                .contains("could not refresh open checkout state")
-        }));
-        assert!(git_mock.remove_calls.lock().unwrap().is_empty());
-        assert_eq!(
-            *herdr_mock.calls.lock().unwrap(),
-            [HerdrCall::WorktreeList {
-                cwd: "/repo".into(),
-            }]
-        );
-    }
-
-    #[test]
-    fn herdr_delete_requires_a_second_force_confirmation_then_refreshes() {
-        let herdr_mock = Arc::new(MockHerdrProvider::default());
-        herdr_mock.worktree_list_results.lock().unwrap().extend([
-            Ok(worktree_list_response(vec![worktree()])),
-            Ok(worktree_list_response(vec![worktree()])),
-        ]);
-        herdr_mock.worktree_remove_results.lock().unwrap().extend([
-            Err(HerdrError::DirtyWorktreeRequiresForce("dirty".into())),
-            Ok(remove_response(true)),
-        ]);
-        let herdr: Arc<dyn HerdrProvider> = herdr_mock.clone();
-        let git = git_provider();
-        let (sender, rx) = sender();
-        let mut state = state_with_branch(true);
-        state.branch_view.entries[0].open_workspace_id = Some("w_1".into());
-
-        begin_delete_worktree(&mut state);
-        confirm_delete_worktree(&mut state, &git, Some(&herdr), &sender);
-        let first = rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        process_app_event(first, &mut state, &mut TickChanges::default());
-        assert!(matches!(
-            &state.mode,
-            Mode::ConfirmWorktreeDelete { target, .. }
-                if target.force && !target.in_progress
-        ));
-
-        confirm_delete_worktree(&mut state, &git, Some(&herdr), &sender);
-        let second = rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        let mut changes = TickChanges::default();
-        process_app_event(second, &mut state, &mut changes);
-        assert!(matches!(state.mode, Mode::BranchSelect(_)));
-        assert!(changes.refresh_branch.is_some());
-        assert_eq!(
-            *herdr_mock.calls.lock().unwrap(),
-            [
-                HerdrCall::WorktreeList {
-                    cwd: "/repo".into(),
-                },
-                HerdrCall::WorktreeRemove {
-                    workspace_id: "w_1".into(),
-                    force: false,
-                },
-                HerdrCall::WorktreeList {
-                    cwd: "/repo".into(),
-                },
-                HerdrCall::WorktreeRemove {
-                    workspace_id: "w_1".into(),
-                    force: true,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn closed_git_checkout_requires_force_confirmation_and_prunes_after_success() {
-        let git_mock = Arc::new(MockGitProvider::default());
-        git_mock.dirty_remove_once.store(true, Ordering::Release);
-        let git: Arc<dyn GitProvider> = git_mock.clone();
-        let herdr_mock = Arc::new(MockHerdrProvider::default());
-        let mut closed_worktree = worktree();
-        closed_worktree.open_workspace_id = None;
-        herdr_mock.worktree_list_results.lock().unwrap().extend([
-            Ok(worktree_list_response(vec![closed_worktree.clone()])),
-            Ok(worktree_list_response(vec![closed_worktree])),
-        ]);
-        let herdr: Arc<dyn HerdrProvider> = herdr_mock.clone();
-        let (sender, rx) = sender();
-        let mut state = state_with_branch(true);
-
-        begin_delete_worktree(&mut state);
-        confirm_delete_worktree(&mut state, &git, Some(&herdr), &sender);
-        let first = rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        process_app_event(first, &mut state, &mut TickChanges::default());
-        assert!(matches!(
-            &state.mode,
-            Mode::ConfirmWorktreeDelete { target, .. }
-                if target.force && !target.in_progress
-        ));
-
-        confirm_delete_worktree(&mut state, &git, Some(&herdr), &sender);
-        let second = rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        let mut changes = TickChanges::default();
-        process_app_event(second, &mut state, &mut changes);
-        assert!(matches!(state.mode, Mode::BranchSelect(_)));
-        assert!(changes.refresh_branch.is_some());
-        assert_eq!(
-            *git_mock.remove_calls.lock().unwrap(),
-            [
-                (
-                    PathBuf::from("/repo"),
-                    PathBuf::from("/repo-feature"),
-                    false
-                ),
-                (PathBuf::from("/repo"), PathBuf::from("/repo-feature"), true),
-            ]
-        );
-        assert_eq!(
-            *git_mock.prune_calls.lock().unwrap(),
-            [PathBuf::from("/repo")]
-        );
-        assert_eq!(
-            *herdr_mock.calls.lock().unwrap(),
-            [
-                HerdrCall::WorktreeList {
-                    cwd: "/repo".into(),
-                },
-                HerdrCall::WorktreeList {
-                    cwd: "/repo".into(),
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn post_deletion_refresh_rejects_old_final_fetch_without_clearing_spinner() {
-        let git = git_provider();
-        let (sender, _rx) = sender();
-        let mut state = state_with_branch(true);
-        let old_generation = state.branch_view.generation;
-        begin_delete_worktree(&mut state);
-        if let Mode::ConfirmWorktreeDelete { target, .. } = &mut state.mode {
-            target.in_progress = true;
-        }
-        let mut changes = TickChanges::default();
-
-        process_app_event(
-            AppEvent::WorktreeRemovalFinished {
-                repo_path: "/repo".into(),
-                branch_name: "feature".into(),
-                worktree_path: "/repo-feature".into(),
-                outcome: WorktreeRemovalOutcome::Removed { warning: None },
-            },
-            &mut state,
-            &mut changes,
-        );
-        let repo = changes.refresh_branch.take().expect("branch refresh");
-        crate::screens::branch::refresh(&mut state, &git, None, &sender, repo);
-        assert_eq!(state.branch_view.generation, old_generation + 1);
-        state.branch_view.fetching_remote_repo = Some("/repo".into());
-
-        process_app_event(
-            AppEvent::GitFetchCompleted {
-                remote: Some("origin".into()),
-                branches: Vec::new(),
-                repo_path: "/repo".into(),
-                generation: old_generation,
-                error: None,
-                is_final: true,
-                skipped_unsupported_refs: false,
-            },
-            &mut state,
-            &mut TickChanges::default(),
-        );
-
-        assert_eq!(
-            state.branch_view.fetching_remote_repo.as_deref(),
-            Some(Path::new("/repo"))
-        );
-    }
-
-    #[test]
-    fn late_recovered_delete_completion_does_not_change_a_newer_mode() {
-        let mut state = state_with_repo();
-        state.repos[0].repo.worktrees.push(Worktree {
-            path: "/repo-feature".into(),
-            branch: Some("feature".into()),
-        });
-        state
-            .in_flight_worktree_removals
-            .insert("/repo-feature".into());
-        state.mark_pending_worktree_delete(PendingWorktreeDelete::new(
-            "/repo".into(),
-            "feature".into(),
-            "/repo-feature".into(),
-        ));
-        let mut changes = TickChanges::default();
-
-        process_app_event(
-            AppEvent::WorktreeRemovalFinished {
-                repo_path: "/repo".into(),
-                branch_name: "feature".into(),
-                worktree_path: "/repo-feature".into(),
-                outcome: WorktreeRemovalOutcome::Removed { warning: None },
-            },
-            &mut state,
-            &mut changes,
-        );
-
-        assert_eq!(state.mode, Mode::RepoSelect);
-        assert!(state.pending_worktree_deletes.is_empty());
-        assert!(state.repos[0].repo.worktrees.is_empty());
-        assert!(changes.refresh_branch.is_none());
     }
 }

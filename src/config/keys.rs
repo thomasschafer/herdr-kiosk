@@ -464,7 +464,7 @@ impl KeysConfig {
             Mode::BranchSelect(_) => BindingMode::Branch,
             Mode::SelectBaseBranch { .. } => BindingMode::BaseBranch,
             Mode::ValidatingNewBranch { .. }
-            | Mode::ConfirmWorktreeDelete { .. }
+            | Mode::ConfirmWorktreeDelete(_)
             | Mode::Loading { .. } => BindingMode::Modal,
         }
     }

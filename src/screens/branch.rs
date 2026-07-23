@@ -219,9 +219,7 @@ pub(crate) fn handle_event(
                 }
                 state.branch_view.apply_open_indicators();
                 state.branch_view.loading = false;
-                if state.reconcile_pending_worktree_deletes(&repo_path) {
-                    crate::app::persist_pending_deletes(state);
-                }
+                crate::screens::delete::reconcile_pending(state, &repo_path);
                 state.branch_view.fetching_remote_repo = Some(repo_path.clone());
                 changes.start_remote_loading = Some((
                     repo_path.clone(),
@@ -324,7 +322,7 @@ pub(crate) fn handle_event(
                     generation,
                 };
                 state.branch_view.apply_open_indicators();
-                refresh_delete_target_open_state(state);
+                crate::screens::delete::refresh_open_state(state);
                 changes.resume_pending_deletes = true;
             }
         }
@@ -409,24 +407,6 @@ fn branch_context_matches(state: &AppState, repo_path: &Path) -> bool {
 
 fn branch_context_generation_matches(state: &AppState, repo_path: &Path, generation: u64) -> bool {
     branch_context_matches(state, repo_path) && state.branch_view.generation == generation
-}
-
-fn refresh_delete_target_open_state(state: &mut AppState) {
-    let Mode::ConfirmWorktreeDelete { target, .. } = &state.mode else {
-        return;
-    };
-    let workspace_id = state
-        .branch_view
-        .entries
-        .iter()
-        .find(|branch| {
-            branch.name == target.branch_name
-                && branch.worktree_path.as_ref() == Some(&target.worktree_path)
-        })
-        .and_then(|branch| branch.open_workspace_id.clone());
-    if let Mode::ConfirmWorktreeDelete { target, .. } = &mut state.mode {
-        target.open_workspace_id = workspace_id;
-    }
 }
 
 fn pin_selection(state: &AppState, changes: &mut TickChanges) {

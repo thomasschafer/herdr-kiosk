@@ -16,7 +16,7 @@ use herdr_kiosk::{
     context::PluginContext,
     git::{self, CliGitProvider},
     herdr::{CliHerdrProvider, HerdrProvider},
-    path, pending_delete,
+    path,
     setup::{self, SetupState, SetupStep},
     state::{AppState, ToastKind},
     theme::Theme,
@@ -75,9 +75,7 @@ fn start() -> Result<()> {
         .map(|path| std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path)));
     let mut state = AppState::new(current_cwd);
     state.on_open = loaded.config.on_open.clone();
-    let pending_deletes = pending_delete::load_pending_worktree_deletes();
-    state.pending_worktree_deletes = pending_deletes.entries;
-    warnings.extend(pending_deletes.warnings);
+    warnings.extend(herdr_kiosk::screens::delete::load_pending(&mut state));
     for ConfigWarning { message } in warnings {
         state.push_toast(ToastKind::Warning, message);
     }

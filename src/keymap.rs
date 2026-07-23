@@ -109,12 +109,12 @@ fn command_to_action(command: Command, state: &AppState) -> Option<Action> {
             }
             Mode::BranchSelect(_) => Some(Action::OpenBranch),
             Mode::SelectBaseBranch { .. } => Some(Action::CreateNewBranch),
-            Mode::ConfirmWorktreeDelete { target, .. } if !target.in_progress => {
+            Mode::ConfirmWorktreeDelete(flow) if !flow.in_progress() => {
                 Some(Action::ConfirmDeleteWorktree)
             }
             Mode::Loading { .. }
             | Mode::ValidatingNewBranch { .. }
-            | Mode::ConfirmWorktreeDelete { .. } => None,
+            | Mode::ConfirmWorktreeDelete(_) => None,
         },
         Command::BranchesView => {
             matches!(state.mode, Mode::RepoSelect).then_some(Action::OpenBranches)
@@ -123,7 +123,7 @@ fn command_to_action(command: Command, state: &AppState) -> Option<Action> {
             if active_query(state).is_empty() {
                 match state.mode {
                     Mode::BranchSelect(_) => Some(Action::BackToRepos),
-                    Mode::SelectBaseBranch { .. } | Mode::ConfirmWorktreeDelete { .. } => {
+                    Mode::SelectBaseBranch { .. } | Mode::ConfirmWorktreeDelete(_) => {
                         Some(Action::CancelOverlay)
                     }
                     _ => None,
@@ -161,16 +161,18 @@ fn active_query(state: &AppState) -> &str {
         Mode::SelectBaseBranch { flow, .. } => &flow.list.input.text,
         Mode::Loading { .. }
         | Mode::ValidatingNewBranch { .. }
-        | Mode::ConfirmWorktreeDelete { .. } => "",
+        | Mode::ConfirmWorktreeDelete(_) => "",
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{
-        BaseBranchSelection, BranchContext, DeleteWorktreeTarget, HelpBindingRow, HelpOverlayState,
-        SearchableList,
+    use crate::{
+        screens::delete::{DeleteFlowState, DeleteWorktreeTarget},
+        state::{
+            BaseBranchSelection, BranchContext, HelpBindingRow, HelpOverlayState, SearchableList,
+        },
     };
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
@@ -325,16 +327,16 @@ mod tests {
             resolve_action(key(KeyCode::Esc, KeyModifiers::NONE), &state, &keys),
             Some(Action::CancelOverlay)
         );
-        state.mode = Mode::ConfirmWorktreeDelete {
+        state.mode = Mode::ConfirmWorktreeDelete(DeleteFlowState::new(
             context,
-            target: DeleteWorktreeTarget {
+            DeleteWorktreeTarget {
                 branch_name: "feat".into(),
                 worktree_path: "/wt".into(),
                 open_workspace_id: None,
                 force: false,
                 in_progress: false,
             },
-        };
+        ));
         assert_eq!(
             resolve_action(key(KeyCode::Enter, KeyModifiers::NONE), &state, &keys),
             Some(Action::ConfirmDeleteWorktree)

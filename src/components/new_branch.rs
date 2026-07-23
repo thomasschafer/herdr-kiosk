@@ -116,7 +116,7 @@ pub fn draw(
         }
         Mode::RepoSelect
         | Mode::BranchSelect(_)
-        | Mode::ConfirmWorktreeDelete { .. }
+        | Mode::ConfirmWorktreeDelete(_)
         | Mode::Loading { .. } => {}
     }
 }
