@@ -401,16 +401,16 @@ is automatic and unreviewed):
    match the release assets fetch-or-build looks for (match is by version, not
    commit).
 
-Remaining go-live steps (Tom's call, in this order):
+Go-live steps (completed 2026-07-23, v0.1.0):
 
-- [ ] Tag `v0.1.0` to trigger the release workflow.
-- [ ] Confirm the release workflow completes on all five targets.
-- [ ] Verify all five binaries and `SHA256SUMS` are attached and the checksums match.
-- [ ] Run `HK_RUN_INSTALL_REHEARSAL=1 scripts/install-rehearsal.sh` against the public
-  release.
-- [ ] Set the GitHub repository description to “Fuzzy-find Git repos and branches and
-  open them as Herdr workspaces/worktrees”.
-- [ ] Add the `herdr-plugin` GitHub topic only after the rehearsal passes.
+- [x] Tag `v0.1.0` to trigger the release workflow.
+- [x] Confirm the release workflow completes on all five targets.
+- [x] Verify all five binaries and `SHA256SUMS` are attached and the checksums match.
+- [x] Run `HK_RUN_INSTALL_REHEARSAL=1 scripts/install-rehearsal.sh` against the public
+  release. (Fixed a missing `TMUX_BIN` in the rehearsal harness first.)
+- [x] Set the GitHub repository description (folder-inclusive copy, matching the
+  manifest `description`).
+- [x] Add the `herdr-plugin` GitHub topic — the repo is now publicly listed.
 
 ## 8. Working process (D15)
 
