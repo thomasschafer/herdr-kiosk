@@ -265,15 +265,34 @@ fn walk_repos_with_cancel(
                 continue;
             }
 
-            let canonical = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-            if !visited.insert(canonical.clone()) {
-                continue;
-            }
-            if path.join(GIT_DIR_ENTRY).exists() {
+            let git_entry = path.join(GIT_DIR_ENTRY);
+            let is_repo = match git_entry_exists(&git_entry) {
+                Ok(is_repo) => is_repo,
+                Err(error) => {
+                    warnings.push(ScanWarning {
+                        path: git_entry,
+                        message: format!("failed to inspect .git entry: {error}"),
+                    });
+                    continue;
+                }
+            };
+            if is_repo {
+                let canonical = match fs::canonicalize(&path) {
+                    Ok(canonical) => canonical,
+                    Err(error) => {
+                        warnings.push(ScanWarning {
+                            path,
+                            message: format!("failed to resolve repository path: {error}"),
+                        });
+                        continue;
+                    }
+                };
                 let repo_root = resolve_main_repo_from_linked_worktree(&canonical)
                     .map(|root| fs::canonicalize(&root).unwrap_or(root))
                     .unwrap_or(canonical);
-                on_repo(&repo_root);
+                if visited.insert(repo_root.clone()) {
+                    on_repo(&repo_root);
+                }
             } else if remaining_depth > 1 {
                 pending.push((path, remaining_depth - 1, false));
             }
@@ -281,6 +300,15 @@ fn walk_repos_with_cancel(
     }
 
     Ok(warnings)
+}
+
+fn git_entry_exists(path: &Path) -> io::Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => fs::metadata(path).map(|_| true),
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 fn resolve_main_repo_from_linked_worktree(path: &Path) -> Option<PathBuf> {
@@ -875,6 +903,26 @@ mod tests {
         assert!(warnings.is_empty());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn broken_git_entry_warns_and_prevents_descent() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempDir::new().unwrap();
+        let candidate = temp.path().join("candidate");
+        fs::create_dir(&candidate).unwrap();
+        symlink(candidate.join("missing-git-dir"), candidate.join(".git")).unwrap();
+        repo_fixture(&candidate, "nested-repo");
+
+        let (repos, warnings) = scan_streaming(&CliGitProvider, temp.path(), 2).unwrap();
+
+        assert!(repos.is_empty());
+        assert!(warnings.iter().any(|warning| {
+            warning.path == candidate.join(".git")
+                && warning.message.contains("failed to inspect .git entry")
+        }));
+    }
+
     #[test]
     fn scan_checks_cancellation_while_iterating_directories() {
         let temp = TempDir::new().unwrap();
@@ -934,8 +982,8 @@ mod tests {
         assert_eq!(repos[0].name, "good-repo");
         assert!(
             warnings.iter().any(|warning| {
-                warning.path == unreadable
-                    && warning.message.contains("failed to read nested directory")
+                warning.path == unreadable.join(".git")
+                    && warning.message.contains("failed to inspect .git entry")
             }),
             "warnings were: {warnings:?}"
         );

@@ -36,12 +36,18 @@ pub fn draw(
         state.repo_list.input.cursor,
     );
 
+    state.active_list_rows = usize::from(list_area.height.saturating_sub(2)).max(1);
+    state.repo_list.update_scroll_offset(state.active_list_rows);
+    let visible = state.repo_list.visible_items(state.active_list_rows);
+    let selected = state.repo_list.selected.and_then(|selected| {
+        visible
+            .iter()
+            .position(|(position, _)| *position == selected)
+    });
     let row_width = usize::from(list_area.width.saturating_sub(4));
-    let mut items: Vec<_> = state
-        .repo_list
-        .filtered
+    let mut items: Vec<_> = visible
         .iter()
-        .filter_map(|(index, _)| state.repos.get(*index))
+        .filter_map(|(_, index)| state.repos.get(*index))
         .map(|entry| {
             let left = [Span::raw(entry.display_name())];
             let spans = if entry.is_open {
@@ -89,9 +95,6 @@ pub fn draw(
         .highlight_symbol("▸ ")
         .highlight_spacing(HighlightSpacing::Always);
     let mut list_state = ListState::default();
-    list_state.select(state.repo_list.selected);
-    state.active_list_rows = usize::from(list_area.height.saturating_sub(2)).max(1);
-    state.repo_list.update_scroll_offset(state.active_list_rows);
-    *list_state.offset_mut() = state.repo_list.scroll_offset;
+    list_state.select(selected);
     frame.render_stateful_widget(list, list_area, &mut list_state);
 }

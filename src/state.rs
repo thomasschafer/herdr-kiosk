@@ -163,6 +163,26 @@ impl SearchableList {
             .scroll_offset
             .min(self.filtered.len().saturating_sub(viewport_rows));
     }
+
+    pub fn visible_items(&self, viewport_rows: usize) -> Vec<(usize, usize)> {
+        let start = self.scroll_offset.min(self.filtered.len());
+        let end = start
+            .saturating_add(viewport_rows.max(1))
+            .min(self.filtered.len());
+        let mut positions = (start..end).collect::<Vec<_>>();
+        if let Some(selected) = self
+            .selected
+            .filter(|selected| *selected < self.filtered.len())
+            && (selected < start || selected >= end)
+        {
+            positions.push(selected);
+            positions.sort_unstable();
+        }
+        positions
+            .into_iter()
+            .map(|position| (position, self.filtered[position].0))
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -279,6 +299,13 @@ pub enum OpenWorktreeLoadState {
 pub struct Toast {
     pub kind: ToastKind,
     pub message: String,
+    category: ToastCategory,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToastCategory {
+    General,
+    Scan,
 }
 
 #[derive(Debug)]
@@ -296,6 +323,8 @@ pub struct AppState {
     pub current_cwd: Option<PathBuf>,
     pub selection_touched: bool,
     pub toasts: VecDeque<Toast>,
+    toast_messages: HashSet<String>,
+    scan_warning_count: usize,
     pub help_overlay: Option<HelpOverlayState>,
     pub active_list_rows: usize,
     pub repo_filter_generation: u64,
@@ -330,6 +359,8 @@ impl AppState {
             current_cwd,
             selection_touched: false,
             toasts: VecDeque::new(),
+            toast_messages: HashSet::new(),
+            scan_warning_count: 0,
             help_overlay: None,
             active_list_rows: 1,
             repo_filter_generation: 0,
@@ -484,14 +515,74 @@ impl AppState {
     }
 
     pub fn push_toast(&mut self, kind: ToastKind, message: impl Into<String>) {
-        let message = message
-            .into()
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
-        if !message.is_empty() && !self.toasts.iter().any(|toast| toast.message == message) {
-            self.toasts.push_back(Toast { kind, message });
+        self.push_toast_with_category(kind, &message.into(), ToastCategory::General);
+    }
+
+    pub fn push_scan_warning(&mut self) {
+        self.scan_warning_count = self.scan_warning_count.saturating_add(1);
+        let message = format!(
+            "{} director{} could not be scanned",
+            self.scan_warning_count,
+            if self.scan_warning_count == 1 {
+                "y"
+            } else {
+                "ies"
+            }
+        );
+        if let Some(toast) = self
+            .toasts
+            .iter_mut()
+            .find(|toast| toast.category == ToastCategory::Scan)
+        {
+            self.toast_messages.remove(&toast.message);
+            toast.message.clone_from(&message);
+            self.toast_messages.insert(message);
+        } else {
+            self.push_toast_with_category(ToastKind::Warning, &message, ToastCategory::Scan);
         }
+    }
+
+    pub fn dismiss_toast(&mut self) {
+        if let Some(toast) = self.toasts.pop_front() {
+            self.toast_messages.remove(&toast.message);
+        }
+    }
+
+    fn push_toast_with_category(
+        &mut self,
+        kind: ToastKind,
+        message: &str,
+        category: ToastCategory,
+    ) {
+        const MAX_RETAINED_TOASTS: usize = 8;
+
+        let message = message.split_whitespace().collect::<Vec<_>>().join(" ");
+        if message.is_empty() || self.toast_messages.contains(&message) {
+            return;
+        }
+        if self.toasts.len() == MAX_RETAINED_TOASTS {
+            let warning = self
+                .toasts
+                .iter()
+                .position(|toast| toast.kind == ToastKind::Warning);
+            let remove = match (kind, warning) {
+                (ToastKind::Error | ToastKind::Warning, Some(index)) => Some(index),
+                (ToastKind::Error, None) => Some(0),
+                (ToastKind::Warning, None) => None,
+            };
+            let Some(remove) = remove else {
+                return;
+            };
+            if let Some(removed) = self.toasts.remove(remove) {
+                self.toast_messages.remove(&removed.message);
+            }
+        }
+        self.toast_messages.insert(message.clone());
+        self.toasts.push_back(Toast {
+            kind,
+            message,
+            category,
+        });
     }
 
     pub fn reset_remote_branches(&mut self) {
@@ -934,6 +1025,57 @@ mod tests {
         list.update_scroll_offset(3);
         assert_eq!(list.selected, Some(1));
         assert_eq!(list.scroll_offset, 1);
+    }
+
+    #[test]
+    fn searchable_list_materializes_only_the_visible_window_and_selection() {
+        let mut list = SearchableList::new(20_000);
+        list.scroll_offset = 10_000;
+        list.selected = Some(19_999);
+
+        let visible = list.visible_items(12);
+
+        assert_eq!(visible.len(), 13);
+        assert_eq!(visible.first(), Some(&(10_000, 10_000)));
+        assert_eq!(visible[11], (10_011, 10_011));
+        assert_eq!(visible.last(), Some(&(19_999, 19_999)));
+    }
+
+    #[test]
+    fn scan_warnings_are_aggregated_into_one_toast() {
+        let mut state = AppState::new(None);
+
+        for _ in 0..1_000 {
+            state.push_scan_warning();
+        }
+
+        assert_eq!(state.toasts.len(), 1);
+        assert_eq!(
+            state.toasts[0].message,
+            "1000 directories could not be scanned"
+        );
+        assert_eq!(state.toast_messages.len(), 1);
+    }
+
+    #[test]
+    fn toast_queue_is_bounded_and_dedup_index_stays_in_sync() {
+        let mut state = AppState::new(None);
+
+        for index in 0..100 {
+            state.push_toast(ToastKind::Warning, format!("warning {index}"));
+        }
+        for _ in 0..100 {
+            state.push_toast(ToastKind::Warning, "warning 99");
+        }
+
+        assert_eq!(state.toasts.len(), 8);
+        assert_eq!(state.toast_messages.len(), state.toasts.len());
+        assert_eq!(
+            state.toasts.front().map(|toast| toast.message.as_str()),
+            Some("warning 92")
+        );
+        state.dismiss_toast();
+        assert_eq!(state.toast_messages.len(), state.toasts.len());
     }
 
     #[test]

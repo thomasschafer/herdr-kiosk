@@ -47,6 +47,27 @@ use crate::{
 const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(40);
 const MAX_EVENTS_PER_TICK: usize = 256;
 
+#[derive(Debug)]
+struct RedrawState {
+    dirty: bool,
+}
+
+impl RedrawState {
+    fn new() -> Self {
+        Self { dirty: true }
+    }
+
+    fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    fn take(&mut self, animation_active: bool) -> bool {
+        let redraw = self.dirty || animation_active;
+        self.dirty = false;
+        redraw
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunOutcome {
     Quit,
@@ -161,6 +182,7 @@ pub fn run(
     let filter_worker = FilterWorker::spawn(sender.clone());
     let fetch_deduplicator = FetchDeduplicator::default();
     let spinner_start = Instant::now();
+    let mut redraw = RedrawState::new();
 
     spawn_repo_discovery(git, &sender, search_dirs);
     if let Some(provider) = herdr {
@@ -168,11 +190,18 @@ pub fn run(
     }
 
     let outcome = loop {
-        terminal.draw(|frame| draw(frame, state, theme, keys, spinner_start))?;
+        if redraw.take(animation_active(state)) {
+            terminal.draw(|frame| draw(frame, state, theme, keys, spinner_start))?;
+        }
 
         let mut changes = TickChanges::default();
+        let mut event_received = false;
         for app_event in rx.try_iter().take(MAX_EVENTS_PER_TICK) {
+            event_received = true;
             process_app_event(app_event, state, &mut changes);
+        }
+        if event_received {
+            redraw.mark_dirty();
         }
 
         if let Some(outcome) = apply_exit_effects(&mut changes, herdr) {
@@ -223,19 +252,21 @@ pub fn run(
             resume_pending_deletes(state, git, herdr, &sender);
         }
 
-        if event::poll(EVENT_POLL_INTERVAL)?
-            && let Event::Key(key) = event::read()?
-        {
-            if key.kind != KeyEventKind::Press {
-                continue;
-            }
-            let Some(action) = crate::keymap::resolve_action(key, state, keys) else {
-                continue;
-            };
-            if let Some(outcome) =
-                process_action(action, state, git, herdr, &sender, &filter_worker, keys)
-            {
-                break outcome;
+        if event::poll(EVENT_POLL_INTERVAL)? {
+            match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    let Some(action) = crate::keymap::resolve_action(key, state, keys) else {
+                        continue;
+                    };
+                    redraw.mark_dirty();
+                    if let Some(outcome) =
+                        process_action(action, state, git, herdr, &sender, &filter_worker, keys)
+                    {
+                        break outcome;
+                    }
+                }
+                Event::Resize(_, _) => redraw.mark_dirty(),
+                _ => {}
             }
         }
     };
@@ -267,17 +298,8 @@ fn process_app_event(event: AppEvent, state: &mut AppState, changes: &mut TickCh
             state.loading_repos = false;
             changes.collision_pass = true;
         }
-        AppEvent::ScanWarning(warning) => {
-            let message = if warning.path.as_os_str().is_empty() {
-                warning.message
-            } else {
-                format!(
-                    "{}: {}",
-                    crate::path::display(&warning.path),
-                    warning.message
-                )
-            };
-            state.push_toast(ToastKind::Warning, message);
+        AppEvent::ScanWarning(_warning) => {
+            state.push_scan_warning();
         }
         AppEvent::OpenWorkspacesLoaded { workspaces } => {
             state.open_repo_roots = workspaces
@@ -743,7 +765,7 @@ fn process_action(
             queue_repo_filter(state, filter_worker, true);
         }
         Action::DismissToast => {
-            state.toasts.pop_front();
+            state.dismiss_toast();
         }
         Action::ShowHelp => {
             let binding_mode = KeysConfig::mode_for(&state.mode);
@@ -1682,6 +1704,16 @@ fn draw(
     }
 }
 
+fn animation_active(state: &AppState) -> bool {
+    let branch_spinner = state.loading_branches || state.fetching_remote_repo.is_some();
+    match &state.mode {
+        Mode::RepoSelect => state.loading_repos,
+        Mode::BranchSelect(_) | Mode::SelectBaseBranch { .. } => branch_spinner,
+        Mode::ValidatingNewBranch { .. } | Mode::Loading { .. } => true,
+        Mode::ConfirmWorktreeDelete { target, .. } => branch_spinner || target.in_progress,
+    }
+}
+
 fn loading_hint(keys: &KeysConfig) -> Option<String> {
     keys.first_key(BindingMode::Modal, Command::Quit)
         .map(|key| format!("{key} to close (operation continues)"))
@@ -1846,6 +1878,26 @@ mod tests {
                 text: (*name).into(),
             })
             .collect()
+    }
+
+    #[test]
+    fn clean_idle_tick_does_not_redraw() {
+        let mut redraw = RedrawState::new();
+
+        assert!(redraw.take(false));
+        assert!(!redraw.take(false));
+        redraw.mark_dirty();
+        assert!(redraw.take(false));
+        assert!(!redraw.take(false));
+    }
+
+    #[test]
+    fn active_animation_redraws_without_dirty_state() {
+        let mut redraw = RedrawState::new();
+
+        assert!(redraw.take(true));
+        assert!(redraw.take(true));
+        assert!(!redraw.take(false));
     }
 
     fn names(matches: &[(FilterKey, i64)]) -> Vec<String> {

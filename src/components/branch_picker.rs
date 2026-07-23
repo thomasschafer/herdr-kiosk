@@ -44,12 +44,20 @@ pub fn draw(
         state.branch_list.input.cursor,
     );
 
-    let row_width = usize::from(list_area.width.saturating_sub(4));
-    let mut items: Vec<_> = state
+    state.active_list_rows = usize::from(list_area.height.saturating_sub(2)).max(1);
+    state
         .branch_list
-        .filtered
+        .update_scroll_offset(state.active_list_rows);
+    let visible = state.branch_list.visible_items(state.active_list_rows);
+    let selected = state.branch_list.selected.and_then(|selected| {
+        visible
+            .iter()
+            .position(|(position, _)| *position == selected)
+    });
+    let row_width = usize::from(list_area.width.saturating_sub(4));
+    let mut items: Vec<_> = visible
         .iter()
-        .filter_map(|(index, _)| state.branches.get(*index))
+        .filter_map(|(_, index)| state.branches.get(*index))
         .map(|branch| branch_item(branch, theme, row_width))
         .collect();
     if state.loading_branches && items.is_empty() {
@@ -90,12 +98,7 @@ pub fn draw(
         .highlight_symbol("▸ ")
         .highlight_spacing(HighlightSpacing::Always);
     let mut list_state = ListState::default();
-    list_state.select(state.branch_list.selected);
-    state.active_list_rows = usize::from(list_area.height.saturating_sub(2)).max(1);
-    state
-        .branch_list
-        .update_scroll_offset(state.active_list_rows);
-    *list_state.offset_mut() = state.branch_list.scroll_offset;
+    list_state.select(selected);
     frame.render_stateful_widget(list, list_area, &mut list_state);
 }
 
