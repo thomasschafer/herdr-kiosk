@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     ffi::OsString,
     path::{Path, PathBuf},
 };
@@ -9,7 +9,10 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
     config::OnOpenConfig, git::Repo, herdr::WorktreeInfo, pending_delete::PendingWorktreeDelete,
+    screens::branch::BranchViewState,
 };
+
+pub use crate::screens::branch::{BranchContext, BranchId, OpenWorktreeLoadState};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoEntry {
@@ -186,12 +189,6 @@ impl SearchableList {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BranchContext {
-    pub repo_path: PathBuf,
-    pub repo_name: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BaseBranchSelection {
     pub new_name: String,
     pub bases: Vec<String>,
@@ -228,27 +225,6 @@ pub struct DeleteWorktreeTarget {
     pub open_workspace_id: Option<String>,
     pub force: bool,
     pub in_progress: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum BranchId {
-    Local(String),
-    Remote { remote: String, name: String },
-}
-
-impl BranchId {
-    pub fn display_name(&self) -> String {
-        match self {
-            Self::Local(name) => name.clone(),
-            Self::Remote { remote, name } => format!("{remote}/{name}"),
-        }
-    }
-}
-
-impl From<&str> for BranchId {
-    fn from(name: &str) -> Self {
-        Self::Local(name.to_string())
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -289,13 +265,6 @@ pub enum ToastKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OpenWorktreeLoadState {
-    Unknown,
-    Loaded { repo_path: PathBuf, generation: u64 },
-    Failed { repo_path: PathBuf, generation: u64 },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Toast {
     pub kind: ToastKind,
     pub message: String,
@@ -313,11 +282,9 @@ enum ToastCategory {
 pub struct AppState {
     pub repos: Vec<RepoEntry>,
     pub repo_list: SearchableList,
-    pub branches: Vec<BranchEntry>,
-    pub branch_list: SearchableList,
+    pub branch_view: BranchViewState,
     pub mode: Mode,
     pub loading_repos: bool,
-    pub loading_branches: bool,
     pub seen_repo_paths: HashSet<PathBuf>,
     pub open_repo_roots: HashSet<PathBuf>,
     pub current_cwd: Option<PathBuf>,
@@ -328,15 +295,6 @@ pub struct AppState {
     pub help_overlay: Option<HelpOverlayState>,
     pub active_list_rows: usize,
     pub repo_filter_generation: u64,
-    pub branch_filter_generation: u64,
-    pub branch_view_generation: u64,
-    pub pending_branch_selection: Option<BranchId>,
-    pub open_worktrees: Vec<WorktreeInfo>,
-    pub open_worktree_load_state: OpenWorktreeLoadState,
-    pub remote_branches: BTreeMap<String, Vec<BranchEntry>>,
-    pub fetching_remote_repo: Option<PathBuf>,
-    pub fetch_warning_remotes: HashSet<String>,
-    pub unsupported_ref_warning_generation: Option<u64>,
     pub base_filter_generation: u64,
     pub help_filter_generation: u64,
     pub pending_worktree_deletes: Vec<PendingWorktreeDelete>,
@@ -349,11 +307,9 @@ impl AppState {
         Self {
             repos: Vec::new(),
             repo_list: SearchableList::new(0),
-            branches: Vec::new(),
-            branch_list: SearchableList::new(0),
+            branch_view: BranchViewState::default(),
             mode: Mode::RepoSelect,
             loading_repos: true,
-            loading_branches: false,
             seen_repo_paths: HashSet::new(),
             open_repo_roots: HashSet::new(),
             current_cwd,
@@ -364,15 +320,6 @@ impl AppState {
             help_overlay: None,
             active_list_rows: 1,
             repo_filter_generation: 0,
-            branch_filter_generation: 0,
-            branch_view_generation: 0,
-            pending_branch_selection: None,
-            open_worktrees: Vec::new(),
-            open_worktree_load_state: OpenWorktreeLoadState::Unknown,
-            remote_branches: BTreeMap::new(),
-            fetching_remote_repo: None,
-            fetch_warning_remotes: HashSet::new(),
-            unsupported_ref_warning_generation: None,
             base_filter_generation: 0,
             help_filter_generation: 0,
             pending_worktree_deletes: Vec::new(),
@@ -388,9 +335,7 @@ impl AppState {
     }
 
     pub fn selected_branch(&self) -> Option<&BranchEntry> {
-        let selected = self.branch_list.selected?;
-        let index = self.branch_list.filtered.get(selected)?.0;
-        self.branches.get(index)
+        self.branch_view.selected()
     }
 
     pub fn branch_context(&self) -> Option<&BranchContext> {
@@ -411,15 +356,16 @@ impl AppState {
         let Mode::BranchSelect(context) = &self.mode else {
             return Err("New branches can only be created from the branch view");
         };
-        if self.loading_branches {
+        if self.branch_view.loading {
             return Err("Branches are still loading");
         }
-        let name = self.branch_list.input.text.clone();
+        let name = self.branch_view.list.input.text.clone();
         if name.is_empty() {
             return Err("Type a branch name first");
         }
         if let Some(branch) = self
-            .branches
+            .branch_view
+            .entries
             .iter()
             .find(|branch| branch.remote.is_none() && branch.name == name)
         {
@@ -457,15 +403,15 @@ impl AppState {
         {
             return Err("Worktree deletion already in progress");
         }
-        match &self.open_worktree_load_state {
+        match &self.branch_view.open_worktree_load_state {
             OpenWorktreeLoadState::Loaded {
                 repo_path,
                 generation,
-            } if repo_path == &context.repo_path && *generation == self.branch_view_generation => {}
+            } if repo_path == &context.repo_path && *generation == self.branch_view.generation => {}
             OpenWorktreeLoadState::Failed {
                 repo_path,
                 generation,
-            } if repo_path == &context.repo_path && *generation == self.branch_view_generation => {
+            } if repo_path == &context.repo_path && *generation == self.branch_view.generation => {
                 return Err(
                     "Cannot delete checkout because open checkout state could not be loaded",
                 );
@@ -583,66 +529,6 @@ impl AppState {
             message,
             category,
         });
-    }
-
-    pub fn reset_remote_branches(&mut self) {
-        self.remote_branches.clear();
-        self.fetching_remote_repo = None;
-        self.fetch_warning_remotes.clear();
-    }
-
-    /// Merge one remote's latest snapshot without allowing task arrival order to
-    /// overwrite another remote or a newer fetch result.
-    pub fn merge_remote_branches(&mut self, remote: String, incoming: Vec<BranchEntry>) {
-        let bucket = self.remote_branches.entry(remote).or_default();
-        let mut known: HashSet<BranchId> = bucket.iter().map(BranchEntry::id).collect();
-        bucket.extend(
-            incoming
-                .into_iter()
-                .filter(|entry| known.insert(entry.id())),
-        );
-        BranchEntry::sort(bucket);
-
-        let mut merged: Vec<_> = self
-            .branches
-            .iter()
-            .filter(|entry| entry.remote.is_none())
-            .cloned()
-            .collect();
-        let local_names: HashSet<String> = merged.iter().map(|entry| entry.name.clone()).collect();
-        for entries in self.remote_branches.values() {
-            merged.extend(
-                entries
-                    .iter()
-                    .filter(|entry| !local_names.contains(&entry.name))
-                    .cloned(),
-            );
-        }
-        BranchEntry::sort(&mut merged);
-        self.branches = merged;
-    }
-
-    pub fn promote_remote_branch_to_local(&mut self, branch_name: &str) {
-        for entries in self.remote_branches.values_mut() {
-            entries.retain(|entry| entry.name != branch_name);
-        }
-        self.branches
-            .retain(|entry| entry.remote.is_none() || entry.name != branch_name);
-        if !self
-            .branches
-            .iter()
-            .any(|entry| entry.remote.is_none() && entry.name == branch_name)
-        {
-            self.branches.push(BranchEntry {
-                name: branch_name.to_string(),
-                worktree_path: None,
-                is_current: false,
-                is_default: false,
-                remote: None,
-                open_workspace_id: None,
-            });
-        }
-        BranchEntry::sort(&mut self.branches);
     }
 
     pub fn canonical_sort(&mut self) {
@@ -896,7 +782,7 @@ impl BranchEntry {
             .and_then(|worktree| worktree.open_workspace_id.clone());
     }
 
-    fn sort(entries: &mut [Self]) {
+    pub(crate) fn sort(entries: &mut [Self]) {
         entries.sort_by(|left, right| {
             left.remote
                 .is_some()
@@ -1163,104 +1049,6 @@ mod tests {
     }
 
     #[test]
-    fn same_named_remote_branches_keep_distinct_identities() {
-        let mut state = AppState::new(None);
-        state.merge_remote_branches(
-            "origin".into(),
-            BranchEntry::build_remote("origin", &["feature".into()], &[]),
-        );
-        state.merge_remote_branches(
-            "upstream".into(),
-            BranchEntry::build_remote("upstream", &["feature".into()], &[]),
-        );
-
-        assert_eq!(
-            state
-                .branches
-                .iter()
-                .map(BranchEntry::id)
-                .collect::<Vec<_>>(),
-            [
-                BranchId::Remote {
-                    remote: "origin".into(),
-                    name: "feature".into(),
-                },
-                BranchId::Remote {
-                    remote: "upstream".into(),
-                    name: "feature".into(),
-                },
-            ]
-        );
-        assert_eq!(
-            state
-                .branches
-                .iter()
-                .map(BranchEntry::display_name)
-                .collect::<Vec<_>>(),
-            ["origin/feature", "upstream/feature"]
-        );
-    }
-
-    #[test]
-    fn local_branch_shadows_same_name_from_every_remote() {
-        let mut state = AppState::new(None);
-        state.branches = BranchEntry::build_local(&repo("/repo"), &["feature".into()], None, None);
-        state.merge_remote_branches(
-            "origin".into(),
-            BranchEntry::build_remote("origin", &["feature".into()], &[]),
-        );
-        state.merge_remote_branches(
-            "upstream".into(),
-            BranchEntry::build_remote("upstream", &["feature".into()], &[]),
-        );
-
-        assert_eq!(state.branches.len(), 1);
-        assert_eq!(state.branches[0].id(), BranchId::Local("feature".into()));
-    }
-
-    #[test]
-    fn remote_merges_are_deduplicated_and_sorted_after_locals() {
-        let mut state = AppState::new(None);
-        state.branches = BranchEntry::build_local(
-            &repo("/repo"),
-            &["z-local".into(), "main".into()],
-            Some("main"),
-            None,
-        );
-        state.merge_remote_branches(
-            "upstream".into(),
-            BranchEntry::build_remote(
-                "upstream",
-                &["z-local".into(), "z-remote".into()],
-                &["z-local".into(), "main".into()],
-            ),
-        );
-        state.merge_remote_branches(
-            "origin".into(),
-            BranchEntry::build_remote(
-                "origin",
-                &["a-remote".into(), "z-remote".into()],
-                &["z-local".into(), "main".into()],
-            ),
-        );
-
-        assert_eq!(
-            state
-                .branches
-                .iter()
-                .map(|entry| (entry.name.as_str(), entry.remote.as_deref()))
-                .collect::<Vec<_>>(),
-            [
-                ("main", None),
-                ("z-local", None),
-                ("a-remote", Some("origin")),
-                ("z-remote", Some("origin")),
-                ("z-remote", Some("upstream")),
-            ]
-        );
-    }
-
-    #[test]
     fn new_branch_routing_rejects_empty_and_routes_existing_local() {
         let mut state = AppState::new(None);
         state.mode = Mode::BranchSelect(BranchContext {
@@ -1269,9 +1057,10 @@ mod tests {
         });
         assert_eq!(state.new_branch_route(), Err("Type a branch name first"));
 
-        state.branches = BranchEntry::build_local(&repo("/repo"), &["feature".into()], None, None);
-        state.branch_list = SearchableList::new(1);
-        state.branch_list.input.text = "feature".into();
+        state.branch_view.entries =
+            BranchEntry::build_local(&repo("/repo"), &["feature".into()], None, None);
+        state.branch_view.list = SearchableList::new(1);
+        state.branch_view.list.input.text = "feature".into();
         assert!(matches!(
             state.new_branch_route(),
             Ok(NewBranchRoute::Existing(branch)) if branch.name == "feature"
@@ -1285,7 +1074,7 @@ mod tests {
             repo_path: "/repo".into(),
             repo_name: "repo".into(),
         });
-        state.branches = vec![BranchEntry {
+        state.branch_view.entries = vec![BranchEntry {
             name: "main".into(),
             worktree_path: Some("/repo".into()),
             is_current: true,
@@ -1293,13 +1082,13 @@ mod tests {
             remote: None,
             open_workspace_id: Some("w_1".into()),
         }];
-        state.branch_list = SearchableList::new(1);
+        state.branch_view.list = SearchableList::new(1);
         assert_eq!(
             state.selected_worktree_for_delete(),
             Err("Cannot delete the main checkout")
         );
 
-        state.branches[0] = BranchEntry {
+        state.branch_view.entries[0] = BranchEntry {
             name: "remote-only".into(),
             worktree_path: None,
             is_current: false,

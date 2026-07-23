@@ -99,11 +99,11 @@ fn command_to_action(command: Command, state: &AppState) -> Option<Action> {
         Command::MoveDown => Some(Action::MoveSelection(1)),
         Command::Open => match &state.mode {
             Mode::RepoSelect => Some(Action::OpenRepo),
-            Mode::BranchSelect(_) if state.loading_branches => None,
+            Mode::BranchSelect(_) if state.branch_view.loading => None,
             Mode::BranchSelect(_)
-                if !state.loading_branches
+                if !state.branch_view.loading
                     && !active_query(state).is_empty()
-                    && state.branch_list.filtered.is_empty() =>
+                    && state.branch_view.list.filtered.is_empty() =>
             {
                 Some(Action::StartNewBranch)
             }
@@ -133,7 +133,7 @@ fn command_to_action(command: Command, state: &AppState) -> Option<Action> {
             }
         }
         Command::NewBranch => (matches!(state.mode, Mode::BranchSelect(_))
-            && !state.loading_branches)
+            && !state.branch_view.loading)
             .then_some(Action::StartNewBranch),
         Command::Delete => {
             matches!(state.mode, Mode::BranchSelect(_)).then_some(Action::DeleteWorktree)
@@ -157,7 +157,7 @@ fn command_to_action(command: Command, state: &AppState) -> Option<Action> {
 fn active_query(state: &AppState) -> &str {
     match &state.mode {
         Mode::RepoSelect => &state.repo_list.input.text,
-        Mode::BranchSelect(_) => &state.branch_list.input.text,
+        Mode::BranchSelect(_) => &state.branch_view.list.input.text,
         Mode::SelectBaseBranch { flow, .. } => &flow.list.input.text,
         Mode::Loading { .. }
         | Mode::ValidatingNewBranch { .. }
@@ -268,9 +268,9 @@ mod tests {
             repo_path: "/repo".into(),
             repo_name: "repo".into(),
         });
-        state.branch_list.input.text = "feat/new".into();
-        state.branch_list.filtered.clear();
-        state.loading_branches = true;
+        state.branch_view.list.input.text = "feat/new".into();
+        state.branch_view.list.filtered.clear();
+        state.branch_view.loading = true;
         let keys = KeysConfig::default();
 
         assert_eq!(
@@ -286,7 +286,7 @@ mod tests {
             None
         );
 
-        state.loading_branches = false;
+        state.branch_view.loading = false;
         assert_eq!(
             resolve_action(
                 key(KeyCode::Char('o'), KeyModifiers::CONTROL),

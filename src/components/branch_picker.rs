@@ -41,16 +41,17 @@ pub fn draw(
             border_color: theme.secondary,
             muted_color: theme.muted,
         },
-        &state.branch_list.input.text,
-        state.branch_list.input.cursor,
+        &state.branch_view.list.input.text,
+        state.branch_view.list.input.cursor,
     );
 
     state.active_list_rows = usize::from(list_area.height.saturating_sub(2)).max(1);
     state
-        .branch_list
+        .branch_view
+        .list
         .update_scroll_offset(state.active_list_rows);
-    let visible = state.branch_list.visible_items(state.active_list_rows);
-    let selected = state.branch_list.selected.and_then(|selected| {
+    let visible = state.branch_view.list.visible_items(state.active_list_rows);
+    let selected = state.branch_view.list.selected.and_then(|selected| {
         visible
             .iter()
             .position(|(position, _)| *position == selected)
@@ -58,19 +59,21 @@ pub fn draw(
     let row_width = usize::from(list_area.width.saturating_sub(4));
     let mut items: Vec<_> = visible
         .iter()
-        .filter_map(|(_, index)| state.branches.get(*index))
+        .filter_map(|(_, index)| state.branch_view.entries.get(*index))
         .map(|branch| branch_item(branch, theme, row_width))
         .collect();
-    if state.loading_branches && items.is_empty() {
+    if state.branch_view.loading && items.is_empty() {
         items.push(ListItem::new(Span::styled(
             "Loading branches…",
             Style::default().fg(theme.muted),
         )));
     }
 
-    let loading_suffix = if state.loading_branches || state.fetching_remote_repo.is_some() {
+    let loading_suffix = if state.branch_view.loading
+        || state.branch_view.fetching_remote_repo.is_some()
+    {
         let frame = (spinner_start.elapsed().as_millis() / 80) as usize % SPINNER_FOR_LOADING.len();
-        let label = if state.loading_branches {
+        let label = if state.branch_view.loading {
             "loading"
         } else {
             "fetching"
@@ -85,8 +88,8 @@ pub fn draw(
                 .borders(Borders::ALL)
                 .title(format!(
                     " {} of {} branches{loading_suffix} ",
-                    state.branch_list.filtered.len(),
-                    state.branches.len()
+                    state.branch_view.list.filtered.len(),
+                    state.branch_view.entries.len()
                 ))
                 .border_style(Style::default().fg(theme.border)),
         )
@@ -158,9 +161,9 @@ mod tests {
             repo_path: "/repo".into(),
             repo_name: "repo".into(),
         });
-        state.branches = BranchEntry::build_remote("origin", &["feature".into()], &[]);
-        state.branch_list = SearchableList::new(1);
-        state.branch_list.selected = None;
+        state.branch_view.entries = BranchEntry::build_remote("origin", &["feature".into()], &[]);
+        state.branch_view.list = SearchableList::new(1);
+        state.branch_view.list.selected = None;
         let theme = Theme::from_config(&crate::config::ThemeConfig::default());
         let backend = TestBackend::new(80, 10);
         let mut terminal = Terminal::new(backend).unwrap();

@@ -10,6 +10,7 @@ pub mod keyboard;
 pub mod keymap;
 pub mod path;
 pub mod pending_delete;
+pub mod screens;
 pub mod setup;
 pub mod spawn;
 pub mod state;
