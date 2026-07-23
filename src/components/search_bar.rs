@@ -80,9 +80,10 @@ pub fn draw(
     search_text: &str,
     cursor: usize,
 ) {
+    let title = crate::display::sanitize(style.title);
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(format!(" {} ", style.title))
+        .title(format!(" {title} "))
         .border_style(Style::default().fg(style.border_color));
     let inner = block.inner(area);
     if search_text.is_empty() {
@@ -99,9 +100,15 @@ pub fn draw(
         }
         return;
     }
-    let slice = visible_slice(search_text, cursor, inner.width);
+    let mut cursor = cursor.min(search_text.len());
+    while !search_text.is_char_boundary(cursor) {
+        cursor = cursor.saturating_sub(1);
+    }
+    let sanitized_cursor = crate::display::sanitize(&search_text[..cursor]).len();
+    let sanitized = crate::display::sanitize(search_text);
+    let slice = visible_slice(&sanitized, sanitized_cursor, inner.width);
     frame.render_widget(
-        Paragraph::new(&search_text[slice.start..slice.end]).block(block),
+        Paragraph::new(&sanitized[slice.start..slice.end]).block(block),
         area,
     );
     if inner.width > 0 && inner.height > 0 {

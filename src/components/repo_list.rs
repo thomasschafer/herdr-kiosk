@@ -49,7 +49,9 @@ pub fn draw(
         .iter()
         .filter_map(|(_, index)| state.repos.get(*index))
         .map(|entry| {
-            let left = [Span::raw(entry.display_name())];
+            let left = [Span::raw(
+                crate::display::sanitize(&entry.display_name()).into_owned(),
+            )];
             let spans = if entry.is_open {
                 right_align_suffix(
                     &left,
@@ -97,4 +99,52 @@ pub fn draw(
     let mut list_state = ListState::default();
     list_state.select(selected);
     frame.render_stateful_widget(list, list_area, &mut list_state);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use ratatui::{Terminal, backend::TestBackend};
+
+    use crate::{
+        git::Repo,
+        state::{AppState, RepoEntry, SearchableList},
+        theme::Theme,
+    };
+
+    use super::draw;
+
+    #[test]
+    fn repo_controls_render_as_visible_text_on_one_row() {
+        let mut state = AppState::new(None);
+        state.loading_repos = false;
+        state.repos = vec![RepoEntry::new(Repo {
+            name: "repo\nname\u{1b}".into(),
+            path: "/repo".into(),
+            worktrees: Vec::new(),
+        })];
+        state.repo_list = SearchableList::new(1);
+        state.repo_list.selected = None;
+        let theme = Theme::from_config(&crate::config::ThemeConfig::default());
+        let backend = TestBackend::new(80, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw(frame, area, &mut state, &theme, Instant::now());
+            })
+            .unwrap();
+
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(rendered.contains("repo\\nname\\u{1b}"));
+        assert!(!rendered.chars().any(char::is_control));
+    }
 }

@@ -30,9 +30,14 @@ pub fn draw(
         .areas(horizontal);
 
     let title = match &state.mode {
-        Mode::ValidatingNewBranch { name, .. } => format!(" New branch \"{name}\" "),
+        Mode::ValidatingNewBranch { name, .. } => {
+            format!(" New branch \"{}\" ", crate::display::sanitize(name))
+        }
         Mode::SelectBaseBranch { flow, .. } => {
-            format!(" New branch \"{}\" — pick base ", flow.new_name)
+            format!(
+                " New branch \"{}\" — pick base ",
+                crate::display::sanitize(&flow.new_name)
+            )
         }
         _ => return,
     };
@@ -85,7 +90,7 @@ pub fn draw(
                 .filtered
                 .iter()
                 .filter_map(|(index, _)| flow.bases.get(*index))
-                .map(|base| ListItem::new(Span::raw(base.clone())))
+                .map(|base| ListItem::new(Span::raw(crate::display::sanitize(base).into_owned())))
                 .collect::<Vec<_>>();
             let list = List::new(items)
                 .block(

@@ -150,9 +150,8 @@ possible without vendoring herdr's theme tables (brittle; rejected).
 What we do instead: render exclusively with ANSI-16 + terminal default fg/bg. Every pane
 in herdr (nvim, htop, …) renders in the host palette, so this is exactly what "matching
 herdr" looks like in practice, and it is what herdr's own `theme.name = "terminal"` mode
-is designed around. Optional polish (M7): query OSC 11 for the background, infer
-light/dark, and pick dim-shade variants accordingly — herdr answers this query. A slim
-`[theme]` config section remains for overrides.
+is designed around. A slim `[theme]` config section provides explicit overrides;
+light-terminal users can set `muted`, `border`, and other colors there.
 
 ## 7. Milestones
 
@@ -282,14 +281,13 @@ the active overlap in help whenever a toast is visible.
 - [x] Setup wizard port (D9): first-run flow writing config to
   `$HERDR_PLUGIN_CONFIG_DIR/config.toml` (path completion, dir management as in kiosk).
 - [x] `[keys]` in-TUI keybinding config; help overlay reflecting actual bindings.
-- [x] Optional OSC 11 light/dark refinement (§6). Error-toast and edge-case polish pass.
+- [x] Terminal-palette theme configuration (§6). Error-toast and edge-case polish pass.
 
 Implemented and locally verified: missing-vs-empty config distinction; welcome → repeated
 directory/path-completion → per-entry depth → confirmation wizard with abort safety and
 atomic guarded config installation; direct continuation into discovery; six slim key
 layers with kiosk-compatible chord syntax, validation, defaults plus overrides/noop;
-mode-specific help generated from effective bindings; bounded pre-ratatui OSC 11 probing
-with 1–4 digit `rgb:` and six-digit `#` parsing; light-background muted-shade refinement;
+mode-specific help generated from effective bindings; explicit ANSI-palette theme colors;
 binding-derived footers and queued-toast counters. The checked kiosk source uses `C-h`
 for help before its printable-character fallback, so `?` remains searchable here too.
 Strict fmt/clippy, 118 unit tests plus the startup integration test, and the full M3–M7
@@ -298,9 +296,9 @@ tmux e2e pass, including first-run/relaunch, the explicit-empty-config path, rem
 
 Reviewed and independently verified (commit a991ce4): 119 tests, lints clean, full
 e2e PASS. Highlights from review: no-replace atomic config install via
-renameatx_np/renameat2 with portable fallback; OSC 11 probe is TTY-guarded with a
-bounded poll and cannot break rendering; light-background adaptation applies only
-when the user has not overridden the affected colors.
+renameatx_np/renameat2 with portable fallback. The OSC 11 startup probe added in M7 was
+removed in Batch 6 to avoid consuming startup input; theme colors now come only from
+configuration defaults and explicit overrides.
 
 ### M8 — Windows (early, then parity forever after)
 - [x] Re-verified against the current herdr 0.7.4 checkout (`a9b28f9`). The relative

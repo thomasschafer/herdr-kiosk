@@ -1654,7 +1654,7 @@ fn draw(
         ])
         .areas(frame.area());
         let mut lines = vec![Line::from(Span::styled(
-            format!("{spinner} {message}"),
+            format!("{spinner} {}", crate::display::sanitize(&message)),
             Style::default()
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
@@ -1806,13 +1806,13 @@ fn draw_delete_dialog(
             )),
             Line::raw(format!(
                 "Force-remove {}?",
-                crate::path::display(&target.worktree_path)
+                crate::display::sanitize(&crate::path::display(&target.worktree_path))
             )),
         ]
     } else {
         vec![Line::raw(format!(
             "Remove checkout {}?",
-            crate::path::display(&target.worktree_path)
+            crate::display::sanitize(&crate::path::display(&target.worktree_path))
         ))]
     };
     if target.open_workspace_id.is_some() {

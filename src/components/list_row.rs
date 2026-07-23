@@ -1,5 +1,6 @@
 use ratatui::text::Span;
-use unicode_width::UnicodeWidthChar;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 pub fn truncate_spans<'a>(spans: &[Span<'a>], max_width: usize) -> Vec<Span<'a>> {
     if max_width == 0 {
@@ -13,12 +14,12 @@ pub fn truncate_spans<'a>(spans: &[Span<'a>], max_width: usize) -> Vec<Span<'a>>
     let mut used = 0;
     for span in spans {
         let mut partial = String::new();
-        for character in span.content.chars() {
-            let width = UnicodeWidthChar::width(character).unwrap_or_default();
+        for grapheme in span.content.graphemes(true) {
+            let width = grapheme.width();
             if used + width >= max_width {
                 break;
             }
-            partial.push(character);
+            partial.push_str(grapheme);
             used += width;
         }
         if !partial.is_empty() {
@@ -67,5 +68,12 @@ mod tests {
         assert_eq!(spans.iter().map(Span::width).sum::<usize>(), 15);
         assert!(text(&spans).ends_with("● open"));
         assert!(text(&spans).contains('…'));
+    }
+
+    #[test]
+    fn truncation_keeps_multi_scalar_graphemes_intact() {
+        let spans = truncate_spans(&[Span::raw("a👩‍💻bc")], 4);
+
+        assert_eq!(text(&spans), "a👩‍💻…");
     }
 }

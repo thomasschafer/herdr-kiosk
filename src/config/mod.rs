@@ -66,11 +66,9 @@ pub struct ThemeConfig {
     /// Warning notification title and setup-warning color.
     pub warning: ThemeColor,
     /// De-emphasized text color for metadata, counts, inactive content, and
-    /// explanatory labels. The untouched default becomes `gray` when a light
-    /// terminal background is detected.
+    /// explanatory labels.
     pub muted: ThemeColor,
-    /// Inactive list-border color. The untouched default becomes `gray` when a
-    /// light terminal background is detected.
+    /// Inactive list-border color.
     pub border: ThemeColor,
     /// Keyboard-hint color in dialogs, setup, and notifications.
     pub hint: ThemeColor,
@@ -148,7 +146,8 @@ pub struct Config {
     /// strings such as `"~/Code"` or inline tables such as
     /// `{ path = "~/Work", depth = 3 }`, and both forms can be mixed.
     pub search_dirs: Vec<SearchDirEntry>,
-    /// Customize terminal-palette colors used by the picker.
+    /// Customize terminal-palette colors used by the picker. Light-terminal users
+    /// can set `muted`, `border`, and other colors explicitly.
     pub theme: ThemeConfig,
     /// Configure command panes created after opening a new workspace.
     pub on_open: OnOpenConfig,

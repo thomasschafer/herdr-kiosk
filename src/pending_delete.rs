@@ -52,6 +52,12 @@ pub(crate) struct StatePathResolution {
     pub warnings: Vec<ConfigWarning>,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PendingDeleteLoad {
+    pub entries: Vec<PendingWorktreeDelete>,
+    pub warnings: Vec<ConfigWarning>,
+}
+
 pub(crate) fn resolve_state_path(get_env: impl Fn(&str) -> Option<String>) -> StatePathResolution {
     let candidates = [
         get_env("HERDR_PLUGIN_STATE_DIR")
@@ -69,12 +75,17 @@ pub(crate) fn resolve_state_path(get_env: impl Fn(&str) -> Option<String>) -> St
     StatePathResolution { path, warnings }
 }
 
-pub fn load_pending_worktree_deletes() -> Vec<PendingWorktreeDelete> {
+pub fn load_pending_worktree_deletes() -> PendingDeleteLoad {
     let resolution = resolve_state_path(|name| std::env::var(name).ok());
     let Some(path) = resolution.path else {
-        return Vec::new();
+        return PendingDeleteLoad {
+            warnings: resolution.warnings,
+            ..PendingDeleteLoad::default()
+        };
     };
-    load_from(&path).unwrap_or_default()
+    let mut loaded = load_from(&path);
+    loaded.warnings.splice(0..0, resolution.warnings);
+    loaded
 }
 
 pub fn save_pending_worktree_deletes(entries: &[PendingWorktreeDelete]) -> Result<()> {
@@ -84,23 +95,77 @@ pub fn save_pending_worktree_deletes(entries: &[PendingWorktreeDelete]) -> Resul
     save_to(&path, entries)
 }
 
-fn load_from(path: &Path) -> io::Result<Vec<PendingWorktreeDelete>> {
+fn load_from(path: &Path) -> PendingDeleteLoad {
     let contents = match fs::read_to_string(path) {
         Ok(contents) => contents,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return PendingDeleteLoad::default();
+        }
+        Err(error) => return invalid_state(path, &format!("could not be read: {error}")),
     };
-    let Ok(parsed) = toml::from_str::<PendingDeleteFile>(&contents) else {
-        return Ok(Vec::new());
+    let parsed = match toml::from_str::<PendingDeleteFile>(&contents) {
+        Ok(parsed) => parsed,
+        Err(error) => return invalid_state(path, &format!("is malformed: {error}")),
     };
     if parsed.version != STATE_VERSION {
-        return Ok(Vec::new());
+        return invalid_state(
+            path,
+            &format!(
+                "uses unsupported version {} (expected {STATE_VERSION})",
+                parsed.version
+            ),
+        );
     }
-    Ok(parsed
-        .entries
-        .into_iter()
-        .filter(|entry| !entry.is_expired())
-        .collect())
+    PendingDeleteLoad {
+        entries: parsed
+            .entries
+            .into_iter()
+            .filter(|entry| !entry.is_expired())
+            .collect(),
+        warnings: Vec::new(),
+    }
+}
+
+fn invalid_state(path: &Path, reason: &str) -> PendingDeleteLoad {
+    let disposition = match quarantine(path) {
+        Ok(quarantined) => format!("quarantined as {}", quarantined.display()),
+        Err(error) => format!("left in place because quarantine failed: {error}"),
+    };
+    PendingDeleteLoad {
+        entries: Vec::new(),
+        warnings: vec![ConfigWarning {
+            message: format!(
+                "Pending-delete state at {} {reason}; it was {disposition}, and no deletions were resumed",
+                path.display()
+            ),
+        }],
+    }
+}
+
+fn quarantine(path: &Path) -> io::Result<PathBuf> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(FILE_NAME);
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    for attempt in 0..16_u8 {
+        let quarantined = path.with_file_name(format!(
+            "{file_name}.invalid.{}.{nonce}.{attempt}",
+            std::process::id()
+        ));
+        if quarantined.exists() {
+            continue;
+        }
+        fs::rename(path, &quarantined)?;
+        return Ok(quarantined);
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not allocate quarantine path",
+    ))
 }
 
 fn save_to(path: &Path, entries: &[PendingWorktreeDelete]) -> Result<()> {
@@ -250,7 +315,7 @@ mod tests {
         let path = temp.path().join("state/pending.toml");
         let entry = PendingWorktreeDelete::new("/repo".into(), "dev".into(), "/repo-dev".into());
         save_to(&path, std::slice::from_ref(&entry)).unwrap();
-        assert_eq!(load_from(&path).unwrap(), [entry]);
+        assert_eq!(load_from(&path).entries, [entry]);
         save_to(&path, &[]).unwrap();
         assert!(!path.exists());
     }
@@ -267,16 +332,32 @@ mod tests {
             started_at_unix_secs: 0,
         };
         save_to(&path, &[entry]).unwrap();
-        assert!(load_from(&path).unwrap().is_empty());
+        assert!(load_from(&path).entries.is_empty());
     }
 
     #[test]
-    fn malformed_state_is_handled_as_empty() {
+    fn malformed_state_warns_and_is_quarantined_without_resuming_deletions() {
         let temp = tempdir().unwrap();
         let path = temp.path().join("pending.toml");
         fs::write(&path, "not = [valid toml").unwrap();
 
-        assert!(load_from(&path).unwrap().is_empty());
+        let loaded = load_from(&path);
+
+        assert!(loaded.entries.is_empty());
+        assert_eq!(loaded.warnings.len(), 1);
+        assert!(loaded.warnings[0].message.contains("is malformed"));
+        assert!(
+            loaded.warnings[0]
+                .message
+                .contains("no deletions were resumed")
+        );
+        assert!(!path.exists());
+        assert!(fs::read_dir(temp.path()).unwrap().flatten().any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("pending.toml.invalid.")
+        }));
     }
 
     #[test]

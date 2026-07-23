@@ -30,6 +30,7 @@ pub fn draw(
     let repo_name = state
         .branch_context()
         .map_or("?", |context| context.repo_name.as_str());
+    let repo_name = crate::display::sanitize(repo_name);
     let title = format!("{repo_name} — select branch");
     super::search_bar::draw(
         frame,
@@ -105,11 +106,13 @@ pub fn draw(
 fn branch_item(branch: &BranchEntry, theme: &Theme, row_width: usize) -> ListItem<'static> {
     let mut left = if branch.remote.is_some() {
         vec![Span::styled(
-            branch.display_name(),
+            crate::display::sanitize(&branch.display_name()).into_owned(),
             Style::default().fg(theme.muted).add_modifier(Modifier::DIM),
         )]
     } else {
-        vec![Span::raw(branch.name.clone())]
+        vec![Span::raw(
+            crate::display::sanitize(&branch.name).into_owned(),
+        )]
     };
     if branch.remote.is_none() && branch.worktree_path.is_some() {
         left.push(Span::styled(

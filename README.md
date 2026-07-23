@@ -84,7 +84,8 @@ Accepted forms:
 
 ### `[theme]`
 
-Customize terminal-palette colors used by the picker.
+Customize terminal-palette colors used by the picker. Light-terminal users
+can set `muted`, `border`, and other colors explicitly.
 
 Colors use the terminal's ANSI palette and can be `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `white`, `gray`, `dark_gray`, `reset`.
 

@@ -19,7 +19,7 @@ use herdr_kiosk::{
     path, pending_delete,
     setup::{self, SetupState, SetupStep},
     state::{AppState, ToastKind},
-    theme::{self, Theme},
+    theme::Theme,
 };
 
 struct TerminalRestoreGuard;
@@ -48,8 +48,7 @@ fn start() -> Result<()> {
         .map_err(|error| anyhow::anyhow!("invalid HERDR_PLUGIN_CONTEXT_JSON: {error}"))?
         .unwrap_or_default();
 
-    let background = theme::query_background_tone(std::time::Duration::from_millis(60));
-    let theme = Theme::from_config_with_background(&loaded.config.theme, background);
+    let theme = Theme::from_config(&loaded.config.theme);
     let _restore_guard = TerminalRestoreGuard;
     let mut terminal = ratatui::try_init()?;
     if !loaded.exists
@@ -76,7 +75,9 @@ fn start() -> Result<()> {
         .map(|path| std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path)));
     let mut state = AppState::new(current_cwd);
     state.on_open = loaded.config.on_open.clone();
-    state.pending_worktree_deletes = pending_delete::load_pending_worktree_deletes();
+    let pending_deletes = pending_delete::load_pending_worktree_deletes();
+    state.pending_worktree_deletes = pending_deletes.entries;
+    warnings.extend(pending_deletes.warnings);
     for ConfigWarning { message } in warnings {
         state.push_toast(ToastKind::Warning, message);
     }
@@ -102,7 +103,7 @@ fn run_setup_wizard(
 ) -> Result<Option<Vec<config::SearchDirEntry>>> {
     let mut state = SetupState::default();
     let home = user_home_dir();
-    let path_display = path::display(config_path).into_owned();
+    let path_display = herdr_kiosk::display::sanitize(&path::display(config_path)).into_owned();
     loop {
         terminal.draw(|frame| components::setup::draw(frame, &state, theme, &path_display))?;
         let Event::Key(key) = ct_event::read()? else {
@@ -221,7 +222,12 @@ fn handle_depth_key(state: &mut SetupState, key: KeyEvent, home: Option<&std::pa
 fn run_no_search_dirs(terminal: &mut DefaultTerminal, path: Option<&PathBuf>) -> Result<()> {
     let location = path.map_or_else(
         || "No trusted config path could be resolved.".to_string(),
-        |path| format!("Config path: {}", path::display(path)),
+        |path| {
+            format!(
+                "Config path: {}",
+                herdr_kiosk::display::sanitize(&path::display(path))
+            )
+        },
     );
     loop {
         terminal.draw(|frame| draw_no_search_dirs(frame, &location))?;

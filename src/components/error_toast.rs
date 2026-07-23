@@ -42,7 +42,7 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys
             format!("{label}: "),
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ),
-        Span::raw(&toast.message),
+        Span::raw(crate::display::sanitize(&toast.message).into_owned()),
         Span::styled(
             counter.unwrap_or_default(),
             Style::default().fg(theme.muted),

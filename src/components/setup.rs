@@ -56,7 +56,7 @@ fn draw_welcome(frame: &mut Frame, area: Rect, theme: &Theme, path: &str) {
         Line::raw(""),
         Line::from(vec![
             Span::styled("Config: ", Style::default().fg(theme.muted)),
-            Span::raw(path.to_string()),
+            Span::raw(crate::display::sanitize(path).into_owned()),
         ]),
         Line::raw(""),
         Line::from(vec![
@@ -125,7 +125,7 @@ fn draw_directories(frame: &mut Frame, area: Rect, state: &SetupState, theme: &T
             .map(|entry| {
                 ListItem::new(Line::from(vec![
                     Span::styled("✓ ", Style::default().fg(theme.open)),
-                    Span::raw(&entry.path),
+                    Span::raw(crate::display::sanitize(&entry.path).into_owned()),
                     Span::styled(
                         format!("  depth {}", entry.depth),
                         Style::default().fg(theme.muted),
@@ -145,7 +145,7 @@ fn draw_directories(frame: &mut Frame, area: Rect, state: &SetupState, theme: &T
     };
     let message = state.message.as_deref().unwrap_or(default_message);
     frame.render_widget(
-        Paragraph::new(message)
+        Paragraph::new(crate::display::sanitize(message))
             .style(Style::default().fg(if state.message.is_some() {
                 theme.warning
             } else {
@@ -188,7 +188,7 @@ fn draw_directory_auxiliary(
                 } else {
                     "  "
                 };
-                ListItem::new(format!("{marker}{value}"))
+                ListItem::new(format!("{marker}{}", crate::display::sanitize(value)))
             })
             .collect::<Vec<_>>();
         frame.render_widget(
@@ -212,14 +212,18 @@ fn draw_confirm(frame: &mut Frame, area: Rect, state: &SetupState, theme: &Theme
     for entry in &state.dirs {
         lines.push(Line::from(vec![
             Span::styled("✓ ", Style::default().fg(theme.open)),
-            Span::raw(format!("{}  (depth {})", entry.path, entry.depth)),
+            Span::raw(format!(
+                "{}  (depth {})",
+                crate::display::sanitize(&entry.path),
+                entry.depth
+            )),
         ]));
     }
     lines.extend([
         Line::raw(""),
         Line::from(vec![
             Span::styled("Write to: ", Style::default().fg(theme.muted)),
-            Span::raw(path.to_string()),
+            Span::raw(crate::display::sanitize(path).into_owned()),
         ]),
         Line::raw(""),
         Line::from(vec![

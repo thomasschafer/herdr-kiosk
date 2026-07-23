@@ -172,15 +172,30 @@ impl GitProvider for CliGitProvider {
         repo_path: &Path,
         local_branches: &[String],
     ) -> Result<Option<String>> {
-        let output = Command::new("git")
-            .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
+        let remotes = Command::new("git")
+            .arg("remote")
             .current_dir(repo_path)
             .output()
             .with_context(|| format!("failed to run git in {}", repo_path.display()))?;
-        if output.status.success() {
-            let refname = String::from_utf8_lossy(&output.stdout);
-            if let Some(branch) = refname.trim().strip_prefix("refs/remotes/origin/") {
-                return Ok(Some(branch.to_string()));
+        if remotes.status.success() {
+            let mut remotes = lines(&remotes.stdout);
+            if let Some(origin) = remotes.iter().position(|remote| remote == "origin") {
+                remotes.swap(0, origin);
+            }
+            for remote in remotes {
+                let remote_head = format!("refs/remotes/{remote}/HEAD");
+                let output = Command::new("git")
+                    .args(["symbolic-ref", &remote_head])
+                    .current_dir(repo_path)
+                    .output()
+                    .with_context(|| format!("failed to run git in {}", repo_path.display()))?;
+                if output.status.success() {
+                    let prefix = format!("refs/remotes/{remote}/");
+                    let refname = String::from_utf8_lossy(&output.stdout);
+                    if let Some(branch) = refname.trim().strip_prefix(&prefix) {
+                        return Ok(Some(branch.to_string()));
+                    }
+                }
             }
         }
 
@@ -680,6 +695,45 @@ mod tests {
                 .unwrap()
                 .items,
             ["main"]
+        );
+    }
+
+    #[test]
+    fn upstream_remote_head_marks_trunk_as_default() {
+        let temp = TempDir::new().unwrap();
+        let repo = repo_fixture(temp.path(), "repo");
+        run_test_git(&repo, &["branch", "trunk"]);
+        run_test_git(
+            &repo,
+            &["remote", "add", "upstream", temp.path().to_str().unwrap()],
+        );
+        run_test_git(
+            &repo,
+            &[
+                "symbolic-ref",
+                "refs/remotes/upstream/HEAD",
+                "refs/remotes/upstream/trunk",
+            ],
+        );
+        let provider = CliGitProvider;
+        let local = provider.list_branches(&repo).unwrap().items;
+        let default = provider.default_branch(&repo, &local).unwrap();
+        let entries = crate::state::BranchEntry::build_local(
+            &Repo {
+                name: "repo".into(),
+                path: repo,
+                worktrees: Vec::new(),
+            },
+            &local,
+            default.as_deref(),
+            None,
+        );
+
+        assert_eq!(default.as_deref(), Some("trunk"));
+        assert!(
+            entries
+                .iter()
+                .any(|branch| branch.name == "trunk" && branch.is_default)
         );
     }
 
