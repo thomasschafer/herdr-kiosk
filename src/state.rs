@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 use serde::{Deserialize, Serialize};
@@ -240,6 +241,7 @@ pub struct AppState {
     pub mode: Mode,
     pub toasts: VecDeque<Toast>,
     toast_messages: HashSet<String>,
+    front_toast_since: Option<Instant>,
     scan_warning_count: usize,
     pub help_overlay: Option<HelpOverlayState>,
     pub active_list_rows: usize,
@@ -257,6 +259,7 @@ impl AppState {
             mode: Mode::RepoSelect,
             toasts: VecDeque::new(),
             toast_messages: HashSet::new(),
+            front_toast_since: None,
             scan_warning_count: 0,
             help_overlay: None,
             active_list_rows: 1,
@@ -321,6 +324,23 @@ impl AppState {
         if let Some(toast) = self.toasts.pop_front() {
             self.toast_messages.remove(&toast.message);
         }
+        self.front_toast_since = None;
+    }
+
+    pub fn tick_toasts(&mut self, now: Instant, ttl: Duration) -> bool {
+        if self.toasts.is_empty() {
+            self.front_toast_since = None;
+            return false;
+        }
+        let Some(since) = self.front_toast_since else {
+            self.front_toast_since = Some(now);
+            return false;
+        };
+        if now.saturating_duration_since(since) < ttl {
+            return false;
+        }
+        self.dismiss_toast();
+        true
     }
 
     fn push_toast_with_category(
@@ -335,6 +355,7 @@ impl AppState {
         if message.is_empty() || self.toast_messages.contains(&message) {
             return;
         }
+        let queue_was_empty = self.toasts.is_empty();
         if self.toasts.len() == MAX_RETAINED_TOASTS {
             let warning = self
                 .toasts
@@ -348,6 +369,9 @@ impl AppState {
             let Some(remove) = remove else {
                 return;
             };
+            if remove == 0 {
+                self.front_toast_since = None;
+            }
             if let Some(removed) = self.toasts.remove(remove) {
                 self.toast_messages.remove(&removed.message);
             }
@@ -358,6 +382,9 @@ impl AppState {
             message,
             category,
         });
+        if queue_was_empty {
+            self.front_toast_since = None;
+        }
     }
 }
 
@@ -568,6 +595,64 @@ mod tests {
         );
         state.dismiss_toast();
         assert_eq!(state.toast_messages.len(), state.toasts.len());
+    }
+
+    #[test]
+    fn toast_timer_arms_and_dismisses_at_the_ttl() {
+        let mut state = AppState::new(None);
+        let start = Instant::now();
+        let ttl = Duration::from_secs(5);
+        let before_ttl = ttl.saturating_sub(Duration::from_millis(1));
+        state.push_toast(ToastKind::Warning, "first");
+
+        assert!(!state.tick_toasts(start, ttl));
+        assert!(!state.tick_toasts(start + before_ttl, ttl));
+        assert_eq!(state.toasts.len(), 1);
+        assert!(state.tick_toasts(start + ttl, ttl));
+        assert!(state.toasts.is_empty());
+        assert!(!state.tick_toasts(start + ttl, ttl));
+    }
+
+    #[test]
+    fn queued_toast_does_not_restart_the_front_timer_and_gets_a_fresh_ttl() {
+        let mut state = AppState::new(None);
+        let start = Instant::now();
+        let ttl = Duration::from_secs(5);
+        let before_ttl = ttl.saturating_sub(Duration::from_millis(1));
+        state.push_toast(ToastKind::Warning, "first");
+        assert!(!state.tick_toasts(start, ttl));
+
+        state.push_toast(ToastKind::Error, "second");
+        assert!(!state.tick_toasts(start + Duration::from_secs(4), ttl));
+        assert!(state.tick_toasts(start + ttl, ttl));
+        assert_eq!(
+            state.toasts.front().map(|toast| toast.message.as_str()),
+            Some("second")
+        );
+
+        let second_start = start + ttl + Duration::from_millis(40);
+        assert!(!state.tick_toasts(second_start, ttl));
+        assert!(!state.tick_toasts(second_start + before_ttl, ttl));
+        assert!(state.tick_toasts(second_start + ttl, ttl));
+        assert!(state.toasts.is_empty());
+    }
+
+    #[test]
+    fn manual_dismiss_gives_the_next_toast_a_fresh_ttl() {
+        let mut state = AppState::new(None);
+        let start = Instant::now();
+        let ttl = Duration::from_secs(5);
+        let before_ttl = ttl.saturating_sub(Duration::from_millis(1));
+        state.push_toast(ToastKind::Warning, "first");
+        state.push_toast(ToastKind::Error, "second");
+        assert!(!state.tick_toasts(start, ttl));
+
+        let second_start = start + Duration::from_secs(4);
+        state.dismiss_toast();
+        assert!(!state.tick_toasts(second_start, ttl));
+        assert!(!state.tick_toasts(second_start + before_ttl, ttl));
+        assert!(state.tick_toasts(second_start + ttl, ttl));
+        assert!(state.toasts.is_empty());
     }
 
     #[test]

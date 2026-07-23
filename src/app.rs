@@ -40,6 +40,7 @@ use crate::{
 };
 
 const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(40);
+const TOAST_AUTO_DISMISS: Duration = Duration::from_secs(5);
 const MAX_EVENTS_PER_TICK: usize = 256;
 
 #[derive(Debug)]
@@ -185,6 +186,9 @@ pub fn run(
     }
 
     let outcome = loop {
+        if state.tick_toasts(Instant::now(), TOAST_AUTO_DISMISS) {
+            redraw.mark_dirty();
+        }
         if redraw.take(animation_active(state)) {
             terminal.draw(|frame| draw(frame, state, theme, keys, spinner_start))?;
         }

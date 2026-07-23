@@ -24,14 +24,7 @@ impl<'a> Dialog<'a> {
     pub fn render(&self, frame: &mut Frame, area: Rect) {
         let width = area.width.saturating_sub(4).clamp(20, 100);
         let text_width = width.saturating_sub(6).max(1);
-        let content_height = self
-            .lines
-            .iter()
-            .map(|line| {
-                let width = u16::try_from(line.width()).unwrap_or(u16::MAX);
-                width.max(1).div_ceil(text_width)
-            })
-            .sum::<u16>();
+        let content_height = super::wrapped_content_height(&self.lines, text_width);
         let height = content_height.saturating_add(4).min(area.height.max(1));
         let [horizontal] = Layout::horizontal([Constraint::Length(width)])
             .flex(Flex::Center)
