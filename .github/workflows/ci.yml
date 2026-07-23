@@ -57,7 +57,7 @@ jobs:
 
       - name: Check generated README
         if: runner.os == 'Linux'
-        run: cargo run --locked --package xtask -- readme --check
+        run: cargo --locked xtask readme --check
 
       - name: Validate PowerShell syntax
         if: runner.os == 'Windows'

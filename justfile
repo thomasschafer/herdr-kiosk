@@ -14,7 +14,7 @@ readme:
     cargo xtask readme
 
 readme-check:
-    cargo run --locked --package xtask -- readme --check
+    cargo --locked xtask readme --check
 
 e2e:
     ./scripts/e2e.sh
