@@ -2,7 +2,7 @@ id = "thomasschafer.herdr-kiosk"
 name = "Kiosk"
 version = "0.1.0"
 min_herdr_version = "0.7.4"
-description = "Fuzzy-find Git repositories and branches and open them as Herdr workspaces."
+description = "Fuzzy-find Git repos and branches — or any folder — and open them as Herdr workspaces/worktrees."
 platforms = ["linux", "macos", "windows"]
 
 [[panes]]
