@@ -7,7 +7,7 @@ publish = false
 [dependencies]
 anyhow = "1"
 herdr-kiosk = { path = ".." }
-syn = { version = "2", features = ["full", "parsing"] }
+syn = { version = "3", features = ["full", "parsing"] }
 toml = "0.9"
 
 [lints]
