@@ -13,10 +13,6 @@ Install from GitHub:
 herdr plugin install thomasschafer/herdr-kiosk
 ```
 
-On Linux and macOS, the installer downloads the matching release binary, verifies
-its SHA-256 checksum, and falls back to `cargo build --release` when necessary.
-Windows builds from source with Cargo for now.
-
 Add a keybinding to open the picker (here, `prefix+f`):
 
 ```toml
@@ -27,7 +23,7 @@ command = "thomasschafer.herdr-kiosk.open-picker"
 description = "open repo picker"
 ```
 
-Reload Herdr's configuration:
+Then reload Herdr's configuration:
 
 ```sh
 herdr server reload-config
@@ -45,9 +41,9 @@ from GitHub to update to a newer version.
 
 ## Usage
 
-Type to fuzzy-search repositories and branches — and plain folders, if you enable
-`include_non_git`. `enter` opens the selected checkout or folder, `tab` opens a
-repository's branch view (Git repositories only), and `ctrl+h` shows all active bindings
+Type to fuzzy-search repositories and branches (and plain folders, if you enable
+`include_non_git`). `enter` opens the selected checkout or folder, `tab` opens a
+repository's branch view (for Git repositories), and `ctrl+h` shows all active bindings
 for the current view.
 
 ## Configuration
@@ -196,24 +192,7 @@ Defaults:
 ## Windows support
 
 Windows is supported and uses PowerShell launch shims plus a native
-`x86_64-pc-windows-msvc` binary. Installation currently needs Rust and Cargo because
-the PowerShell fetch path is not implemented yet.
-
-Automated Windows CI covers formatting, compilation, clippy, tests, and PowerShell
-syntax. Before relying on it in a critical workflow, hand-test popup opening and
-install/link paths, drive-letter and UNC search paths, Git-for-Windows error text,
-remote authentication with prompts disabled, and linked worktree creation/deletion.
-Herdr's verbatim `\\?\` and `\\?\UNC\` plugin paths are normalized by the launchers,
-but those paths remain part of the manual release check.
-
-## Trust and security
-
-Herdr does not sandbox or review plugins: their build and runtime commands run as
-your user with your environment and full Herdr CLI access. During installation,
-this plugin downloads and verifies a release binary or runs Cargo. At runtime it
-executes `git` to inspect repositories and branches and the `herdr` CLI to open,
-focus, create, and remove Herdr worktrees and workspaces. Review the manifest,
-scripts, and source before installing if that access is not acceptable.
+`x86_64-pc-windows-msvc` binary. Installation currently needs Rust and Cargo.
 
 ## Development
 
