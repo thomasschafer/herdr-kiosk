@@ -5,16 +5,16 @@ build:
 
 lint:
     cargo fmt --all --check
-    cargo clippy --all-targets -- -D warnings
+    cargo clippy --locked --workspace --all-targets -- -D warnings
 
 test:
-    cargo test
+    cargo test --locked --workspace --all-targets
 
 readme:
     cargo xtask readme
 
 readme-check:
-    cargo xtask readme --check
+    cargo --locked xtask readme --check
 
 e2e:
     ./scripts/e2e.sh
