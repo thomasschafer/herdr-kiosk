@@ -35,7 +35,7 @@ use crate::{
         EventSender, FetchDeduplicator, spawn_git_fetch, spawn_open_folder_panes,
         spawn_remote_branch_loading, spawn_repo_discovery, spawn_workspace_list,
     },
-    state::{AppState, BranchId, Mode, SearchableList},
+    state::{AppState, BranchEntry, BranchId, Mode, SearchableList},
     theme::Theme,
 };
 
@@ -82,6 +82,29 @@ pub(crate) struct FilterRequest {
     pub(crate) query: String,
     pub(crate) items: Vec<FilterItem>,
     pub(crate) selected: Option<FilterKey>,
+    pub(crate) ordering: FilterOrdering,
+}
+
+pub(crate) enum FilterOrdering {
+    Alphabetical,
+    Recency(HashMap<FilterKey, usize>),
+}
+
+impl FilterOrdering {
+    fn apply(&self, matches: &mut [(FilterKey, i64)]) {
+        let Self::Recency(ranks) = self else {
+            return;
+        };
+        matches.sort_by(|(left_key, left_score), (right_key, right_score)| {
+            right_score.cmp(left_score).then_with(|| {
+                ranks
+                    .get(left_key)
+                    .copied()
+                    .unwrap_or(usize::MAX)
+                    .cmp(&ranks.get(right_key).copied().unwrap_or(usize::MAX))
+            })
+        });
+    }
 }
 
 pub(crate) struct FilterWorker {
@@ -109,7 +132,8 @@ impl FilterWorker {
                     }
                     request.take().unwrap()
                 };
-                let filtered = fuzzy_filter(&request.query, &request.items, &matcher);
+                let mut filtered = fuzzy_filter(&request.query, &request.items, &matcher);
+                request.ordering.apply(&mut filtered);
                 sender.send(AppEvent::FilterCompleted {
                     target: request.target,
                     generation: request.generation,
@@ -392,6 +416,16 @@ pub(crate) fn process_action(
         Action::StartNewBranch => crate::screens::new_branch::start(state, git, herdr, sender),
         Action::CreateNewBranch => crate::screens::new_branch::create(state, herdr, sender),
         Action::DeleteWorktree => crate::screens::delete::begin(state),
+        Action::ToggleSort => {
+            state.sort_order = state.sort_order.toggled();
+            if matches!(state.mode, Mode::RepoSelect) {
+                state.repo_view.selection_touched = true;
+                crate::screens::repo::queue_filter(state, filter_worker, true);
+            } else if matches!(state.mode, Mode::BranchSelect(_)) {
+                let selected = state.selected_branch().map(BranchEntry::id);
+                crate::screens::branch::queue_filter(state, filter_worker, selected);
+            }
+        }
         Action::ConfirmDeleteWorktree => {
             crate::screens::delete::confirm(state, git, herdr, sender);
         }
@@ -479,6 +513,7 @@ fn queue_help_filter(state: &mut AppState, worker: &FilterWorker, selected_index
             })
             .collect(),
         selected: selected_index.map(FilterKey::Help),
+        ordering: FilterOrdering::Alphabetical,
     });
 }
 
@@ -592,7 +627,7 @@ pub(crate) fn draw(
         }
     }
     let binding_mode = KeysConfig::mode_for(&state.mode);
-    let footer = footer_spans(keys, binding_mode, &state.mode, theme);
+    let footer = footer_spans(keys, binding_mode, &state.mode, state.sort_order, theme);
     frame.render_widget(
         Paragraph::new(Line::from(footer)).alignment(Alignment::Center),
         footer_area,
@@ -624,6 +659,7 @@ fn footer_spans<'a>(
     keys: &KeysConfig,
     binding_mode: BindingMode,
     mode: &Mode,
+    sort_order: crate::config::SortOrder,
     theme: &Theme,
 ) -> Vec<Span<'a>> {
     let mut hints = Vec::new();
@@ -667,6 +703,9 @@ fn footer_spans<'a>(
         add(Command::NewBranch, "new");
         add(Command::Delete, "delete");
     }
+    if matches!(mode, Mode::RepoSelect | Mode::BranchSelect(_)) {
+        add(Command::ToggleSort, "sort");
+    }
     if matches!(
         mode,
         Mode::BranchSelect(_) | Mode::SelectBaseBranch { .. } | Mode::ConfirmWorktreeDelete(_)
@@ -677,6 +716,13 @@ fn footer_spans<'a>(
     }
     add(Command::Help, "help");
     add(Command::Quit, "quit");
+    if matches!(mode, Mode::RepoSelect | Mode::BranchSelect(_)) {
+        hints.push(Span::raw("  "));
+        hints.push(Span::styled(
+            format!("sort: {}", sort_order.label()),
+            Style::default().fg(theme.muted),
+        ));
+    }
     hints
 }
 
@@ -781,6 +827,65 @@ mod tests {
             names(&fuzzy_filter("foo", &foo_items, &SkimMatcherV2::default())),
             ["afoo", "bfoo", "cfoo"]
         );
+    }
+
+    #[test]
+    fn recency_reorders_only_equal_fuzzy_scores_and_alphabetical_is_pure() {
+        let alpha = FilterKey::Branch("alpha".into());
+        let beta = FilterKey::Branch("beta".into());
+        let gamma = FilterKey::Branch("gamma".into());
+        let baseline = vec![
+            (alpha.clone(), 100),
+            (beta.clone(), 100),
+            (gamma.clone(), 90),
+        ];
+        let ranks = HashMap::from([(beta.clone(), 0), (gamma.clone(), 1)]);
+
+        let mut alphabetical = baseline.clone();
+        FilterOrdering::Alphabetical.apply(&mut alphabetical);
+        assert_eq!(alphabetical, baseline);
+
+        let mut recency = baseline;
+        FilterOrdering::Recency(ranks).apply(&mut recency);
+        assert_eq!(recency, [(beta, 100), (alpha, 100), (gamma, 90)]);
+    }
+
+    #[test]
+    fn toggle_action_flips_sort_and_footer_reports_the_active_mode() {
+        let git = Arc::new(MockGitProvider::default()) as Arc<dyn GitProvider>;
+        let (sender, _rx) = sender();
+        let worker = FilterWorker::spawn(sender.clone());
+        let keys = KeysConfig::default();
+        let theme = Theme::from_config(&crate::config::ThemeConfig::default());
+        let mut state = state_with_repo();
+
+        assert_eq!(
+            keys.command_for(BindingMode::Repo, "C-r".parse().unwrap()),
+            Some(Command::ToggleSort)
+        );
+        process_action(
+            Action::ToggleSort,
+            &mut state,
+            &git,
+            None,
+            &sender,
+            &worker,
+            &keys,
+        );
+
+        assert_eq!(state.sort_order, crate::config::SortOrder::Recency);
+        let footer = footer_spans(
+            &keys,
+            BindingMode::Repo,
+            &state.mode,
+            state.sort_order,
+            &theme,
+        )
+        .into_iter()
+        .map(|span| span.content.into_owned())
+        .collect::<String>();
+        assert!(footer.contains("ctrl+r sort"));
+        assert!(footer.contains("sort: recency"));
     }
 
     #[test]

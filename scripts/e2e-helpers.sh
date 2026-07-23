@@ -86,6 +86,20 @@ assert_screen_line_contains_all() {
     done
 }
 
+assert_screen_line_before() {
+    local first=$1
+    local second=$2
+    local first_line
+    local second_line
+    capture
+    first_line=$(grep -Fn -m1 "$first" "$LAST_SCREEN" | cut -d: -f1)
+    second_line=$(grep -Fn -m1 "$second" "$LAST_SCREEN" | cut -d: -f1)
+    [ -n "$first_line" ] || fail "screen had no line containing: $first"
+    [ -n "$second_line" ] || fail "screen had no line containing: $second"
+    [ "$first_line" -lt "$second_line" ] \
+        || fail "'$first' was not before '$second'"
+}
+
 assert_focused_checkout() {
     local checkout=$1
     local workspaces

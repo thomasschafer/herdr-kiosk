@@ -88,6 +88,14 @@ entries can override this value with their own `include_non_git` setting.
 
 Default: `false`
 
+#### `sort`
+
+Order repository and branch results. `alphabetical` is the default and
+ignores recency state entirely; `recency` puts the most recently opened
+entries first while retaining alphabetical fallback ordering.
+
+Default: `"alphabetical"`
+
 ### `[theme]`
 
 Customize terminal-palette colors used by the picker. Light-terminal users
@@ -175,12 +183,14 @@ Defaults:
 "esc" = "back"
 
 [keys.repo_select]
+"ctrl+r" = "toggle_sort"
 "enter" = "open"
 "q" = "quit"
 "tab" = "branches_view"
 
 [keys.branch_select]
 "ctrl+o" = "new_branch"
+"ctrl+r" = "toggle_sort"
 "ctrl+x" = "delete"
 "enter" = "open"
 "esc" = "back"

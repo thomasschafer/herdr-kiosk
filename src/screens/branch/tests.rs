@@ -13,6 +13,7 @@ use crate::{
         FilterWorker, RunOutcome, TickChanges, apply_exit_effects, process_action,
         process_app_event,
     },
+    config::SortOrder,
     config::keys::KeysConfig,
     event::{AppEvent, FilterKey, FilterTarget},
     git::{GitProvider, Repo, Worktree, mock::MockGitProvider},
@@ -22,6 +23,7 @@ use crate::{
         mock::{HerdrCall, MockHerdrProvider},
     },
     keyboard::Action,
+    recency::RecencyKey,
     spawn::EventSender,
     state::{AppState, BranchEntry, BranchId, Mode, RepoEntry, SearchableList},
 };
@@ -987,6 +989,83 @@ fn remote_merges_are_deduplicated_and_sorted_after_locals() {
             ("z-remote", Some("upstream")),
         ]
     );
+}
+
+#[test]
+fn branch_recency_sort_uses_rank_then_existing_order_for_unseen_entries() {
+    let mut state = state_with_branch(false);
+    state.sort_order = SortOrder::Recency;
+    state.branch_view.entries = ["delta", "alpha", "charlie", "bravo"]
+        .into_iter()
+        .map(|name| BranchEntry {
+            name: name.into(),
+            worktree_path: None,
+            is_current: false,
+            is_default: false,
+            remote: None,
+            open_workspace_id: None,
+        })
+        .collect();
+    state.recency.record(RecencyKey::branch(
+        Path::new("/repo"),
+        BranchId::Local("alpha".into()),
+    ));
+    state.recency.record(RecencyKey::branch(
+        Path::new("/repo"),
+        BranchId::Local("delta".into()),
+    ));
+
+    sort_entries(&mut state);
+
+    assert_eq!(
+        state
+            .branch_view
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>(),
+        ["delta", "alpha", "bravo", "charlie"]
+    );
+}
+
+#[test]
+fn branch_recency_defaults_to_previous_while_alphabetical_keeps_current() {
+    let entries = || {
+        ["alpha", "beta"]
+            .into_iter()
+            .map(|name| BranchEntry {
+                name: name.into(),
+                worktree_path: None,
+                is_current: name == "beta",
+                is_default: false,
+                remote: None,
+                open_workspace_id: None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let (sender, _rx) = sender();
+    let worker = FilterWorker::spawn(sender);
+
+    let mut alphabetical = state_with_branch(false);
+    alphabetical.branch_view.entries = entries();
+    alphabetical.branch_view.list = SearchableList::new(2);
+    queue_filter(&mut alphabetical, &worker, None);
+    assert_eq!(alphabetical.selected_branch().unwrap().name, "beta");
+
+    let mut recency = state_with_branch(false);
+    recency.sort_order = SortOrder::Recency;
+    recency.branch_view.entries = entries();
+    recency.branch_view.list = SearchableList::new(2);
+    recency.recency.record(RecencyKey::branch(
+        Path::new("/repo"),
+        BranchId::Local("alpha".into()),
+    ));
+    recency.recency.record(RecencyKey::branch(
+        Path::new("/repo"),
+        BranchId::Local("beta".into()),
+    ));
+    queue_filter(&mut recency, &worker, None);
+    assert_eq!(recency.selected_branch().unwrap().name, "alpha");
 }
 
 #[test]

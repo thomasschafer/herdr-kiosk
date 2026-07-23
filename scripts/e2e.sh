@@ -522,6 +522,42 @@ t send-keys -t "$SESSION" C-c
 wait_screen_absent "open-me — select branch"
 printf 'dirty herdr checkout force confirmation and deletion: ok\n'
 
+cat >"$PLUGIN_CONFIG_DIR/config.toml" <<EOF
+sort = "recency"
+search_dirs = [
+  { path = "$HK_ROOT/repos/alpha", depth = 1 },
+  { path = "$HK_ROOT/repos/beta", depth = 1 },
+]
+EOF
+
+h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
+wait_screen_contains "herdr-kiosk — select repo"
+wait_screen_contains "repo-same (…/alpha)"
+t send-keys -t "$SESSION" alpha
+wait_screen_contains "1 of 2 repos"
+t send-keys -t "$SESSION" Enter
+wait_screen_absent "herdr-kiosk — select repo" 120
+assert_focused_checkout "$HK_ROOT/repos/alpha/repo-same"
+
+h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
+wait_screen_contains "herdr-kiosk — select repo"
+t send-keys -t "$SESSION" beta
+wait_screen_contains "1 of 2 repos"
+t send-keys -t "$SESSION" Enter
+wait_screen_absent "herdr-kiosk — select repo" 120
+assert_focused_checkout "$HK_ROOT/repos/beta/repo-same"
+
+h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
+wait_screen_contains "herdr-kiosk — select repo"
+wait_screen_contains "2 of 2 repos"
+assert_screen_contains "sort: recency"
+assert_screen_line_before "repo-same (…/beta)" "repo-same (…/alpha)"
+assert_screen_line_contains_all "repo-same (…/alpha)" "▸"
+t send-keys -t "$SESSION" Enter
+wait_screen_absent "herdr-kiosk — select repo" 120
+assert_focused_checkout "$HK_ROOT/repos/alpha/repo-same"
+printf 'recency resting order and previous-workspace selection: ok\n'
+
 h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
 wait_screen_contains "herdr-kiosk — select repo"
 t send-keys -t "$SESSION" C-c
