@@ -328,7 +328,7 @@ git -C "$HK_ROOT/repos/direct/open-me" remote add upstream "$HK_ROOT/remote.git"
 t send-keys -t "$SESSION" Tab
 wait_screen_contains "open-me — select branch"
 wait_screen_contains "upstream/remote-only" 120
-assert_screen_contains "origin/remote-only"
+wait_screen_contains "origin/remote-only" 120
 assert_screen_contains "upstream/remote-only"
 capture
 [ "$(grep -Fc "master (worktree)" "$LAST_SCREEN")" = 1 ] \
