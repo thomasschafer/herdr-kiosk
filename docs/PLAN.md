@@ -37,9 +37,8 @@ Product decisions made so far. Add new entries as they're made; don't relitigate
 | D15 | Process | Claude orchestrates/plans/verifies, Codex (gpt-5.6 sol, high reasoning) implements, Tom decides product questions and hand-tests (see §8) |
 | D16 | Version control | Commit each verified chunk and push to `origin main` (github.com/thomasschafer/herdr-kiosk) as we go; no co-author lines. Pause for Tom only when something genuinely needs review |
 | D17 | Performance | Users may have very large repo/branch counts. Correctness first, but weigh allocation, process-spawn, and traversal costs in reviews as a standing concern; pragmatic, not premature |
-| D18 | Help esc | `esc` closes the help overlay, discarding only its overlay-local search query and preserving the underlying picker query |
+| D18 | Help esc | `esc` always closes the help overlay, even with a non-empty help query; the overlay owns and discards its own query, leaving the underlying picker query untouched |
 | D19 | Editor-on-open | Reverses the research §7 "no layout bootstrapping" stance at Tom's request: after opening/creating a workspace, optionally split a pane and run a command (e.g. `hx`), configured via `[on_open]`. Uses herdr `pane split --direction` + `pane run` |
-| D18 | Help search dismissal | Esc always closes the help overlay, even with a non-empty help query. The overlay owns and discards its query, leaving the underlying picker query untouched |
 
 ## 3. Corrections to the research doc (source-verified against herdr 0.7.4)
 
