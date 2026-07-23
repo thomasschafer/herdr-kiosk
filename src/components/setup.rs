@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::{
-    setup::{SetupState, SetupStep},
+    setup::{FolderMode, SetupState, SetupStep},
     theme::Theme,
 };
 
@@ -28,6 +28,9 @@ pub fn draw(frame: &mut Frame, state: &SetupState, theme: &Theme, config_path: &
         SetupStep::Welcome => draw_welcome(frame, area, theme, config_path),
         SetupStep::Directories | SetupStep::Depth { .. } => {
             draw_directories(frame, area, state, theme);
+        }
+        SetupStep::FolderMode { path, depth } => {
+            draw_folder_mode(frame, area, state, theme, path, *depth);
         }
         SetupStep::Confirm => draw_confirm(frame, area, state, theme, config_path),
     }
@@ -123,14 +126,21 @@ fn draw_directories(frame: &mut Frame, area: Rect, state: &SetupState, theme: &T
             .dirs
             .iter()
             .map(|entry| {
-                ListItem::new(Line::from(vec![
+                let mut spans = vec![
                     Span::styled("✓ ", Style::default().fg(theme.open)),
                     Span::raw(crate::display::sanitize(&entry.path).into_owned()),
                     Span::styled(
                         format!("  depth {}", entry.depth),
                         Style::default().fg(theme.muted),
                     ),
-                ]))
+                ];
+                if entry.include_non_git == Some(true) {
+                    spans.push(Span::styled(
+                        "  all folders",
+                        Style::default().fg(theme.muted),
+                    ));
+                }
+                ListItem::new(Line::from(spans))
             })
             .collect()
     };
@@ -198,6 +208,69 @@ fn draw_directory_auxiliary(
     }
 }
 
+fn draw_folder_mode(
+    frame: &mut Frame,
+    area: Rect,
+    state: &SetupState,
+    theme: &Theme,
+    path: &str,
+    depth: u16,
+) {
+    let block = shell("Folder inclusion", theme);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let chunks = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Length(3),
+        Constraint::Length(5),
+        Constraint::Fill(1),
+        Constraint::Length(2),
+    ])
+    .split(inner);
+    frame.render_widget(
+        Paragraph::new("List only git repositories in this directory, or every folder?")
+            .alignment(Alignment::Center),
+        chunks[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Directory: ", Style::default().fg(theme.muted)),
+            Span::raw(crate::display::sanitize(path).into_owned()),
+            Span::styled(format!("  depth {depth}"), Style::default().fg(theme.muted)),
+        ]))
+        .alignment(Alignment::Center),
+        chunks[1],
+    );
+    let options = [
+        (
+            FolderMode::GitRepositoriesOnly,
+            "Git repositories only (default)",
+        ),
+        (FolderMode::AllFolders, "All folders"),
+    ]
+    .into_iter()
+    .map(|(mode, label)| {
+        let selected = state.folder_mode == mode;
+        ListItem::new(format!("{} {label}", if selected { ">" } else { " " })).style(
+            Style::default()
+                .fg(if selected { theme.accent } else { theme.muted })
+                .add_modifier(if selected {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
+        )
+    })
+    .collect::<Vec<_>>();
+    frame.render_widget(List::new(options), chunks[2]);
+    frame.render_widget(
+        Paragraph::new("Up/down select   enter confirm   esc back")
+            .style(Style::default().fg(theme.hint))
+            .alignment(Alignment::Center),
+        chunks[4],
+    );
+}
+
 fn draw_confirm(frame: &mut Frame, area: Rect, state: &SetupState, theme: &Theme, path: &str) {
     let mut lines = vec![
         Line::raw(""),
@@ -240,4 +313,67 @@ fn draw_confirm(frame: &mut Frame, area: Rect, state: &SetupState, theme: &Theme
             .wrap(Wrap { trim: false }),
         area,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    use crate::{
+        config::ThemeConfig,
+        setup::{SetupDir, SetupState, SetupStep},
+        theme::Theme,
+    };
+
+    use super::draw;
+
+    #[test]
+    fn added_directories_tag_only_the_all_folders_mode() {
+        let mut state = SetupState {
+            step: SetupStep::Directories,
+            ..SetupState::default()
+        };
+        state.dirs = vec![
+            SetupDir {
+                path: "~/GitOnly".into(),
+                depth: 1,
+                include_non_git: None,
+            },
+            SetupDir {
+                path: "~/Everything".into(),
+                depth: 2,
+                include_non_git: Some(true),
+            },
+        ];
+        let theme = Theme::from_config(&ThemeConfig::default());
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| draw(frame, &state, &theme, "/config.toml"))
+            .unwrap();
+
+        let rows = terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(100)
+            .map(|cells| {
+                cells
+                    .iter()
+                    .map(ratatui::buffer::Cell::symbol)
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let git_only = rows
+            .iter()
+            .find(|row| row.contains("~/GitOnly"))
+            .expect("git-only directory row");
+        let all_folders = rows
+            .iter()
+            .find(|row| row.contains("~/Everything"))
+            .expect("all-folders directory row");
+        assert!(!git_only.contains("all folders"));
+        assert!(all_folders.contains("all folders"));
+    }
 }

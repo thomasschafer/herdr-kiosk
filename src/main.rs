@@ -125,6 +125,7 @@ fn run_setup_wizard(
                 }
             }
             SetupStep::Depth { .. } => handle_depth_key(&mut state, key, home.as_deref()),
+            SetupStep::FolderMode { .. } => handle_folder_mode_key(&mut state, key),
             SetupStep::Confirm => match key.code {
                 KeyCode::Enter => {
                     let search_dirs = state.search_dirs();
@@ -213,6 +214,20 @@ fn handle_depth_key(state: &mut SetupState, key: KeyEvent, home: Option<&std::pa
             state.depth_default_pristine = false;
             state.input.insert_char(character);
         }
+        _ => {}
+    }
+}
+
+fn handle_folder_mode_key(state: &mut SetupState, key: KeyEvent) {
+    match key.code {
+        KeyCode::Up | KeyCode::Left => state.select_previous_folder_mode(),
+        KeyCode::Down | KeyCode::Right => state.select_next_folder_mode(),
+        KeyCode::Enter => {
+            if let Err(message) = state.commit_folder_mode() {
+                state.message = Some(message.into());
+            }
+        }
+        KeyCode::Esc => state.cancel_folder_mode(),
         _ => {}
     }
 }
@@ -361,5 +376,28 @@ mod tests {
             None,
         );
         assert_eq!(state.input.text, "2");
+    }
+
+    #[test]
+    fn folder_mode_escape_restores_the_depth_for_editing() {
+        let mut state = SetupState::default();
+        state.continue_from_welcome();
+        state.input.text = "/repo".into();
+        state.begin_depth().unwrap();
+        state.input.text = "12".into();
+        state.input.cursor = 2;
+        state.commit_depth().unwrap();
+
+        handle_folder_mode_key(&mut state, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+        assert_eq!(
+            state.step,
+            SetupStep::Depth {
+                path: "/repo".into()
+            }
+        );
+        assert_eq!(state.input.text, "12");
+        assert_eq!(state.input.cursor, 2);
+        assert!(!state.depth_default_pristine);
     }
 }

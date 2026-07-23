@@ -32,7 +32,7 @@ pub enum SearchDirEntry {
         depth: Option<u16>,
         /// Whether to include plain folders for this search root. When omitted,
         /// the global `include_non_git` value is used.
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         include_non_git: Option<bool>,
     },
 }

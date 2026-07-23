@@ -320,9 +320,7 @@ fn walk_repos_with_cancel(
                     continue;
                 };
                 if visited.insert(canonical.clone()) {
-                    if include_non_git {
-                        on_found(&canonical, false);
-                    }
+                    on_found(&canonical, false);
                     if remaining_depth > 1 {
                         pending.push((canonical, remaining_depth - 1, false));
                     }

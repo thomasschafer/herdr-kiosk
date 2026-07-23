@@ -99,6 +99,9 @@ assert_screen_contains "$HK_ROOT/repos/UpperCase"
 assert_screen_contains "No directories added yet"
 t send-keys -t "$SESSION" 1 0
 t send-keys -t "$SESSION" Enter
+wait_screen_contains "Folder inclusion"
+assert_screen_contains "Git repositories only (default)"
+t send-keys -t "$SESSION" Enter
 wait_screen_contains "Search directories"
 wait_screen_contains "$HK_ROOT/repos/UpperCase  depth 10"
 t send-keys -t "$SESSION" Enter

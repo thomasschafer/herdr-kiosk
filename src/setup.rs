@@ -13,6 +13,34 @@ use crate::{config::SearchDirEntry, state::TextInput};
 pub struct SetupDir {
     pub path: String,
     pub depth: u16,
+    pub include_non_git: Option<bool>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum FolderMode {
+    #[default]
+    GitRepositoriesOnly,
+    AllFolders,
+}
+
+impl FolderMode {
+    const fn previous(self) -> Self {
+        match self {
+            Self::GitRepositoriesOnly => Self::AllFolders,
+            Self::AllFolders => Self::GitRepositoriesOnly,
+        }
+    }
+
+    const fn next(self) -> Self {
+        self.previous()
+    }
+
+    const fn include_non_git(self) -> Option<bool> {
+        match self {
+            Self::GitRepositoriesOnly => None,
+            Self::AllFolders => Some(true),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +48,7 @@ pub enum SetupStep {
     Welcome,
     Directories,
     Depth { path: String },
+    FolderMode { path: String, depth: u16 },
     Confirm,
 }
 
@@ -32,6 +61,7 @@ pub struct SetupState {
     pub dirs: Vec<SetupDir>,
     pub message: Option<String>,
     pub depth_default_pristine: bool,
+    pub folder_mode: FolderMode,
 }
 
 impl Default for SetupState {
@@ -44,6 +74,7 @@ impl Default for SetupState {
             dirs: Vec::new(),
             message: None,
             depth_default_pristine: false,
+            folder_mode: FolderMode::default(),
         }
     }
 }
@@ -65,6 +96,7 @@ impl SetupState {
             return Ok(());
         }
         self.step = SetupStep::Depth { path };
+        self.folder_mode = FolderMode::default();
         self.input.text = "1".into();
         self.input.cursor = 1;
         self.depth_default_pristine = true;
@@ -85,9 +117,31 @@ impl SetupState {
         if depth == 0 {
             return Err("Depth must be at least 1".into());
         }
-        let entry = SetupDir {
+        self.step = SetupStep::FolderMode {
             path: path.clone(),
             depth,
+        };
+        self.message = None;
+        self.depth_default_pristine = false;
+        Ok(())
+    }
+
+    pub fn select_previous_folder_mode(&mut self) {
+        self.folder_mode = self.folder_mode.previous();
+    }
+
+    pub fn select_next_folder_mode(&mut self) {
+        self.folder_mode = self.folder_mode.next();
+    }
+
+    pub fn commit_folder_mode(&mut self) -> Result<(), &'static str> {
+        let SetupStep::FolderMode { path, depth } = &self.step else {
+            return Err("not choosing a folder inclusion mode");
+        };
+        let entry = SetupDir {
+            path: path.clone(),
+            depth: *depth,
+            include_non_git: self.folder_mode.include_non_git(),
         };
         if let Some(existing) = self
             .dirs
@@ -101,8 +155,20 @@ impl SetupState {
         self.step = SetupStep::Directories;
         self.input.clear();
         self.message = None;
-        self.depth_default_pristine = false;
         Ok(())
+    }
+
+    pub fn cancel_folder_mode(&mut self) {
+        let SetupStep::FolderMode { path, depth } = &self.step else {
+            return;
+        };
+        let path = path.clone();
+        let depth = depth.to_string();
+        self.step = SetupStep::Depth { path };
+        self.input.text = depth;
+        self.input.cursor = self.input.text.len();
+        self.message = None;
+        self.depth_default_pristine = false;
     }
 
     pub fn cancel_depth(&mut self) {
@@ -154,7 +220,7 @@ impl SetupState {
             .map(|entry| SearchDirEntry::Rich {
                 path: entry.path.clone(),
                 depth: Some(entry.depth),
-                include_non_git: None,
+                include_non_git: entry.include_non_git,
             })
             .collect()
     }
@@ -417,16 +483,19 @@ mod tests {
         state.begin_depth().unwrap();
         state.input.text = "3".into();
         state.commit_depth().unwrap();
+        state.commit_folder_mode().unwrap();
         assert_eq!(state.dirs[0].depth, 3);
         state.input.text = "~/Code".into();
         state.begin_depth().unwrap();
         state.input.text = "2".into();
         state.commit_depth().unwrap();
+        state.commit_folder_mode().unwrap();
         assert_eq!(
             state.dirs,
             [SetupDir {
                 path: "~/Code".into(),
-                depth: 2
+                depth: 2,
+                include_non_git: None,
             }]
         );
         assert!(state.remove_last().is_some());
@@ -532,6 +601,59 @@ mod tests {
         let (parsed, _) = crate::config::parse_config(&contents).unwrap();
         assert_eq!(parsed.search_dirs.len(), 2);
         assert!(contents.contains("depth = 4"));
+    }
+
+    #[test]
+    fn default_folder_mode_omits_the_include_non_git_setting() {
+        let mut state = SetupState::default();
+        state.continue_from_welcome();
+        state.input.text = "~/Code".into();
+        state.begin_depth().unwrap();
+        state.input.text = "2".into();
+        state.commit_depth().unwrap();
+        state.commit_folder_mode().unwrap();
+
+        assert_eq!(state.dirs[0].include_non_git, None);
+        let search_dirs = state.search_dirs();
+        assert_eq!(
+            search_dirs,
+            [SearchDirEntry::Rich {
+                path: "~/Code".into(),
+                depth: Some(2),
+                include_non_git: None,
+            }]
+        );
+        assert!(
+            !config_contents(&search_dirs)
+                .unwrap()
+                .contains("include_non_git")
+        );
+    }
+
+    #[test]
+    fn all_folders_mode_writes_the_include_non_git_setting() {
+        let mut state = SetupState::default();
+        state.continue_from_welcome();
+        state.input.text = "~/Code".into();
+        state.begin_depth().unwrap();
+        state.input.text = "2".into();
+        state.commit_depth().unwrap();
+        state.select_next_folder_mode();
+        state.commit_folder_mode().unwrap();
+
+        assert_eq!(state.dirs[0].include_non_git, Some(true));
+        assert!(matches!(
+            state.search_dirs().as_slice(),
+            [SearchDirEntry::Rich {
+                include_non_git: Some(true),
+                ..
+            }]
+        ));
+        assert!(
+            config_contents(&state.search_dirs())
+                .unwrap()
+                .contains("include_non_git = true")
+        );
     }
 
     #[derive(Default)]
