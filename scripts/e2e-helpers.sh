@@ -115,6 +115,53 @@ print(len(json.load(sys.stdin)["result"]["workspaces"]))
 '
 }
 
+workspace_id_for_cwd() {
+    local cwd=$1
+    h pane list | /usr/bin/python3 -c '
+import json
+import os
+import sys
+
+cwd = os.path.realpath(sys.argv[1])
+for pane in json.load(sys.stdin)["result"]["panes"]:
+    pane_cwd = pane.get("cwd")
+    if pane_cwd and os.path.realpath(pane_cwd) == cwd:
+        print(pane["workspace_id"])
+        break
+else:
+    raise SystemExit(1)
+' "$cwd"
+}
+
+wait_pane_cwd() {
+    local cwd=$1
+    local attempts=${2:-120}
+    local count
+    for ((count = 0; count < attempts; count++)); do
+        if workspace_id_for_cwd "$cwd" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.1
+    done
+    fail "pane cwd did not resolve: $cwd"
+}
+
+assert_focused_workspace() {
+    local workspace_id=$1
+    h workspace list | /usr/bin/python3 -c '
+import json
+import sys
+
+workspace_id = sys.argv[1]
+workspaces = json.load(sys.stdin)["result"]["workspaces"]
+if not any(
+    workspace.get("workspace_id") == workspace_id and workspace.get("focused")
+    for workspace in workspaces
+):
+    raise SystemExit(1)
+' "$workspace_id" || fail "workspace was not focused: $workspace_id"
+}
+
 assert_workspace_absent_checkout() {
     local checkout=$1
     h workspace list | /usr/bin/python3 -c '

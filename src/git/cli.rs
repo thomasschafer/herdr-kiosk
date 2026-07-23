@@ -29,17 +29,24 @@ impl GitProvider for CliGitProvider {
         &self,
         dir: &Path,
         depth: u16,
+        include_non_git: bool,
         is_cancelled: &dyn Fn() -> bool,
         on_found: &dyn Fn(Repo),
     ) -> Result<Vec<ScanWarning>> {
         let mut seen_paths = HashSet::new();
-        walk_repos_with_cancel(dir, depth, is_cancelled, &mut |path| {
-            if seen_paths.insert(path.to_path_buf())
-                && let Some(repo) = Self::build_repo_stub(path)
-            {
-                on_found(repo);
-            }
-        })
+        walk_repos_with_cancel(
+            dir,
+            depth,
+            include_non_git,
+            is_cancelled,
+            &mut |path, is_git| {
+                if seen_paths.insert(path.to_path_buf())
+                    && let Some(repo) = Self::build_repo_stub(path, is_git)
+                {
+                    on_found(repo);
+                }
+            },
+        )
     }
 
     fn list_branches(&self, repo_path: &Path) -> Result<Listed<String>> {
@@ -207,10 +214,11 @@ impl GitProvider for CliGitProvider {
 }
 
 impl CliGitProvider {
-    fn build_repo_stub(path: &Path) -> Option<Repo> {
+    fn build_repo_stub(path: &Path, is_git: bool) -> Option<Repo> {
         Some(Repo {
             name: path.file_name()?.to_string_lossy().into_owned(),
             path: path.to_path_buf(),
+            is_git,
             worktrees: Vec::new(),
         })
     }
@@ -219,8 +227,9 @@ impl CliGitProvider {
 fn walk_repos_with_cancel(
     dir: &Path,
     depth: u16,
+    include_non_git: bool,
     is_cancelled: &dyn Fn() -> bool,
-    on_repo: &mut dyn FnMut(&Path),
+    on_found: &mut dyn FnMut(&Path, bool),
 ) -> Result<Vec<ScanWarning>> {
     if depth == 0 {
         bail!("repository scan depth must be at least 1");
@@ -265,6 +274,9 @@ fn walk_repos_with_cancel(
                     continue;
                 }
             };
+            if entry.file_name() == GIT_DIR_ENTRY {
+                continue;
+            }
             let path = entry.path();
             let file_type = match entry.file_type() {
                 Ok(file_type) => file_type,
@@ -292,21 +304,28 @@ fn walk_repos_with_cancel(
                 }
             };
             if is_repo {
-                let canonical = match fs::canonicalize(&path) {
-                    Ok(canonical) => canonical,
-                    Err(error) => {
-                        warnings.push(ScanWarning {
-                            path,
-                            message: format!("failed to resolve repository path: {error}"),
-                        });
-                        continue;
-                    }
+                let Some(canonical) = canonicalize_discovered(path, "repository", &mut warnings)
+                else {
+                    continue;
                 };
                 let repo_root = resolve_main_repo_from_linked_worktree(&canonical)
                     .map(|root| fs::canonicalize(&root).unwrap_or(root))
                     .unwrap_or(canonical);
                 if visited.insert(repo_root.clone()) {
-                    on_repo(&repo_root);
+                    on_found(&repo_root, true);
+                }
+            } else if include_non_git {
+                let Some(canonical) = canonicalize_discovered(path, "directory", &mut warnings)
+                else {
+                    continue;
+                };
+                if visited.insert(canonical.clone()) {
+                    if include_non_git {
+                        on_found(&canonical, false);
+                    }
+                    if remaining_depth > 1 {
+                        pending.push((canonical, remaining_depth - 1, false));
+                    }
                 }
             } else if remaining_depth > 1 {
                 pending.push((path, remaining_depth - 1, false));
@@ -315,6 +334,23 @@ fn walk_repos_with_cancel(
     }
 
     Ok(warnings)
+}
+
+fn canonicalize_discovered(
+    path: PathBuf,
+    kind: &str,
+    warnings: &mut Vec<ScanWarning>,
+) -> Option<PathBuf> {
+    match fs::canonicalize(&path) {
+        Ok(canonical) => Some(canonical),
+        Err(error) => {
+            warnings.push(ScanWarning {
+                path,
+                message: format!("failed to resolve {kind} path: {error}"),
+            });
+            None
+        }
+    }
 }
 
 fn git_entry_exists(path: &Path) -> io::Result<bool> {
@@ -581,10 +617,20 @@ mod tests {
         dir: &Path,
         depth: u16,
     ) -> Result<(Vec<Repo>, Vec<ScanWarning>)> {
+        scan_streaming_with_non_git(provider, dir, depth, false)
+    }
+
+    fn scan_streaming_with_non_git(
+        provider: &CliGitProvider,
+        dir: &Path,
+        depth: u16,
+        include_non_git: bool,
+    ) -> Result<(Vec<Repo>, Vec<ScanWarning>)> {
         let repos = RefCell::new(Vec::new());
-        let warnings = provider.scan_repos_streaming(dir, depth, &|| false, &|repo| {
-            repos.borrow_mut().push(repo);
-        })?;
+        let warnings =
+            provider.scan_repos_streaming(dir, depth, include_non_git, &|| false, &|repo| {
+                repos.borrow_mut().push(repo);
+            })?;
         Ok((repos.into_inner(), warnings))
     }
 
@@ -631,6 +677,60 @@ mod tests {
         );
     }
 
+    #[test]
+    fn non_git_discovery_surfaces_each_plain_level_and_stops_at_git_repositories() {
+        let temp = TempDir::new().unwrap();
+        let parent = temp.path().join("parent");
+        let child = parent.join("child");
+        let repo = parent.join("terminal-repo");
+        fs::create_dir_all(&child).unwrap();
+        fs::create_dir_all(repo.join("hidden-folder")).unwrap();
+        init_test_repo(&repo);
+
+        let (mut entries, warnings) =
+            scan_streaming_with_non_git(&CliGitProvider, temp.path(), 3, true).unwrap();
+        assert!(warnings.is_empty());
+        entries.sort_by(|left, right| left.path.cmp(&right.path));
+
+        let expected = [
+            (fs::canonicalize(&parent).unwrap(), false),
+            (fs::canonicalize(&child).unwrap(), false),
+            (fs::canonicalize(&repo).unwrap(), true),
+        ];
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| (entry.path.clone(), entry.is_git))
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry.path != temp.path() && entry.name != "hidden-folder")
+        );
+    }
+
+    #[test]
+    fn disabled_non_git_discovery_preserves_git_only_results() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join("plain").join("nested")).unwrap();
+        let repo = repo_fixture(&temp.path().join("plain"), "repo");
+
+        let (entries, warnings) =
+            scan_streaming_with_non_git(&CliGitProvider, temp.path(), 2, false).unwrap();
+        assert!(warnings.is_empty());
+        assert_eq!(
+            entries,
+            [Repo {
+                name: "repo".into(),
+                path: fs::canonicalize(repo).unwrap(),
+                is_git: true,
+                worktrees: Vec::new(),
+            }]
+        );
+    }
+
     fn linked_worktree_fixture() -> (TempDir, PathBuf) {
         let temp = TempDir::new().unwrap();
         let repo = repo_fixture(temp.path(), "my-repo");
@@ -649,7 +749,7 @@ mod tests {
         let provider = CliGitProvider;
         let streamed = RefCell::new(Vec::new());
         let warnings = provider
-            .scan_repos_streaming(temp.path(), 1, &|| false, &|found| {
+            .scan_repos_streaming(temp.path(), 1, false, &|| false, &|found| {
                 streamed.borrow_mut().push(found);
             })
             .unwrap();
@@ -722,6 +822,7 @@ mod tests {
             &Repo {
                 name: "repo".into(),
                 path: repo,
+                is_git: true,
                 worktrees: Vec::new(),
             },
             &local,
@@ -913,6 +1014,7 @@ mod tests {
             .scan_repos_streaming(
                 Path::new("/definitely/not/here/herdr-kiosk"),
                 1,
+                false,
                 &|| false,
                 &|_| {},
             )
@@ -987,11 +1089,12 @@ mod tests {
         let warnings = walk_repos_with_cancel(
             temp.path(),
             u16::MAX,
+            false,
             &|| {
                 checks.set(checks.get() + 1);
                 checks.get() > 1
             },
-            &mut |repo| found.push(repo.to_path_buf()),
+            &mut |repo, _| found.push(repo.to_path_buf()),
         )
         .unwrap();
 

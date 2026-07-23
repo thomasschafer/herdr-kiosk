@@ -52,9 +52,15 @@ pub fn draw(
         .iter()
         .filter_map(|(_, index)| state.repo_view.entries.get(*index))
         .map(|entry| {
-            let left = [Span::raw(
-                crate::display::sanitize(&entry.display_name()).into_owned(),
-            )];
+            let name = crate::display::sanitize(&entry.display_name()).into_owned();
+            let left = if entry.repo.is_git {
+                vec![Span::raw(name)]
+            } else {
+                vec![
+                    Span::styled("dir ", Style::default().fg(theme.muted)),
+                    Span::raw(name),
+                ]
+            };
             let spans = if entry.is_open {
                 right_align_suffix(
                     &left,
@@ -125,6 +131,7 @@ mod tests {
         state.repo_view.entries = vec![RepoEntry::new(Repo {
             name: "repo\nname\u{1b}".into(),
             path: "/repo".into(),
+            is_git: true,
             worktrees: Vec::new(),
         })];
         state.repo_view.list = SearchableList::new(1);
@@ -149,5 +156,38 @@ mod tests {
             .collect::<String>();
         assert!(rendered.contains("repo\\nname\\u{1b}"));
         assert!(!rendered.chars().any(char::is_control));
+    }
+
+    #[test]
+    fn plain_folders_render_with_a_muted_type_marker() {
+        let mut state = AppState::new(None);
+        state.repo_view.loading = false;
+        state.repo_view.entries = vec![RepoEntry::new(Repo {
+            name: "folder".into(),
+            path: "/folder".into(),
+            is_git: false,
+            worktrees: Vec::new(),
+        })];
+        state.repo_view.list = SearchableList::new(1);
+        state.repo_view.list.selected = None;
+        let theme = Theme::from_config(&crate::config::ThemeConfig::default());
+        let backend = TestBackend::new(40, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw(frame, area, &mut state, &theme, Instant::now());
+            })
+            .unwrap();
+
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(rendered.contains("dir folder"));
     }
 }

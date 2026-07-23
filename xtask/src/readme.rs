@@ -99,7 +99,7 @@ fn render_config_field(
 fn render_curated_example(docs: &mut String, name: &str) {
     match name {
         "search_dirs" => docs.push_str(
-            "Example:\n\n```toml\nsearch_dirs = [\n  \"~/Code\",\n  { path = \"~/Work\", depth = 2 },\n]\n```\n\n",
+            "Example:\n\n```toml\ninclude_non_git = false\nsearch_dirs = [\n  \"~/Code\",\n  { path = \"~/Work\", depth = 2, include_non_git = true },\n]\n```\n\n",
         ),
         "on_open" => docs.push_str(
             "Example:\n\n```toml\n[on_open]\npanes = [\n  { command = \"hx\", direction = \"right\" },\n]\n```\n\n",

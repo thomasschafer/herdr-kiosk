@@ -23,14 +23,17 @@ use ratatui::{
 
 use crate::{
     components,
-    config::keys::{BindingMode, Command, KeysConfig},
+    config::{
+        ResolvedSearchDir,
+        keys::{BindingMode, Command, KeysConfig},
+    },
     event::{AppEvent, FilterKey, FilterTarget},
     git::{GitProvider, Repo},
     herdr::HerdrProvider,
     keyboard::Action,
     spawn::{
-        EventSender, FetchDeduplicator, spawn_git_fetch, spawn_remote_branch_loading,
-        spawn_repo_discovery, spawn_workspace_list,
+        EventSender, FetchDeduplicator, spawn_git_fetch, spawn_open_folder_panes,
+        spawn_remote_branch_loading, spawn_repo_discovery, spawn_workspace_list,
     },
     state::{AppState, BranchId, Mode, SearchableList},
     theme::Theme,
@@ -164,7 +167,7 @@ pub fn run(
     state: &mut AppState,
     git: &Arc<dyn GitProvider>,
     herdr: Option<&Arc<dyn HerdrProvider>>,
-    search_dirs: Vec<(PathBuf, u16)>,
+    search_dirs: Vec<ResolvedSearchDir>,
     theme: &Theme,
     keys: &KeysConfig,
 ) -> Result<RunOutcome> {
@@ -192,6 +195,7 @@ pub fn run(
             event_received = true;
             process_app_event(app_event, state, &mut changes);
         }
+        load_open_folder_indicators(&mut changes, herdr, &sender);
         if event_received {
             redraw.mark_dirty();
         }
@@ -256,12 +260,26 @@ pub fn run(
     Ok(outcome)
 }
 
+fn load_open_folder_indicators(
+    changes: &mut TickChanges,
+    herdr: Option<&Arc<dyn HerdrProvider>>,
+    sender: &EventSender,
+) {
+    if !std::mem::take(&mut changes.load_open_folder_indicators) {
+        return;
+    }
+    if let Some(provider) = herdr {
+        spawn_open_folder_panes(provider, sender);
+    }
+}
+
 #[derive(Default)]
 #[allow(clippy::struct_excessive_bools)]
 pub(crate) struct TickChanges {
     pub(crate) repos_changed: bool,
     pub(crate) branches_changed: bool,
     pub(crate) collision_pass: bool,
+    pub(crate) load_open_folder_indicators: bool,
     pub(crate) workspace_opened: bool,
     pub(crate) open_warning: Option<String>,
     pub(crate) pinned_branch_selection: Option<BranchId>,
@@ -664,6 +682,7 @@ mod tests {
 
     use crate::{
         git::{Repo, mock::MockGitProvider},
+        herdr::{HerdrProvider, mock::MockHerdrProvider},
         state::{BranchContext, BranchEntry, BranchId, OpenWorktreeLoadState, RepoEntry},
     };
 
@@ -688,6 +707,32 @@ mod tests {
         redraw.mark_dirty();
         assert!(redraw.take(false));
         assert!(!redraw.take(false));
+    }
+
+    #[test]
+    fn git_only_results_do_not_request_pane_list() {
+        let mut state = AppState::new(None);
+        let mut changes = TickChanges::default();
+        process_app_event(
+            AppEvent::ReposFound {
+                repo: Repo {
+                    name: "repo".into(),
+                    path: "/repo".into(),
+                    is_git: true,
+                    worktrees: Vec::new(),
+                },
+            },
+            &mut state,
+            &mut changes,
+        );
+        let mock = Arc::new(MockHerdrProvider::default());
+        let provider: Arc<dyn HerdrProvider> = mock.clone();
+        let (tx, _rx) = mpsc::channel();
+        let sender = EventSender::new(tx, Arc::new(AtomicBool::new(false)));
+
+        load_open_folder_indicators(&mut changes, Some(&provider), &sender);
+
+        assert!(mock.calls.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -901,6 +946,7 @@ mod tests {
         state.repo_view.entries.push(RepoEntry::new(Repo {
             name: "repo".into(),
             path: "/repo".into(),
+            is_git: true,
             worktrees: Vec::new(),
         }));
         state.repo_view.list = crate::state::SearchableList::new(1);

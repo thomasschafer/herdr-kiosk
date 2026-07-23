@@ -8,7 +8,11 @@ use crate::{
     app::{TickChanges, process_app_event},
     event::{AppEvent, FilterKey, FilterTarget},
     git::Repo,
-    herdr::{HerdrError, HerdrProvider, mock::MockHerdrProvider},
+    herdr::{
+        HerdrError, HerdrProvider, PaneInfo, WorkspaceCreateResponse, WorkspaceInfo,
+        WorkspaceWorktreeInfo,
+        mock::{HerdrCall, MockHerdrProvider},
+    },
     spawn::EventSender,
     state::{AppState, Mode, SearchableList},
 };
@@ -23,6 +27,7 @@ fn repo(path: &str) -> Repo {
             .to_string_lossy()
             .into_owned(),
         path: path.into(),
+        is_git: true,
         worktrees: Vec::new(),
     }
 }
@@ -32,9 +37,16 @@ fn state_with_repo() -> AppState {
     state.repo_view.entries.push(RepoEntry::new(Repo {
         name: "repo".into(),
         path: "/repo".into(),
+        is_git: true,
         worktrees: Vec::new(),
     }));
     state.repo_view.list = SearchableList::new(1);
+    state
+}
+
+fn state_with_folder() -> AppState {
+    let mut state = state_with_repo();
+    state.repo_view.entries[0].repo.is_git = false;
     state
 }
 
@@ -133,6 +145,7 @@ fn current_logical_selection_survives_current_generation_filter_results() {
             RepoEntry::new(Repo {
                 name: name.into(),
                 path: PathBuf::from(format!("/{name}")),
+                is_git: true,
                 worktrees: Vec::new(),
             })
         })
@@ -185,7 +198,124 @@ fn opening_transitions_to_loading_and_dispatches_through_mock_provider() {
     process_app_event(event, &mut state, &mut TickChanges::default());
     assert_eq!(state.mode, Mode::RepoSelect);
     assert!(state.toasts.front().unwrap().message.contains("boom"));
-    assert_eq!(mock.calls.lock().unwrap().len(), 1);
+    assert_eq!(
+        *mock.calls.lock().unwrap(),
+        [HerdrCall::WorktreeOpen {
+            cwd: "/repo".into(),
+            target: crate::herdr::WorktreeOpenTarget::Path("/repo".into()),
+            focus: true,
+        }]
+    );
+}
+
+#[test]
+fn opening_matching_plain_folder_focuses_existing_workspace() {
+    let mock = Arc::new(MockHerdrProvider::default());
+    mock.pane_list_results
+        .lock()
+        .unwrap()
+        .push_back(Ok(vec![PaneInfo {
+            workspace_id: "w_folder".into(),
+            cwd: Some("/repo".into()),
+            foreground_cwd: Some("/unrelated".into()),
+        }]));
+    mock.workspace_focus_results
+        .lock()
+        .unwrap()
+        .push_back(Ok(()));
+    let provider: Arc<dyn HerdrProvider> = mock.clone();
+    let (sender, rx) = sender();
+    let mut state = state_with_folder();
+
+    open_selected(&mut state, Some(&provider), &sender);
+
+    assert!(matches!(
+        rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        AppEvent::RepoOpened { warning: None }
+    ));
+    assert_eq!(
+        *mock.calls.lock().unwrap(),
+        [
+            HerdrCall::PaneList,
+            HerdrCall::WorkspaceFocus {
+                workspace_id: "w_folder".into(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn opening_unmatched_plain_folder_creates_focused_workspace() {
+    let mock = Arc::new(MockHerdrProvider::default());
+    mock.pane_list_results
+        .lock()
+        .unwrap()
+        .push_back(Ok(Vec::new()));
+    mock.workspace_create_results
+        .lock()
+        .unwrap()
+        .push_back(Ok(WorkspaceCreateResponse {
+            workspace_id: Some("w_new".into()),
+            warning: None,
+        }));
+    let provider: Arc<dyn HerdrProvider> = mock.clone();
+    let (sender, rx) = sender();
+    let mut state = state_with_folder();
+
+    open_selected(&mut state, Some(&provider), &sender);
+
+    assert!(matches!(
+        rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        AppEvent::RepoOpened { warning: None }
+    ));
+    assert_eq!(
+        *mock.calls.lock().unwrap(),
+        [
+            HerdrCall::PaneList,
+            HerdrCall::WorkspaceCreate {
+                cwd: "/repo".into(),
+                focus: true,
+            },
+        ]
+    );
+}
+
+#[test]
+fn open_indicators_use_workspaces_for_git_and_pane_cwds_for_folders() {
+    let mut state = state_with_repo();
+    state.repo_view.entries.push(RepoEntry::new(Repo {
+        name: "folder".into(),
+        path: "/folder".into(),
+        is_git: false,
+        worktrees: Vec::new(),
+    }));
+    state.repo_view.list = SearchableList::new(2);
+
+    process_app_event(
+        AppEvent::OpenWorkspacesLoaded {
+            workspaces: vec![WorkspaceInfo {
+                worktree: Some(WorkspaceWorktreeInfo {
+                    repo_root: "/repo".into(),
+                }),
+            }],
+        },
+        &mut state,
+        &mut TickChanges::default(),
+    );
+    process_app_event(
+        AppEvent::OpenFolderPanesLoaded {
+            panes: vec![PaneInfo {
+                workspace_id: "w_folder".into(),
+                cwd: Some("/folder".into()),
+                foreground_cwd: Some("/repo".into()),
+            }],
+        },
+        &mut state,
+        &mut TickChanges::default(),
+    );
+
+    assert!(state.repo_view.entries[0].is_open);
+    assert!(state.repo_view.entries[1].is_open);
 }
 
 #[test]

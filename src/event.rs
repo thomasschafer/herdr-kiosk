@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use crate::{
     git::{Repo, ScanWarning, Worktree},
-    herdr::{WorkspaceInfo, WorktreeInfo},
+    herdr::{PaneInfo, WorkspaceInfo, WorktreeInfo},
     state::{BranchEntry, BranchId},
 };
 
@@ -100,6 +100,9 @@ pub enum AppEvent {
     OpenWorkspacesLoaded {
         workspaces: Vec<WorkspaceInfo>,
     },
+    OpenFolderPanesLoaded {
+        panes: Vec<PaneInfo>,
+    },
     OpenWorktreesLoaded {
         repo_path: PathBuf,
         generation: u64,
@@ -119,4 +122,5 @@ pub enum AppEvent {
         failure: BranchOperationFailure,
     },
     OpenWorkspacesFailed(String),
+    OpenFolderPanesFailed(String),
 }

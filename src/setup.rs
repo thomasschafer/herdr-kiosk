@@ -154,6 +154,7 @@ impl SetupState {
             .map(|entry| SearchDirEntry::Rich {
                 path: entry.path.clone(),
                 depth: Some(entry.depth),
+                include_non_git: None,
             })
             .collect()
     }
@@ -519,10 +520,12 @@ mod tests {
             SearchDirEntry::Rich {
                 path: "~/Code".into(),
                 depth: Some(2),
+                include_non_git: None,
             },
             SearchDirEntry::Rich {
                 path: "/work".into(),
                 depth: Some(4),
+                include_non_git: None,
             },
         ])
         .unwrap();

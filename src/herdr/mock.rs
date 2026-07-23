@@ -5,9 +5,9 @@ use std::{
 };
 
 use super::{
-    HerdrError, HerdrProvider, PaneRunResponse, PaneSplitRequest, PaneSplitResponse, WorkspaceInfo,
-    WorktreeCreateRequest, WorktreeCreateResponse, WorktreeListResponse, WorktreeOpenResponse,
-    WorktreeOpenTarget, WorktreeRemoveResponse,
+    HerdrError, HerdrProvider, PaneInfo, PaneRunResponse, PaneSplitRequest, PaneSplitResponse,
+    WorkspaceCreateResponse, WorkspaceInfo, WorktreeCreateRequest, WorktreeCreateResponse,
+    WorktreeListResponse, WorktreeOpenResponse, WorktreeOpenTarget, WorktreeRemoveResponse,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -26,6 +26,14 @@ pub enum HerdrCall {
         cwd: PathBuf,
     },
     WorkspaceList,
+    PaneList,
+    WorkspaceCreate {
+        cwd: PathBuf,
+        focus: bool,
+    },
+    WorkspaceFocus {
+        workspace_id: String,
+    },
     PaneSplit(PaneSplitRequest),
     PaneRun {
         pane_id: String,
@@ -45,6 +53,9 @@ pub struct MockHerdrProvider {
     pub worktree_remove_results: Mutex<VecDeque<Result<WorktreeRemoveResponse, HerdrError>>>,
     pub worktree_list_results: Mutex<VecDeque<Result<WorktreeListResponse, HerdrError>>>,
     pub workspace_list_results: Mutex<VecDeque<Result<Vec<WorkspaceInfo>, HerdrError>>>,
+    pub pane_list_results: Mutex<VecDeque<Result<Vec<PaneInfo>, HerdrError>>>,
+    pub workspace_create_results: Mutex<VecDeque<Result<WorkspaceCreateResponse, HerdrError>>>,
+    pub workspace_focus_results: Mutex<VecDeque<Result<(), HerdrError>>>,
     pub pane_split_results: Mutex<VecDeque<Result<PaneSplitResponse, HerdrError>>>,
     pub pane_run_results: Mutex<VecDeque<Result<PaneRunResponse, HerdrError>>>,
     pub notification_show_results: Mutex<VecDeque<Result<(), HerdrError>>>,
@@ -106,6 +117,30 @@ impl HerdrProvider for MockHerdrProvider {
     fn workspace_list(&self) -> Result<Vec<WorkspaceInfo>, HerdrError> {
         self.calls.lock().unwrap().push(HerdrCall::WorkspaceList);
         next(&self.workspace_list_results, "workspace_list")
+    }
+
+    fn pane_list(&self) -> Result<Vec<PaneInfo>, HerdrError> {
+        self.calls.lock().unwrap().push(HerdrCall::PaneList);
+        next(&self.pane_list_results, "pane_list")
+    }
+
+    fn workspace_create(
+        &self,
+        cwd: &Path,
+        focus: bool,
+    ) -> Result<WorkspaceCreateResponse, HerdrError> {
+        self.calls.lock().unwrap().push(HerdrCall::WorkspaceCreate {
+            cwd: cwd.to_path_buf(),
+            focus,
+        });
+        next(&self.workspace_create_results, "workspace_create")
+    }
+
+    fn workspace_focus(&self, workspace_id: &str) -> Result<(), HerdrError> {
+        self.calls.lock().unwrap().push(HerdrCall::WorkspaceFocus {
+            workspace_id: workspace_id.into(),
+        });
+        next(&self.workspace_focus_results, "workspace_focus")
     }
 
     fn pane_split(&self, request: &PaneSplitRequest) -> Result<PaneSplitResponse, HerdrError> {

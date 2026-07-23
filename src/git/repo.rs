@@ -12,7 +12,13 @@ pub struct Worktree {
 pub struct Repo {
     pub name: String,
     pub path: PathBuf,
+    #[serde(default = "is_git_by_default")]
+    pub is_git: bool,
     pub worktrees: Vec<Worktree>,
+}
+
+const fn is_git_by_default() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +36,7 @@ mod tests {
         let repo = Repo {
             name: "demo".to_string(),
             path: PathBuf::from("/tmp/demo"),
+            is_git: true,
             worktrees: vec![Worktree {
                 path: PathBuf::from("/tmp/demo"),
                 branch: Some("main".to_string()),
@@ -39,5 +46,12 @@ mod tests {
         let json = serde_json::to_string(&repo).unwrap();
         let decoded: Repo = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, repo);
+    }
+
+    #[test]
+    fn repo_serde_defaults_legacy_entries_to_git() {
+        let decoded: Repo =
+            serde_json::from_str(r#"{"name":"demo","path":"/tmp/demo","worktrees":[]}"#).unwrap();
+        assert!(decoded.is_git);
     }
 }

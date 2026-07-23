@@ -52,6 +52,7 @@ impl GitProvider for MockGitProvider {
         &self,
         _dir: &Path,
         _depth: u16,
+        _include_non_git: bool,
         is_cancelled: &dyn Fn() -> bool,
         on_found: &dyn Fn(Repo),
     ) -> Result<Vec<ScanWarning>> {

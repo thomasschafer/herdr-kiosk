@@ -1,4 +1,12 @@
-use std::{borrow::Cow, path::Path};
+use std::{
+    borrow::Cow,
+    fs,
+    path::{Path, PathBuf},
+};
+
+pub fn canonical_or_original(path: &Path) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
 
 /// Compare filesystem paths using the host platform's path semantics.
 pub fn equivalent(left: &Path, right: &Path) -> bool {

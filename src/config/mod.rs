@@ -22,7 +22,7 @@ pub enum SearchDirEntry {
         /// with `~/` expand from the user's home directory.
         String,
     ),
-    /// A path with an optional per-directory scan depth.
+    /// A path with optional per-directory scan depth and plain-folder override.
     Rich {
         /// Directory to scan. `~` and paths beginning with `~/` expand from the
         /// user's home directory; other relative paths are accepted as written.
@@ -30,7 +30,25 @@ pub enum SearchDirEntry {
         /// Maximum directory depth to scan. The value must be at least 1 and
         /// defaults to 1 when omitted.
         depth: Option<u16>,
+        /// Whether to include plain folders for this search root. When omitted,
+        /// the global `include_non_git` value is used.
+        #[serde(default)]
+        include_non_git: Option<bool>,
     },
+}
+
+impl SearchDirEntry {
+    pub const fn resolved_include_non_git(&self, global: bool) -> bool {
+        match self {
+            Self::Simple(_) => global,
+            Self::Rich {
+                include_non_git, ..
+            } => match include_non_git {
+                Some(value) => *value,
+                None => global,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,10 +160,14 @@ pub struct OnOpenConfig {
 /// All sections are optional, and the defaults are shown below alongside curated
 /// examples for settings that benefit from one.
 pub struct Config {
-    /// Directories searched recursively for Git repositories. Entries can be simple
-    /// strings such as `"~/Code"` or inline tables such as
-    /// `{ path = "~/Work", depth = 3 }`, and both forms can be mixed.
+    /// Directories searched recursively for Git repositories and, when enabled,
+    /// plain folders. Entries can be simple strings such as `"~/Code"` or inline
+    /// tables such as `{ path = "~/Work", depth = 3 }`, and both forms can be mixed.
     pub search_dirs: Vec<SearchDirEntry>,
+    /// Include plain folders in search results globally. Rich search-directory
+    /// entries can override this value with their own `include_non_git` setting.
+    #[serde(default)]
+    pub include_non_git: bool,
     /// Customize terminal-palette colors used by the picker. Light-terminal users
     /// can set `muted`, `border`, and other colors explicitly.
     pub theme: ThemeConfig,
@@ -167,23 +189,27 @@ impl Config {
             .map(|entry| {
                 let (path, depth) = match entry {
                     SearchDirEntry::Simple(path) => (path, DEFAULT_SEARCH_DEPTH),
-                    SearchDirEntry::Rich { path, depth } => {
+                    SearchDirEntry::Rich { path, depth, .. } => {
                         (path, depth.unwrap_or(DEFAULT_SEARCH_DEPTH))
                     }
                 };
-                expand_tilde(path, home).map(|path| (path, depth))
+                expand_tilde(path, home).map(|path| ResolvedSearchDir {
+                    path,
+                    depth,
+                    include_non_git: entry.resolved_include_non_git(self.include_non_git),
+                })
             })
             .collect::<Result<Vec<_>>>()?;
         let mut dirs = Vec::with_capacity(expanded.len());
         let mut warnings = Vec::new();
-        for (path, depth) in expanded {
-            if is_dir(&path) {
-                dirs.push((path, depth));
+        for dir in expanded {
+            if is_dir(&dir.path) {
+                dirs.push(dir);
             } else {
                 warnings.push(ConfigWarning {
                     message: format!(
                         "configured search directory does not exist or is not a directory: {}",
-                        path.display()
+                        dir.path.display()
                     ),
                 });
             }
@@ -199,8 +225,15 @@ pub struct ConfigWarning {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedSearchDirs {
-    pub dirs: Vec<(PathBuf, u16)>,
+    pub dirs: Vec<ResolvedSearchDir>,
     pub warnings: Vec<ConfigWarning>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedSearchDir {
+    pub path: PathBuf,
+    pub depth: u16,
+    pub include_non_git: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -330,7 +363,9 @@ fn validate_config(config: &Config) -> Result<()> {
     for entry in &config.search_dirs {
         let (path, depth) = match entry {
             SearchDirEntry::Simple(path) => (path, DEFAULT_SEARCH_DEPTH),
-            SearchDirEntry::Rich { path, depth } => (path, depth.unwrap_or(DEFAULT_SEARCH_DEPTH)),
+            SearchDirEntry::Rich { path, depth, .. } => {
+                (path, depth.unwrap_or(DEFAULT_SEARCH_DEPTH))
+            }
         };
         if path.trim().is_empty() {
             bail!("search directory path must not be empty");
@@ -404,12 +439,74 @@ mod tests {
                 SearchDirEntry::Rich {
                     path: "~/Work".into(),
                     depth: Some(3),
+                    include_non_git: None,
                 },
                 SearchDirEntry::Rich {
                     path: "~/Projects".into(),
                     depth: None,
+                    include_non_git: None,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn resolves_global_and_per_directory_non_git_settings() {
+        let (config, warnings) = parse_config(
+            r#"
+include_non_git = true
+search_dirs = [
+    "~/Inherited",
+    { path = "~/AlsoInherited" },
+    { path = "~/Included", include_non_git = true },
+    { path = "~/Excluded", include_non_git = false },
+]
+"#,
+        )
+        .unwrap();
+
+        assert!(warnings.is_empty());
+        assert!(config.include_non_git);
+        assert!(config.search_dirs[0].resolved_include_non_git(config.include_non_git));
+        assert!(config.search_dirs[1].resolved_include_non_git(config.include_non_git));
+        assert!(config.search_dirs[2].resolved_include_non_git(config.include_non_git));
+        assert!(!config.search_dirs[3].resolved_include_non_git(config.include_non_git));
+        assert!(matches!(
+            &config.search_dirs[1],
+            SearchDirEntry::Rich {
+                include_non_git: None,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &config.search_dirs[2],
+            SearchDirEntry::Rich {
+                include_non_git: Some(true),
+                ..
+            }
+        ));
+        assert!(matches!(
+            &config.search_dirs[3],
+            SearchDirEntry::Rich {
+                include_non_git: Some(false),
+                ..
+            }
+        ));
+        assert!(
+            config.search_dirs[2].resolved_include_non_git(false),
+            "an explicit true must override a false global value"
+        );
+
+        let resolved = config
+            .resolved_search_dirs_with(Some(Path::new("/home/tester")), |_| true)
+            .unwrap();
+        assert_eq!(
+            resolved
+                .dirs
+                .iter()
+                .map(|dir| dir.include_non_git)
+                .collect::<Vec<_>>(),
+            [true, true, true, false]
         );
     }
 
@@ -498,9 +595,21 @@ panes = [{ command = "  ", direction = "right" }]"#,
         assert_eq!(
             resolved.dirs,
             [
-                (PathBuf::from("/home/tester"), 1),
-                (PathBuf::from("/home/tester/Work"), 4),
-                (PathBuf::from("/absolute"), 1),
+                ResolvedSearchDir {
+                    path: PathBuf::from("/home/tester"),
+                    depth: 1,
+                    include_non_git: false,
+                },
+                ResolvedSearchDir {
+                    path: PathBuf::from("/home/tester/Work"),
+                    depth: 4,
+                    include_non_git: false,
+                },
+                ResolvedSearchDir {
+                    path: PathBuf::from("/absolute"),
+                    depth: 1,
+                    include_non_git: false,
+                },
             ]
         );
         assert!(resolved.warnings.is_empty());
@@ -519,7 +628,14 @@ panes = [{ command = "  ", direction = "right" }]"#,
             .resolved_search_dirs_with(None, |path| path == Path::new("/exists"))
             .unwrap();
 
-        assert_eq!(resolved.dirs, [(PathBuf::from("/exists"), 1)]);
+        assert_eq!(
+            resolved.dirs,
+            [ResolvedSearchDir {
+                path: PathBuf::from("/exists"),
+                depth: 1,
+                include_non_git: false,
+            }]
+        );
         assert_eq!(resolved.warnings.len(), 1);
         assert!(resolved.warnings[0].message.contains("/missing"));
     }

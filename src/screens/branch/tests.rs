@@ -32,6 +32,7 @@ fn repo(path: &str) -> Repo {
     Repo {
         name: "repo".into(),
         path: path.into(),
+        is_git: true,
         worktrees: Vec::new(),
     }
 }
@@ -41,6 +42,7 @@ fn state_with_repo() -> AppState {
     state.repo_view.entries.push(RepoEntry::new(Repo {
         name: "repo".into(),
         path: "/repo".into(),
+        is_git: true,
         worktrees: Vec::new(),
     }));
     state.repo_view.list = SearchableList::new(1);
@@ -149,6 +151,22 @@ fn branch_view_transition_and_back_preserve_repo_filter_and_selection() {
     assert_eq!(state.repo_view.list.input.text, "repo");
     assert_eq!(state.repo_view.list.selected, Some(0));
     assert_eq!(state.repo_view.list.scroll_offset, 3);
+}
+
+#[test]
+fn branch_view_rejects_plain_folders_with_a_hint() {
+    let mut state = state_with_repo();
+    state.repo_view.entries[0].repo.is_git = false;
+    let git = git_provider();
+    let (sender, _rx) = sender();
+
+    enter(&mut state, &git, None, &sender);
+
+    assert_eq!(state.mode, Mode::RepoSelect);
+    assert_eq!(
+        state.toasts.front().map(|toast| toast.message.as_str()),
+        Some("Branches are only available for git repositories")
+    );
 }
 
 #[test]

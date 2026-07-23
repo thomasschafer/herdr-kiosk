@@ -59,16 +59,17 @@ examples for settings that benefit from one.
 
 #### `search_dirs`
 
-Directories searched recursively for Git repositories. Entries can be simple
-strings such as `"~/Code"` or inline tables such as
-`{ path = "~/Work", depth = 3 }`, and both forms can be mixed.
+Directories searched recursively for Git repositories and, when enabled,
+plain folders. Entries can be simple strings such as `"~/Code"` or inline
+tables such as `{ path = "~/Work", depth = 3 }`, and both forms can be mixed.
 
 Example:
 
 ```toml
+include_non_git = false
 search_dirs = [
   "~/Code",
-  { path = "~/Work", depth = 2 },
+  { path = "~/Work", depth = 2, include_non_git = true },
 ]
 ```
 
@@ -78,9 +79,17 @@ Accepted forms:
 
 - String form.
   - Directory to scan with the default depth of 1. `~` and paths beginning with `~/` expand from the user's home directory.
-- A path with an optional per-directory scan depth.
+- A path with optional per-directory scan depth and plain-folder override.
   - `path` — Directory to scan. `~` and paths beginning with `~/` expand from the user's home directory; other relative paths are accepted as written.
   - `depth` — Maximum directory depth to scan. The value must be at least 1 and defaults to 1 when omitted.
+  - `include_non_git` — Whether to include plain folders for this search root. When omitted, the global `include_non_git` value is used.
+
+#### `include_non_git`
+
+Include plain folders in search results globally. Rich search-directory
+entries can override this value with their own `include_non_git` setting.
+
+Default: `false`
 
 ### `[theme]`
 

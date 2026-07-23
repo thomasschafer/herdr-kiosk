@@ -49,6 +49,7 @@ pub trait GitProvider: Send + Sync {
         &self,
         dir: &Path,
         depth: u16,
+        include_non_git: bool,
         is_cancelled: &dyn Fn() -> bool,
         on_found: &dyn Fn(Repo),
     ) -> Result<Vec<ScanWarning>>;

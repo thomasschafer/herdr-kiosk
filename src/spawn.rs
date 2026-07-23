@@ -12,7 +12,7 @@ use std::{
 use rayon::ThreadPoolBuilder;
 
 use crate::{
-    config::OnOpenConfig,
+    config::{OnOpenConfig, ResolvedSearchDir},
     event::{AppEvent, BranchOperationFailure, WorktreeRemovalOutcome},
     git::{
         GitProvider, Repo, ScanWarning, is_dirty_worktree_requires_force,
@@ -121,7 +121,7 @@ pub fn spawn_work_parallel<T, F, W>(
 pub fn spawn_repo_discovery(
     git: &Arc<dyn GitProvider>,
     sender: &EventSender,
-    search_dirs: Vec<(PathBuf, u16)>,
+    search_dirs: Vec<ResolvedSearchDir>,
 ) {
     let git = Arc::clone(git);
     let sender = sender.clone();
@@ -131,20 +131,25 @@ pub fn spawn_repo_discovery(
         }
 
         thread::scope(|scope| {
-            for (dir, depth) in &search_dirs {
+            for search_dir in &search_dirs {
                 let git = &git;
                 let sender = &sender;
                 scope.spawn(move || {
                     if sender.is_cancelled() {
                         return;
                     }
-                    let result =
-                        git.scan_repos_streaming(dir, *depth, &|| sender.is_cancelled(), &|repo| {
+                    let result = git.scan_repos_streaming(
+                        &search_dir.path,
+                        search_dir.depth,
+                        search_dir.include_non_git,
+                        &|| sender.is_cancelled(),
+                        &|repo| {
                             if sender.is_cancelled() {
                                 return;
                             }
                             sender.send(AppEvent::ReposFound { repo });
-                        });
+                        },
+                    );
                     match result {
                         Ok(warnings) => {
                             for warning in warnings {
@@ -153,7 +158,7 @@ pub fn spawn_repo_discovery(
                         }
                         Err(error) => {
                             sender.send(AppEvent::ScanWarning(ScanWarning {
-                                path: dir.clone(),
+                                path: search_dir.path.clone(),
                                 message: format!("repository scan failed: {error:#}"),
                             }));
                         }
@@ -176,6 +181,21 @@ pub fn spawn_workspace_list(provider: &Arc<dyn HerdrProvider>, sender: &EventSen
         Err(error) => {
             sender.send(AppEvent::OpenWorkspacesFailed(format!(
                 "could not load open workspace indicators: {error}"
+            )));
+        }
+    });
+}
+
+pub fn spawn_open_folder_panes(provider: &Arc<dyn HerdrProvider>, sender: &EventSender) {
+    let provider = Arc::clone(provider);
+    let sender = sender.clone();
+    thread::spawn(move || match provider.pane_list() {
+        Ok(panes) => {
+            sender.send(AppEvent::OpenFolderPanesLoaded { panes });
+        }
+        Err(error) => {
+            sender.send(AppEvent::OpenFolderPanesFailed(format!(
+                "could not load open folder indicators: {error}"
             )));
         }
     });
@@ -209,6 +229,42 @@ pub fn spawn_open_repo(
                         )
                     });
                 let warning = combine_warnings(response.warning, on_open_warning);
+                sender.send(AppEvent::RepoOpened { warning });
+            }
+            Err(error) => {
+                sender.send(AppEvent::RepoOpenFailed(error.to_string()));
+            }
+        }
+    });
+}
+
+pub fn spawn_open_folder(
+    provider: &Arc<dyn HerdrProvider>,
+    sender: &EventSender,
+    folder_path: PathBuf,
+) {
+    let provider = Arc::clone(provider);
+    let sender = sender.clone();
+    thread::spawn(move || {
+        let target = crate::path::canonical_or_original(&folder_path);
+        let result = (|| {
+            let panes = provider.pane_list()?;
+            if let Some(workspace_id) = panes.iter().find_map(|pane| {
+                pane.cwd.as_deref().and_then(|cwd| {
+                    let cwd = crate::path::canonical_or_original(Path::new(cwd));
+                    crate::path::equivalent(&cwd, &target).then(|| pane.workspace_id.clone())
+                })
+            }) {
+                provider.workspace_focus(&workspace_id)?;
+                Ok(None)
+            } else {
+                provider
+                    .workspace_create(&target, true)
+                    .map(|response| response.warning)
+            }
+        })();
+        match result {
+            Ok(warning) => {
                 sender.send(AppEvent::RepoOpened { warning });
             }
             Err(error) => {
@@ -872,6 +928,7 @@ mod tests {
             repo: Repo {
                 name: "repo".into(),
                 path: "/repo".into(),
+                is_git: true,
                 worktrees: Vec::new(),
             },
         }));
@@ -890,6 +947,7 @@ mod tests {
             repos: vec![Repo {
                 name: "repo".into(),
                 path: "/repo".into(),
+                is_git: true,
                 worktrees: vec![Worktree {
                     path: "/repo".into(),
                     branch: Some("main".into()),
@@ -901,7 +959,15 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let sender = EventSender::new(tx, Arc::new(AtomicBool::new(false)));
 
-        spawn_repo_discovery(&git, &sender, vec![("/search".into(), 1)]);
+        spawn_repo_discovery(
+            &git,
+            &sender,
+            vec![ResolvedSearchDir {
+                path: "/search".into(),
+                depth: 1,
+                include_non_git: false,
+            }],
+        );
 
         let AppEvent::ReposFound { repo } = rx.recv_timeout(Duration::from_secs(1)).unwrap() else {
             panic!("repository was not streamed")
@@ -942,6 +1008,7 @@ mod tests {
             Repo {
                 name: "repo".into(),
                 path: "/repo".into(),
+                is_git: true,
                 worktrees: Vec::new(),
             },
             Some("/repo-feature/src".into()),

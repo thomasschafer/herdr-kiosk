@@ -1,7 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
     ffi::OsString,
-    fs,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -11,7 +10,7 @@ use crate::{
     event::{AppEvent, FilterKey, FilterTarget},
     git::Repo,
     herdr::HerdrProvider,
-    spawn::{EventSender, spawn_open_repo},
+    spawn::{EventSender, spawn_open_folder, spawn_open_repo},
     state::{AppState, Mode, SearchableList, ToastKind},
 };
 
@@ -47,6 +46,8 @@ pub struct RepoViewState {
     pub selection_touched: bool,
     seen_paths: HashSet<PathBuf>,
     open_roots: HashSet<PathBuf>,
+    open_folder_roots: HashSet<PathBuf>,
+    folder_indicators_requested: bool,
     pub(crate) current_cwd: Option<PathBuf>,
     pub(crate) filter_generation: u64,
 }
@@ -60,6 +61,8 @@ impl RepoViewState {
             selection_touched: false,
             seen_paths: HashSet::new(),
             open_roots: HashSet::new(),
+            open_folder_roots: HashSet::new(),
+            folder_indicators_requested: false,
             current_cwd,
             filter_generation: 0,
         }
@@ -152,6 +155,10 @@ pub(crate) fn handle_event(
 ) -> Option<AppEvent> {
     match event {
         AppEvent::ReposFound { repo } => {
+            if !repo.is_git && !state.repo_view.folder_indicators_requested {
+                state.repo_view.folder_indicators_requested = true;
+                changes.load_open_folder_indicators = true;
+            }
             changes.repos_changed |= add(state, repo);
         }
         AppEvent::ScanComplete => {
@@ -165,7 +172,16 @@ pub(crate) fn handle_event(
             state.repo_view.open_roots = workspaces
                 .iter()
                 .filter_map(|workspace| workspace.worktree.as_ref())
-                .map(|worktree| canonical_or_original(Path::new(&worktree.repo_root)))
+                .map(|worktree| crate::path::canonical_or_original(Path::new(&worktree.repo_root)))
+                .collect();
+            apply_open_indicators(state);
+        }
+        AppEvent::OpenFolderPanesLoaded { panes } => {
+            state.repo_view.open_folder_roots = panes
+                .iter()
+                .filter_map(|pane| pane.cwd.as_deref())
+                .map(Path::new)
+                .map(crate::path::canonical_or_original)
                 .collect();
             apply_open_indicators(state);
         }
@@ -183,7 +199,7 @@ pub(crate) fn handle_event(
             state.mode = Mode::RepoSelect;
             state.push_toast(ToastKind::Error, message);
         }
-        AppEvent::OpenWorkspacesFailed(message) => {
+        AppEvent::OpenWorkspacesFailed(message) | AppEvent::OpenFolderPanesFailed(message) => {
             state.push_toast(ToastKind::Warning, message);
         }
         event => return Some(event),
@@ -269,6 +285,7 @@ pub(crate) fn open_selected(
     };
     let repo_path = entry.repo.path.clone();
     let repo_name = entry.repo.name.clone();
+    let is_git = entry.repo.is_git;
     let Some(provider) = herdr else {
         state.push_toast(ToastKind::Error, "not running inside herdr");
         return;
@@ -277,7 +294,11 @@ pub(crate) fn open_selected(
         message: format!("Opening {repo_name}…"),
         branch: None,
     };
-    spawn_open_repo(provider, sender, repo_path, state.on_open.clone());
+    if is_git {
+        spawn_open_repo(provider, sender, repo_path, state.on_open.clone());
+    } else {
+        spawn_open_folder(provider, sender, repo_path);
+    }
 }
 
 fn add(state: &mut AppState, repo: Repo) -> bool {
@@ -285,10 +306,12 @@ fn add(state: &mut AppState, repo: Repo) -> bool {
         return false;
     }
     let mut entry = RepoEntry::new(repo);
-    entry.is_open = state
-        .repo_view
-        .open_roots
-        .contains(&canonical_or_original(&entry.repo.path));
+    let canonical = crate::path::canonical_or_original(&entry.repo.path);
+    entry.is_open = if entry.repo.is_git {
+        state.repo_view.open_roots.contains(&canonical)
+    } else {
+        state.repo_view.open_folder_roots.contains(&canonical)
+    };
     state.repo_view.entries.push(entry);
     true
 }
@@ -306,16 +329,15 @@ fn apply_collisions(state: &mut AppState) {
     }
 }
 
-fn canonical_or_original(path: &Path) -> PathBuf {
-    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-}
-
 fn apply_open_indicators(state: &mut AppState) {
     for entry in &mut state.repo_view.entries {
-        let repo_path = canonical_or_original(&entry.repo.path);
-        entry.is_open = state
-            .repo_view
-            .open_roots
+        let repo_path = crate::path::canonical_or_original(&entry.repo.path);
+        let open_paths = if entry.repo.is_git {
+            &state.repo_view.open_roots
+        } else {
+            &state.repo_view.open_folder_roots
+        };
+        entry.is_open = open_paths
             .iter()
             .any(|open_path| crate::path::equivalent(open_path, &repo_path));
     }

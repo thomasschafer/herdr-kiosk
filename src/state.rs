@@ -489,6 +489,7 @@ mod tests {
                 .to_string_lossy()
                 .into_owned(),
             path: path.into(),
+            is_git: true,
             worktrees: Vec::new(),
         }
     }
@@ -574,6 +575,7 @@ mod tests {
         let repo = Repo {
             name: "repo".into(),
             path: "/repo".into(),
+            is_git: true,
             worktrees: vec![
                 Worktree {
                     path: "/repo".into(),

@@ -56,7 +56,17 @@ pub struct OpenedWorktree {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct PaneInfo {
-    pub pane_id: String,
+    pub workspace_id: String,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub foreground_cwd: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceCreateResponse {
+    pub workspace_id: Option<String>,
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -173,6 +183,13 @@ pub trait HerdrProvider: Send + Sync {
     ) -> Result<WorktreeRemoveResponse, HerdrError>;
     fn worktree_list(&self, cwd: &Path) -> Result<WorktreeListResponse, HerdrError>;
     fn workspace_list(&self) -> Result<Vec<WorkspaceInfo>, HerdrError>;
+    fn pane_list(&self) -> Result<Vec<PaneInfo>, HerdrError>;
+    fn workspace_create(
+        &self,
+        cwd: &Path,
+        focus: bool,
+    ) -> Result<WorkspaceCreateResponse, HerdrError>;
+    fn workspace_focus(&self, workspace_id: &str) -> Result<(), HerdrError>;
     fn pane_split(&self, request: &PaneSplitRequest) -> Result<PaneSplitResponse, HerdrError>;
     fn pane_run(&self, pane_id: &str, command: &str) -> Result<PaneRunResponse, HerdrError>;
     fn notification_show(&self, title: &str, body: &str) -> Result<(), HerdrError>;
@@ -377,6 +394,41 @@ impl HerdrProvider for CliHerdrProvider {
         }
     }
 
+    fn pane_list(&self) -> Result<Vec<PaneInfo>, HerdrError> {
+        let args = vec!["pane".into(), "list".into()];
+        match self.invoke::<PaneListResult>(&args)? {
+            PaneListResult::PaneList { panes } => Ok(panes),
+        }
+    }
+
+    fn workspace_create(
+        &self,
+        cwd: &Path,
+        focus: bool,
+    ) -> Result<WorkspaceCreateResponse, HerdrError> {
+        require_absolute("cwd", cwd)?;
+        let mut args = vec![
+            "workspace".into(),
+            "create".into(),
+            "--cwd".into(),
+            path_arg("cwd", cwd)?,
+        ];
+        args.push(if focus { "--focus" } else { "--no-focus" }.into());
+        let (result, warning) = self.invoke_side_effect::<WorkspaceCreateResult>(&args)?;
+        Ok(WorkspaceCreateResponse {
+            workspace_id: result.map(|result| match result {
+                WorkspaceCreateResult::WorkspaceCreated { workspace } => workspace.workspace_id,
+            }),
+            warning,
+        })
+    }
+
+    fn workspace_focus(&self, workspace_id: &str) -> Result<(), HerdrError> {
+        require_nonempty("workspace id", workspace_id)?;
+        self.invoke_output(&["workspace".into(), "focus".into(), workspace_id.into()])?;
+        Ok(())
+    }
+
     fn pane_split(&self, request: &PaneSplitRequest) -> Result<PaneSplitResponse, HerdrError> {
         require_nonempty("pane id", &request.pane_id)?;
         require_absolute("cwd", &request.cwd)?;
@@ -462,6 +514,23 @@ enum WorkspaceListResult {
 
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+enum PaneListResult {
+    PaneList { panes: Vec<PaneInfo> },
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum WorkspaceCreateResult {
+    WorkspaceCreated { workspace: WorkspaceIdentity },
+}
+
+#[derive(Deserialize)]
+struct WorkspaceIdentity {
+    workspace_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 enum WorktreeListResult {
     WorktreeList { worktrees: Vec<WorktreeInfo> },
 }
@@ -470,7 +539,7 @@ enum WorktreeListResult {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum WorktreeCreateResult {
     WorktreeCreated {
-        root_pane: PaneInfo,
+        root_pane: RootPaneInfo,
         worktree: WorktreePath,
     },
 }
@@ -479,7 +548,7 @@ enum WorktreeCreateResult {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum WorktreeOpenResult {
     WorktreeOpened {
-        root_pane: PaneInfo,
+        root_pane: RootPaneInfo,
         worktree: WorktreePath,
         already_open: bool,
     },
@@ -488,7 +557,7 @@ enum WorktreeOpenResult {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum PaneSplitResult {
-    PaneInfo { pane: PaneInfo },
+    PaneInfo { pane: RootPaneInfo },
 }
 
 #[derive(Deserialize)]
@@ -506,6 +575,11 @@ enum WorktreeRemoveResult {
 #[derive(Deserialize)]
 struct WorktreePath {
     path: String,
+}
+
+#[derive(Deserialize)]
+struct RootPaneInfo {
+    pane_id: String,
 }
 
 fn require_absolute(name: &str, path: &Path) -> Result<(), HerdrError> {
@@ -619,6 +693,19 @@ mod tests {
                 .map(|worktree| worktree.repo_root.as_str()),
             Some("/repo")
         );
+    }
+
+    #[test]
+    fn parses_pane_list_with_only_folder_identity_fields() {
+        let json = r#"{"result":{"type":"pane_list","panes":[
+            {"pane_id":"p_1","workspace_id":"w_1","cwd":"/folder","foreground_cwd":"/folder/subdir"},
+            {"pane_id":"p_2","workspace_id":"w_2"}
+        ]}}"#;
+        let PaneListResult::PaneList { panes } = parse_success(json);
+        assert_eq!(panes[0].workspace_id, "w_1");
+        assert_eq!(panes[0].cwd.as_deref(), Some("/folder"));
+        assert_eq!(panes[0].foreground_cwd.as_deref(), Some("/folder/subdir"));
+        assert!(panes[1].cwd.is_none());
     }
 
     #[test]
@@ -746,6 +833,19 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn cli_uses_unscoped_pane_list() {
+        let temp = TempDir::new().unwrap();
+        let response =
+            r#"{"result":{"type":"pane_list","panes":[{"workspace_id":"w_1","cwd":"/folder"}]}}"#;
+        let (binary, args_file) = fake_herdr(&temp, response);
+        let provider = CliHerdrProvider::new(binary);
+        let panes = retry_fake_herdr(|| provider.pane_list());
+        assert_eq!(panes[0].cwd.as_deref(), Some("/folder"));
+        assert_eq!(fs::read_to_string(args_file).unwrap().trim(), "pane list");
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn cli_uses_json_flag_only_for_worktree_list() {
         let temp = TempDir::new().unwrap();
         let response = format!(
@@ -829,6 +929,36 @@ mod tests {
         assert_eq!(
             fs::read_to_string(args_file).unwrap().trim(),
             "worktree remove --workspace w_2 --force"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_builds_exact_workspace_create_and_focus_calls() {
+        let create_temp = TempDir::new().unwrap();
+        let create_response = format!(
+            r#"{{"result":{{"type":"workspace_created","workspace":{WORKSPACE},"tab":{{}},"root_pane":{ROOT_PANE}}}}}"#
+        );
+        let (binary, args_file) = fake_herdr(&create_temp, &create_response);
+        let provider = CliHerdrProvider::new(binary);
+        let response =
+            retry_fake_herdr(|| provider.workspace_create(Path::new("/plain folder"), true));
+        assert_eq!(response.workspace_id.as_deref(), Some("w_1"));
+        assert_eq!(
+            fs::read_to_string(args_file).unwrap().trim(),
+            "workspace create --cwd /plain folder --focus"
+        );
+
+        let focus_temp = TempDir::new().unwrap();
+        let (binary, args_file) = fake_herdr(
+            &focus_temp,
+            r#"{"result":{"type":"workspace_info","workspace":{"workspace_id":"w_1"}}}"#,
+        );
+        let provider = CliHerdrProvider::new(binary);
+        retry_fake_herdr(|| provider.workspace_focus("w_1"));
+        assert_eq!(
+            fs::read_to_string(args_file).unwrap().trim(),
+            "workspace focus w_1"
         );
     }
 
@@ -961,6 +1091,10 @@ mod tests {
         let provider = CliHerdrProvider::new("/does/not/exist");
         assert!(matches!(
             provider.worktree_list(Path::new("relative")),
+            Err(HerdrError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            provider.workspace_create(Path::new("relative"), true),
             Err(HerdrError::InvalidArgument(_))
         ));
     }

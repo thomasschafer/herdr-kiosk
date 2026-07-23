@@ -565,6 +565,13 @@ pub(crate) fn enter(
     let Some(entry) = state.selected_repo() else {
         return;
     };
+    if !entry.repo.is_git {
+        state.push_toast(
+            ToastKind::Warning,
+            "Branches are only available for git repositories",
+        );
+        return;
+    }
     let context = BranchContext {
         repo_path: entry.repo.path.clone(),
         repo_name: entry.repo.name.clone(),

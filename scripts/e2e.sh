@@ -47,6 +47,7 @@ make_repo "$HK_ROOT/repos/beta/repo-same"
 make_repo "$HK_ROOT/repos/deep/level-one/level-two/nested-repo"
 make_repo "$HK_ROOT/repos/direct/open-me"
 make_repo "$HK_ROOT/repos/UpperCase/open-me-upper"
+mkdir -p "$HK_ROOT/plain-search/notes-folder"
 git -C "$HK_ROOT/repos/direct/open-me" branch feature
 git -C "$HK_ROOT/repos/direct/open-me" branch plain
 mkdir -p "$HK_ROOT/existing-worktrees"
@@ -129,6 +130,42 @@ assert_screen_absent "Welcome to herdr-kiosk"
 t send-keys -t "$SESSION" C-c
 wait_screen_absent "No search directories configured"
 printf 'existing empty search_dirs keeps the explicit empty-config screen: ok\n'
+
+cat >"$PLUGIN_CONFIG_DIR/config.toml" <<EOF
+search_dirs = [
+  { path = "$HK_ROOT/plain-search", depth = 1, include_non_git = true },
+]
+EOF
+FOLDER_WORKSPACE_COUNT_BEFORE=$(workspace_count)
+h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
+wait_screen_contains "herdr-kiosk — select repo"
+wait_screen_contains "notes-folder"
+wait_screen_absent "scanning…"
+assert_screen_line_contains_all "notes-folder" "dir"
+t send-keys -t "$SESSION" notes-folder
+wait_screen_contains "1 of 1 repos"
+t send-keys -t "$SESSION" Enter
+wait_screen_absent "herdr-kiosk — select repo" 120
+wait_pane_cwd "$HK_ROOT/plain-search/notes-folder"
+FOLDER_WORKSPACE_ID=$(workspace_id_for_cwd "$HK_ROOT/plain-search/notes-folder")
+[ -n "$FOLDER_WORKSPACE_ID" ] || fail "plain folder workspace id was empty"
+assert_focused_workspace "$FOLDER_WORKSPACE_ID"
+FOLDER_WORKSPACE_COUNT_CREATED=$(workspace_count)
+[ "$FOLDER_WORKSPACE_COUNT_CREATED" = "$((FOLDER_WORKSPACE_COUNT_BEFORE + 1))" ] \
+    || fail "opening a plain folder did not create exactly one workspace"
+
+h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
+wait_screen_contains "herdr-kiosk — select repo"
+t send-keys -t "$SESSION" notes-folder
+wait_screen_contains "1 of 1 repos"
+wait_screen_contains "● open"
+t send-keys -t "$SESSION" Enter
+wait_screen_absent "herdr-kiosk — select repo" 120
+assert_focused_workspace "$FOLDER_WORKSPACE_ID"
+FOLDER_WORKSPACE_COUNT_REOPENED=$(workspace_count)
+[ "$FOLDER_WORKSPACE_COUNT_REOPENED" = "$FOLDER_WORKSPACE_COUNT_CREATED" ] \
+    || fail "reopening a plain folder created a duplicate workspace"
+printf 'plain folder discovery marker, create, focus, and reopen idempotence: ok\n'
 
 write_picker_config() {
     cat >"$PLUGIN_CONFIG_DIR/config.toml" <<EOF

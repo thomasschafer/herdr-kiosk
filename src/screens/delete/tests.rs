@@ -31,6 +31,7 @@ fn state_with_repo() -> AppState {
     state.repo_view.entries.push(RepoEntry::new(Repo {
         name: "repo".into(),
         path: "/repo".into(),
+        is_git: true,
         worktrees: Vec::new(),
     }));
     state.repo_view.list = SearchableList::new(1);
