@@ -24,8 +24,8 @@ cp "$PROJECT_ROOT/herdr-plugin.toml" "$TEST_ROOT/repo/"
 cat >"$TEST_ROOT/bin/uname" <<'EOF'
 #!/bin/sh
 case "$1" in
-    -s) printf 'Linux\n' ;;
-    -m) printf 'x86_64\n' ;;
+    -s) printf '%s\n' "$HK_TEST_OS" ;;
+    -m) printf '%s\n' "$HK_TEST_ARCH" ;;
     *) exit 2 ;;
 esac
 EOF
@@ -71,6 +71,8 @@ run_installer() {
         HK_WGET="$TEST_ROOT/bin/missing-wget" \
         HK_CARGO="$TEST_ROOT/bin/cargo" \
         HK_TEST_LOG="$TEST_ROOT/cargo.log" \
+        HK_TEST_OS="${HK_TEST_OS:-Linux}" \
+        HK_TEST_ARCH="${HK_TEST_ARCH:-x86_64}" \
         "$TEST_ROOT/repo/scripts/fetch-or-build.sh"
 }
 
@@ -104,5 +106,31 @@ cmp "$BASE/$ASSET" "$TEST_ROOT/out/herdr-kiosk"
 [ ! -e "$TEST_ROOT/cargo.log" ]
 grep -Fq 'installed verified' "$TEST_ROOT/success.out"
 printf 'successful stubbed download: ok\n'
+
+assert_target_mapping() {
+    os=$1
+    arch=$2
+    target=$3
+    asset="herdr-kiosk-v${VERSION}-${target}"
+    printf '#!/bin/sh\nprintf "stubbed %s binary\\n"\n' "$target" >"$BASE/$asset"
+    if command -v sha256sum >/dev/null 2>&1; then
+        checksum=$(sha256sum "$BASE/$asset" | awk '{ print $1 }')
+    else
+        checksum=$(shasum -a 256 "$BASE/$asset" | awk '{ print $1 }')
+    fi
+    printf '%s  %s\n' "$checksum" "$asset" >"$BASE/SHA256SUMS"
+    rm -f "$TEST_ROOT/cargo.log" "$TEST_ROOT/out/herdr-kiosk"
+    HK_TEST_OS=$os HK_TEST_ARCH=$arch run_installer \
+        >"$TEST_ROOT/mapping.out" 2>"$TEST_ROOT/mapping.err"
+    cmp "$BASE/$asset" "$TEST_ROOT/out/herdr-kiosk"
+    [ ! -e "$TEST_ROOT/cargo.log" ]
+    grep -Fq "installed verified $asset" "$TEST_ROOT/mapping.out"
+}
+
+assert_target_mapping Linux x86_64 x86_64-unknown-linux-gnu
+assert_target_mapping Linux aarch64 aarch64-unknown-linux-gnu
+assert_target_mapping Darwin x86_64 x86_64-apple-darwin
+assert_target_mapping Darwin arm64 aarch64-apple-darwin
+printf 'supported Unix target mappings: ok\n'
 
 printf 'fetch-or-build tests: PASS\n'
