@@ -14,6 +14,7 @@ use rayon::ThreadPoolBuilder;
 use crate::{
     config::{OnOpenConfig, ResolvedSearchDir},
     event::{AppEvent, BranchOperationFailure, WorktreeRemovalOutcome},
+    folder_bindings::FolderBindings,
     git::{
         GitProvider, Repo, ScanWarning, is_dirty_worktree_requires_force,
         is_local_branch_already_exists,
@@ -249,22 +250,8 @@ pub fn spawn_open_folder(
     let sender = sender.clone();
     thread::spawn(move || {
         let target = crate::path::canonical_or_original(&folder_path);
-        let result = (|| {
-            let panes = provider.pane_list()?;
-            if let Some(workspace_id) = panes.iter().find_map(|pane| {
-                pane.cwd.as_deref().and_then(|cwd| {
-                    let cwd = crate::path::canonical_or_original(Path::new(cwd));
-                    crate::path::equivalent(&cwd, &target).then(|| pane.workspace_id.clone())
-                })
-            }) {
-                provider.workspace_focus(&workspace_id)?;
-                Ok(None)
-            } else {
-                provider
-                    .workspace_create(&target, true)
-                    .map(|response| response.warning)
-            }
-        })();
+        let mut bindings = FolderBindings::load();
+        let result = open_folder(provider.as_ref(), &target, &mut bindings);
         match result {
             Ok(warning) => {
                 record_success(RecencyKey::repo(&target));
@@ -275,6 +262,40 @@ pub fn spawn_open_folder(
             }
         }
     });
+}
+
+fn open_folder(
+    provider: &dyn HerdrProvider,
+    target: &Path,
+    bindings: &mut FolderBindings,
+) -> Result<Option<String>, HerdrError> {
+    let panes = provider.pane_list()?;
+    if let Some(workspace_id) = bindings
+        .lookup(target)
+        .filter(|workspace_id| panes.iter().any(|pane| pane.workspace_id == *workspace_id))
+        .map(str::to_owned)
+    {
+        provider.workspace_focus(&workspace_id)?;
+        return Ok(None);
+    }
+    bindings.remove(target);
+
+    if let Some(workspace_id) = panes.iter().find_map(|pane| {
+        pane.cwd.as_deref().and_then(|cwd| {
+            let cwd = crate::path::canonical_or_original(Path::new(cwd));
+            crate::path::equivalent(&cwd, target).then(|| pane.workspace_id.clone())
+        })
+    }) {
+        provider.workspace_focus(&workspace_id)?;
+        bindings.record(target, workspace_id);
+        return Ok(None);
+    }
+
+    let response = provider.workspace_create(target, true)?;
+    if let Some(workspace_id) = response.workspace_id {
+        bindings.record(target, workspace_id);
+    }
+    Ok(response.warning)
 }
 
 pub fn spawn_branch_loading(
@@ -911,8 +932,8 @@ mod tests {
         config::{OnOpenPaneConfig, OnOpenPaneDirection},
         git::{Repo, Worktree, mock::MockGitProvider},
         herdr::{
-            OpenedWorktree, PaneRunResponse, PaneSplitResponse, WorktreeInfo, WorktreeListResponse,
-            WorktreeOpenResponse,
+            OpenedWorktree, PaneInfo, PaneRunResponse, PaneSplitResponse, WorkspaceCreateResponse,
+            WorktreeInfo, WorktreeListResponse, WorktreeOpenResponse,
             mock::{HerdrCall, MockHerdrProvider},
         },
     };
@@ -1181,6 +1202,139 @@ mod tests {
             .iter()
             .filter(|call| matches!(call, HerdrCall::PaneSplit(_) | HerdrCall::PaneRun { .. }))
             .count()
+    }
+
+    #[test]
+    fn folder_binding_focuses_a_live_workspace_despite_a_different_cwd() {
+        let mock = MockHerdrProvider::default();
+        mock.pane_list_results
+            .lock()
+            .unwrap()
+            .push_back(Ok(vec![PaneInfo {
+                workspace_id: "w_bound".into(),
+                cwd: Some("/different".into()),
+                foreground_cwd: None,
+            }]));
+        mock.workspace_focus_results
+            .lock()
+            .unwrap()
+            .push_back(Ok(()));
+        let mut bindings = FolderBindings::default();
+        bindings.record(Path::new("/folder"), "w_bound".into());
+
+        assert_eq!(
+            open_folder(&mock, Path::new("/folder"), &mut bindings).unwrap(),
+            None
+        );
+        assert_eq!(
+            *mock.calls.lock().unwrap(),
+            [
+                HerdrCall::PaneList,
+                HerdrCall::WorkspaceFocus {
+                    workspace_id: "w_bound".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn stale_folder_binding_falls_through_to_cwd_match_and_is_refreshed() {
+        let mock = MockHerdrProvider::default();
+        mock.pane_list_results
+            .lock()
+            .unwrap()
+            .push_back(Ok(vec![PaneInfo {
+                workspace_id: "w_matching".into(),
+                cwd: Some("/folder".into()),
+                foreground_cwd: None,
+            }]));
+        mock.workspace_focus_results
+            .lock()
+            .unwrap()
+            .push_back(Ok(()));
+        let mut bindings = FolderBindings::default();
+        bindings.record(Path::new("/folder"), "w_dead".into());
+
+        assert_eq!(
+            open_folder(&mock, Path::new("/folder"), &mut bindings).unwrap(),
+            None
+        );
+        assert_eq!(bindings.lookup(Path::new("/folder")), Some("w_matching"));
+        assert_eq!(
+            *mock.calls.lock().unwrap(),
+            [
+                HerdrCall::PaneList,
+                HerdrCall::WorkspaceFocus {
+                    workspace_id: "w_matching".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn unmatched_folder_creates_a_workspace_and_records_its_id() {
+        let mock = MockHerdrProvider::default();
+        mock.pane_list_results
+            .lock()
+            .unwrap()
+            .push_back(Ok(Vec::new()));
+        mock.workspace_create_results
+            .lock()
+            .unwrap()
+            .push_back(Ok(WorkspaceCreateResponse {
+                workspace_id: Some("w_created".into()),
+                warning: Some("created with warning".into()),
+            }));
+        let mut bindings = FolderBindings::default();
+
+        assert_eq!(
+            open_folder(&mock, Path::new("/folder"), &mut bindings).unwrap(),
+            Some("created with warning".into())
+        );
+        assert_eq!(bindings.lookup(Path::new("/folder")), Some("w_created"));
+        assert_eq!(
+            *mock.calls.lock().unwrap(),
+            [
+                HerdrCall::PaneList,
+                HerdrCall::WorkspaceCreate {
+                    cwd: "/folder".into(),
+                    focus: true,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn cwd_match_focuses_the_workspace_and_records_a_binding() {
+        let mock = MockHerdrProvider::default();
+        mock.pane_list_results
+            .lock()
+            .unwrap()
+            .push_back(Ok(vec![PaneInfo {
+                workspace_id: "w_matching".into(),
+                cwd: Some("/folder".into()),
+                foreground_cwd: Some("/different".into()),
+            }]));
+        mock.workspace_focus_results
+            .lock()
+            .unwrap()
+            .push_back(Ok(()));
+        let mut bindings = FolderBindings::default();
+
+        assert_eq!(
+            open_folder(&mock, Path::new("/folder"), &mut bindings).unwrap(),
+            None
+        );
+        assert_eq!(bindings.lookup(Path::new("/folder")), Some("w_matching"));
+        assert_eq!(
+            *mock.calls.lock().unwrap(),
+            [
+                HerdrCall::PaneList,
+                HerdrCall::WorkspaceFocus {
+                    workspace_id: "w_matching".into(),
+                },
+            ]
+        );
     }
 
     #[test]
