@@ -156,7 +156,7 @@ fn command_to_action(command: Command, state: &AppState) -> Option<Action> {
 
 fn active_query(state: &AppState) -> &str {
     match &state.mode {
-        Mode::RepoSelect => &state.repo_list.input.text,
+        Mode::RepoSelect => &state.repo_view.list.input.text,
         Mode::BranchSelect(_) => &state.branch_view.list.input.text,
         Mode::SelectBaseBranch { flow, .. } => &flow.list.input.text,
         Mode::Loading { .. }
@@ -233,13 +233,13 @@ mod tests {
             resolve_action(q, &state, &KeysConfig::default()),
             Some(Action::Quit)
         );
-        state.repo_list.input.text = "a".into();
+        state.repo_view.list.input.text = "a".into();
         assert_eq!(
             resolve_action(q, &state, &KeysConfig::default()),
             Some(Action::Insert('q'))
         );
 
-        state.repo_list.input.clear();
+        state.repo_view.list.input.clear();
         let keys = toml::from_str::<KeysConfig>("[repo_select]\nq = \"noop\"").unwrap();
         assert_eq!(resolve_action(q, &state, &keys), None);
     }

@@ -1,7 +1,6 @@
 use std::{
     collections::HashMap,
-    fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         Arc, Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -30,14 +29,10 @@ use crate::{
     herdr::HerdrProvider,
     keyboard::Action,
     spawn::{
-        EventSender, FetchDeduplicator, spawn_create_new_branch, spawn_git_fetch, spawn_open_repo,
-        spawn_remote_branch_loading, spawn_repo_discovery, spawn_validate_branch_name,
-        spawn_workspace_list,
+        EventSender, FetchDeduplicator, spawn_git_fetch, spawn_remote_branch_loading,
+        spawn_repo_discovery, spawn_workspace_list,
     },
-    state::{
-        AppState, BaseBranchSelection, BranchId, Mode, NewBranchRoute, RepoEntry, SearchableList,
-        ToastKind, collision_disambiguators,
-    },
+    state::{AppState, BranchId, Mode, SearchableList},
     theme::Theme,
 };
 
@@ -205,19 +200,7 @@ pub fn run(
             break outcome;
         }
 
-        if changes.repos_changed {
-            state.canonical_sort();
-            state.apply_current_repo_selection();
-        }
-        if changes.collision_pass {
-            apply_collisions(state);
-            state.canonical_sort();
-            state.apply_current_repo_selection();
-            changes.repos_changed = true;
-        }
-        if changes.repos_changed && matches!(state.mode, Mode::RepoSelect) {
-            queue_repo_filter(state, &filter_worker, true);
-        }
+        crate::screens::repo::apply_changes(state, &mut changes, &filter_worker);
         if changes.branches_changed {
             crate::screens::branch::queue_filter(
                 state,
@@ -295,35 +278,19 @@ pub(crate) fn process_app_event(event: AppEvent, state: &mut AppState, changes: 
     let Some(event) = crate::screens::delete::handle_event(event, state, changes) else {
         return;
     };
+    let Some(event) = crate::screens::repo::handle_event(event, state, changes) else {
+        return;
+    };
+    let Some(event) = crate::screens::new_branch::handle_event(event, state, changes) else {
+        return;
+    };
     match event {
-        AppEvent::ReposFound { repo } => changes.repos_changed |= add_repo(state, repo),
-        AppEvent::ScanComplete => {
-            state.loading_repos = false;
-            changes.collision_pass = true;
-        }
-        AppEvent::ScanWarning(_warning) => {
-            state.push_scan_warning();
-        }
-        AppEvent::OpenWorkspacesLoaded { workspaces } => {
-            state.open_repo_roots = workspaces
-                .iter()
-                .filter_map(|workspace| workspace.worktree.as_ref())
-                .map(|worktree| canonical_or_original(Path::new(&worktree.repo_root)))
-                .collect();
-            apply_open_indicators(state);
-        }
         AppEvent::FilterCompleted {
             target,
             generation,
             matches,
             selected,
         } => match target {
-            FilterTarget::Repos if generation == state.repo_filter_generation => {
-                apply_repo_filter_result(state, &matches, selected.as_ref());
-            }
-            FilterTarget::Bases if generation == state.base_filter_generation => {
-                apply_base_filter_result(state, &matches, selected.as_ref());
-            }
             FilterTarget::Help if generation == state.help_filter_generation => {
                 apply_help_filter_result(state, &matches, selected.as_ref());
             }
@@ -332,71 +299,9 @@ pub(crate) fn process_app_event(event: AppEvent, state: &mut AppState, changes: 
             | FilterTarget::Bases
             | FilterTarget::Help => {}
         },
-        AppEvent::BranchNameValidated {
-            repo_path,
-            branch_name,
-            valid,
-            error,
-        } if matches!(
-            &state.mode,
-            Mode::ValidatingNewBranch { context, name }
-                if context.repo_path == repo_path && name == &branch_name
-        ) =>
-        {
-            let context = state.branch_context().cloned().unwrap();
-            if let Some(error) = error {
-                state.mode = Mode::BranchSelect(context);
-                state.push_toast(ToastKind::Error, error);
-            } else if !valid {
-                state.mode = Mode::BranchSelect(context);
-                state.push_toast(
-                    ToastKind::Error,
-                    format!("Invalid branch name: {branch_name}"),
-                );
-            } else {
-                let local = state
-                    .branch_view
-                    .entries
-                    .iter()
-                    .filter(|branch| branch.remote.is_none())
-                    .collect::<Vec<_>>();
-                if local.is_empty() {
-                    state.mode = Mode::BranchSelect(context);
-                    state.push_toast(ToastKind::Error, "No local branches to use as base");
-                } else {
-                    let bases = local
-                        .iter()
-                        .map(|branch| branch.name.clone())
-                        .collect::<Vec<_>>();
-                    let mut list = SearchableList::new(bases.len());
-                    list.selected = local
-                        .iter()
-                        .position(|branch| branch.is_default)
-                        .or(Some(0));
-                    state.base_filter_generation = state.base_filter_generation.wrapping_add(1);
-                    state.mode = Mode::SelectBaseBranch {
-                        context,
-                        flow: BaseBranchSelection {
-                            new_name: branch_name,
-                            bases,
-                            list,
-                        },
-                    };
-                }
-            }
-        }
         AppEvent::RepoOpened { warning } => {
             changes.open_warning = warning;
             changes.workspace_opened = true;
-        }
-        AppEvent::RepoOpenFailed(message)
-            if matches!(state.mode, Mode::Loading { branch: None, .. }) =>
-        {
-            state.mode = Mode::RepoSelect;
-            state.push_toast(ToastKind::Error, message);
-        }
-        AppEvent::OpenWorkspacesFailed(message) => {
-            state.push_toast(ToastKind::Warning, message);
         }
         _ => {}
     }
@@ -436,12 +341,11 @@ pub(crate) fn process_action(
             if let Some(overlay) = &mut state.help_overlay {
                 overlay.list.move_selection(delta);
             } else if matches!(state.mode, Mode::RepoSelect) {
-                state.selection_touched = true;
-                state.repo_list.move_selection(delta);
+                crate::screens::repo::move_selection(state, delta);
             } else if matches!(state.mode, Mode::BranchSelect(_)) {
                 crate::screens::branch::move_selection(state, delta);
-            } else if let Mode::SelectBaseBranch { flow, .. } = &mut state.mode {
-                flow.list.move_selection(delta);
+            } else if matches!(state.mode, Mode::SelectBaseBranch { .. }) {
+                crate::screens::new_branch::move_selection(state, delta);
             }
         }
         Action::Insert(character) => {
@@ -460,11 +364,11 @@ pub(crate) fn process_action(
         Action::ClearQuery => {
             edit_active_list(state, filter_worker, |list| list.input.clear());
         }
-        Action::OpenRepo => begin_open_selected(state, herdr, sender),
+        Action::OpenRepo => crate::screens::repo::open_selected(state, herdr, sender),
         Action::OpenBranches => crate::screens::branch::enter(state, git, herdr, sender),
         Action::OpenBranch => crate::screens::branch::open_selected(state, git, herdr, sender),
-        Action::StartNewBranch => begin_start_new_branch(state, git, herdr, sender),
-        Action::CreateNewBranch => begin_create_new_branch(state, herdr, sender),
+        Action::StartNewBranch => crate::screens::new_branch::start(state, git, herdr, sender),
+        Action::CreateNewBranch => crate::screens::new_branch::create(state, herdr, sender),
         Action::DeleteWorktree => crate::screens::delete::begin(state),
         Action::ConfirmDeleteWorktree => {
             crate::screens::delete::confirm(state, git, herdr, sender);
@@ -472,7 +376,7 @@ pub(crate) fn process_action(
         Action::CancelOverlay => cancel_overlay(state),
         Action::BackToRepos => {
             crate::screens::branch::leave(state);
-            queue_repo_filter(state, filter_worker, true);
+            crate::screens::repo::queue_filter(state, filter_worker, true);
         }
         Action::DismissToast => {
             state.dismiss_toast();
@@ -498,7 +402,7 @@ fn active_list_mut(state: &mut AppState) -> &mut SearchableList {
         Mode::RepoSelect
         | Mode::Loading { .. }
         | Mode::ValidatingNewBranch { .. }
-        | Mode::ConfirmWorktreeDelete(_) => &mut state.repo_list,
+        | Mode::ConfirmWorktreeDelete(_) => &mut state.repo_view.list,
     }
 }
 
@@ -514,127 +418,18 @@ fn edit_active_list(
     }
     match state.mode {
         Mode::RepoSelect => {
-            state.selection_touched = true;
-            edit(&mut state.repo_list);
-            queue_repo_filter(state, worker, false);
+            crate::screens::repo::edit(state, worker, edit);
         }
         Mode::BranchSelect(_) => {
             crate::screens::branch::edit(state, worker, edit);
         }
         Mode::SelectBaseBranch { .. } => {
-            if let Mode::SelectBaseBranch { flow, .. } = &mut state.mode {
-                edit(&mut flow.list);
-            }
-            queue_base_filter(state, worker, None);
+            crate::screens::new_branch::edit(state, worker, edit);
         }
         Mode::Loading { .. }
         | Mode::ValidatingNewBranch { .. }
         | Mode::ConfirmWorktreeDelete(_) => {}
     }
-}
-
-fn add_repo(state: &mut AppState, repo: Repo) -> bool {
-    if !state.seen_repo_paths.insert(repo.path.clone()) {
-        return false;
-    }
-    let mut entry = RepoEntry::new(repo);
-    entry.is_open = state
-        .open_repo_roots
-        .contains(&canonical_or_original(&entry.repo.path));
-    state.repos.push(entry);
-    true
-}
-
-fn apply_collisions(state: &mut AppState) {
-    let repos = state
-        .repos
-        .iter()
-        .map(|entry| entry.repo.clone())
-        .collect::<Vec<_>>();
-    let disambiguators = collision_disambiguators(&repos);
-    for (entry, disambiguator) in state.repos.iter_mut().zip(disambiguators) {
-        entry.disambiguator = disambiguator;
-    }
-}
-
-fn canonical_or_original(path: &Path) -> PathBuf {
-    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-}
-
-fn apply_open_indicators(state: &mut AppState) {
-    for entry in &mut state.repos {
-        let repo_path = canonical_or_original(&entry.repo.path);
-        entry.is_open = state
-            .open_repo_roots
-            .iter()
-            .any(|open_path| crate::path::equivalent(open_path, &repo_path));
-    }
-}
-
-fn queue_repo_filter(state: &mut AppState, worker: &FilterWorker, preserve_selection: bool) {
-    state.repo_filter_generation = state.repo_filter_generation.wrapping_add(1);
-    if state.repo_list.input.text.is_empty() {
-        state.canonical_sort();
-        if !preserve_selection {
-            state.repo_list.selected = (!state.repos.is_empty()).then_some(0);
-        }
-        if preserve_selection {
-            state.apply_current_repo_selection();
-        }
-        return;
-    }
-    let selected = preserve_selection
-        .then(|| state.selected_repo().map(|entry| entry.repo.path.clone()))
-        .flatten()
-        .map(FilterKey::Repo);
-    worker.request(FilterRequest {
-        target: FilterTarget::Repos,
-        generation: state.repo_filter_generation,
-        query: state.repo_list.input.text.clone(),
-        items: state
-            .repos
-            .iter()
-            .map(|entry| FilterItem {
-                key: FilterKey::Repo(entry.repo.path.clone()),
-                text: entry.display_name(),
-            })
-            .collect(),
-        selected,
-    });
-}
-
-fn queue_base_filter(state: &mut AppState, worker: &FilterWorker, selected_name: Option<String>) {
-    state.base_filter_generation = state.base_filter_generation.wrapping_add(1);
-    let Mode::SelectBaseBranch { flow, .. } = &mut state.mode else {
-        return;
-    };
-    if flow.list.input.text.is_empty() {
-        flow.list.filtered = (0..flow.bases.len()).map(|index| (index, 0)).collect();
-        flow.list.selected = if flow.bases.is_empty() {
-            None
-        } else {
-            selected_name
-                .as_deref()
-                .and_then(|name| flow.bases.iter().position(|base| base == name))
-                .or(Some(0))
-        };
-        flow.list.scroll_offset = 0;
-        return;
-    }
-    worker.request(FilterRequest {
-        target: FilterTarget::Bases,
-        generation: state.base_filter_generation,
-        query: flow.list.input.text.clone(),
-        items: flow
-            .bases
-            .iter()
-            .map(|base| FilterItem {
-                key: FilterKey::Base(base.clone()),
-                text: base.clone(),
-            })
-            .collect(),
-        selected: selected_name.map(FilterKey::Base),
-    });
 }
 
 fn queue_help_filter(state: &mut AppState, worker: &FilterWorker, selected_index: Option<usize>) {
@@ -663,87 +458,6 @@ fn queue_help_filter(state: &mut AppState, worker: &FilterWorker, selected_index
             .collect(),
         selected: selected_index.map(FilterKey::Help),
     });
-}
-
-fn apply_repo_filter_result(
-    state: &mut AppState,
-    matches: &[(FilterKey, i64)],
-    selected: Option<&FilterKey>,
-) {
-    let current = state.selected_repo().map(|entry| entry.repo.path.clone());
-    let indices: HashMap<_, _> = state
-        .repos
-        .iter()
-        .enumerate()
-        .map(|(index, entry)| (entry.repo.path.as_path(), index))
-        .collect();
-    state.repo_list.filtered = matches
-        .iter()
-        .filter_map(|(key, score)| match key {
-            FilterKey::Repo(path) => indices.get(path.as_path()).map(|index| (*index, *score)),
-            FilterKey::Branch(_) | FilterKey::Base(_) | FilterKey::Help(_) => None,
-        })
-        .collect();
-    let requested = selected.and_then(|key| match key {
-        FilterKey::Repo(path) => Some(path.clone()),
-        FilterKey::Branch(_) | FilterKey::Base(_) | FilterKey::Help(_) => None,
-    });
-    state.repo_list.selected = current
-        .or(requested)
-        .as_ref()
-        .and_then(|path| {
-            state
-                .repo_list
-                .filtered
-                .iter()
-                .position(|(index, _)| state.repos[*index].repo.path == *path)
-        })
-        .or_else(|| (!state.repo_list.filtered.is_empty()).then_some(0));
-    state.repo_list.scroll_offset = 0;
-}
-
-fn apply_base_filter_result(
-    state: &mut AppState,
-    matches: &[(FilterKey, i64)],
-    selected: Option<&FilterKey>,
-) {
-    let Mode::SelectBaseBranch { flow, .. } = &mut state.mode else {
-        return;
-    };
-    let current = flow
-        .list
-        .selected
-        .and_then(|selected| flow.list.filtered.get(selected))
-        .and_then(|(index, _)| flow.bases.get(*index))
-        .cloned();
-    let indices: HashMap<_, _> = flow
-        .bases
-        .iter()
-        .enumerate()
-        .map(|(index, base)| (base.as_str(), index))
-        .collect();
-    flow.list.filtered = matches
-        .iter()
-        .filter_map(|(key, score)| match key {
-            FilterKey::Base(name) => indices.get(name.as_str()).map(|index| (*index, *score)),
-            FilterKey::Repo(_) | FilterKey::Branch(_) | FilterKey::Help(_) => None,
-        })
-        .collect();
-    let requested = selected.and_then(|key| match key {
-        FilterKey::Base(name) => Some(name.clone()),
-        FilterKey::Repo(_) | FilterKey::Branch(_) | FilterKey::Help(_) => None,
-    });
-    flow.list.selected = current
-        .or(requested)
-        .as_ref()
-        .and_then(|name| {
-            flow.list
-                .filtered
-                .iter()
-                .position(|(index, _)| flow.bases[*index] == *name)
-        })
-        .or_else(|| (!flow.list.filtered.is_empty()).then_some(0));
-    flow.list.scroll_offset = 0;
 }
 
 fn apply_help_filter_result(
@@ -788,98 +502,14 @@ fn apply_help_filter_result(
     overlay.list.scroll_offset = 0;
 }
 
-fn begin_open_selected(
-    state: &mut AppState,
-    herdr: Option<&Arc<dyn HerdrProvider>>,
-    sender: &EventSender,
-) {
-    let Some(entry) = state.selected_repo() else {
-        return;
-    };
-    let repo_path = entry.repo.path.clone();
-    let repo_name = entry.repo.name.clone();
-    let Some(provider) = herdr else {
-        state.push_toast(ToastKind::Error, "not running inside herdr");
-        return;
-    };
-    state.mode = Mode::Loading {
-        message: format!("Opening {repo_name}…"),
-        branch: None,
-    };
-    spawn_open_repo(provider, sender, repo_path, state.on_open.clone());
-}
-
-fn begin_start_new_branch(
-    state: &mut AppState,
-    git: &Arc<dyn GitProvider>,
-    herdr: Option<&Arc<dyn HerdrProvider>>,
-    sender: &EventSender,
-) {
-    match state.new_branch_route() {
-        Err(message) => state.push_toast(ToastKind::Error, message),
-        Ok(NewBranchRoute::Existing(branch)) => {
-            crate::screens::branch::open(state, git, herdr, sender, &branch);
-        }
-        Ok(NewBranchRoute::Validate { context, name }) => {
-            let repo_path = context.repo_path.clone();
-            state.mode = Mode::ValidatingNewBranch {
-                context,
-                name: name.clone(),
-            };
-            spawn_validate_branch_name(git, sender, repo_path, name);
-        }
-    }
-}
-
-fn begin_create_new_branch(
-    state: &mut AppState,
-    herdr: Option<&Arc<dyn HerdrProvider>>,
-    sender: &EventSender,
-) {
-    let Mode::SelectBaseBranch { context, flow } = &state.mode else {
-        return;
-    };
-    let Some(selected) = flow.list.selected else {
-        return;
-    };
-    let Some((base_index, _)) = flow.list.filtered.get(selected) else {
-        return;
-    };
-    let Some(base) = flow.bases.get(*base_index).cloned() else {
-        return;
-    };
-    let context = context.clone();
-    let branch_name = flow.new_name.clone();
-    let Some(provider) = herdr else {
-        state.mode = Mode::BranchSelect(context);
-        state.push_toast(ToastKind::Error, "not running inside herdr");
-        return;
-    };
-    state.mode = Mode::Loading {
-        message: format!("Creating {branch_name} from {base}…"),
-        branch: Some(context.clone()),
-    };
-    spawn_create_new_branch(
-        provider,
-        sender,
-        context.repo_path,
-        branch_name,
-        base,
-        state.on_open.clone(),
-    );
-}
-
 fn cancel_overlay(state: &mut AppState) {
     if crate::screens::delete::cancel(state) {
         return;
     }
-    let mode = state.mode.clone();
-    if let Mode::SelectBaseBranch { context, .. } = mode {
-        state.mode = Mode::BranchSelect(context);
-    }
+    crate::screens::new_branch::cancel(state);
 }
 
-fn draw(
+pub(crate) fn draw(
     frame: &mut Frame,
     state: &mut AppState,
     theme: &Theme,
@@ -956,7 +586,7 @@ fn animation_active(state: &AppState) -> bool {
     let branch_spinner =
         state.branch_view.loading || state.branch_view.fetching_remote_repo.is_some();
     match &state.mode {
-        Mode::RepoSelect => state.loading_repos,
+        Mode::RepoSelect => state.repo_view.loading,
         Mode::BranchSelect(_) | Mode::SelectBaseBranch { .. } => branch_spinner,
         Mode::ValidatingNewBranch { .. } | Mode::Loading { .. } => true,
         Mode::ConfirmWorktreeDelete(flow) => branch_spinner || flow.in_progress(),
@@ -1030,17 +660,12 @@ fn footer_spans<'a>(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashSet, sync::atomic::AtomicBool, time::Duration};
+    use std::sync::atomic::AtomicBool;
 
     use crate::{
         git::{Repo, mock::MockGitProvider},
-        herdr::{
-            HerdrError, HerdrProvider, OpenedWorktree, WorktreeCreateResponse,
-            mock::{HerdrCall, MockHerdrProvider},
-        },
-        state::{BranchContext, BranchEntry, BranchId, OpenWorktreeLoadState},
+        state::{BranchContext, BranchEntry, BranchId, OpenWorktreeLoadState, RepoEntry},
     };
-    use ratatui::{Terminal, backend::TestBackend};
 
     use super::*;
 
@@ -1204,37 +829,7 @@ mod tests {
     }
 
     #[test]
-    fn current_logical_selection_survives_current_generation_filter_results() {
-        let mut repo_state = AppState::new(None);
-        repo_state.repos = ["alpha", "beta", "gamma"]
-            .into_iter()
-            .map(|name| {
-                RepoEntry::new(Repo {
-                    name: name.into(),
-                    path: PathBuf::from(format!("/{name}")),
-                    worktrees: Vec::new(),
-                })
-            })
-            .collect();
-        repo_state.repo_list = SearchableList::new(3);
-        repo_state.repo_list.selected = Some(1);
-        repo_state.repo_filter_generation = 7;
-        process_app_event(
-            AppEvent::FilterCompleted {
-                target: FilterTarget::Repos,
-                generation: 7,
-                matches: vec![
-                    (FilterKey::Repo("/gamma".into()), 3),
-                    (FilterKey::Repo("/beta".into()), 2),
-                    (FilterKey::Repo("/alpha".into()), 1),
-                ],
-                selected: None,
-            },
-            &mut repo_state,
-            &mut TickChanges::default(),
-        );
-        assert_eq!(repo_state.selected_repo().unwrap().repo.name, "beta");
-
+    fn branch_logical_selection_survives_current_generation_filter_results() {
         let mut branch_state = state_with_branch(false);
         branch_state.branch_view.entries = ["alpha", "beta", "gamma"]
             .into_iter()
@@ -1265,84 +860,6 @@ mod tests {
             &mut TickChanges::default(),
         );
         assert_eq!(branch_state.selected_branch().unwrap().name, "beta");
-
-        let mut base_state = state_with_branch(false);
-        base_state.mode = Mode::SelectBaseBranch {
-            context: BranchContext {
-                repo_path: "/repo".into(),
-                repo_name: "repo".into(),
-            },
-            flow: BaseBranchSelection {
-                new_name: "new".into(),
-                bases: vec!["alpha".into(), "beta".into(), "gamma".into()],
-                list: SearchableList::new(3),
-            },
-        };
-        if let Mode::SelectBaseBranch { flow, .. } = &mut base_state.mode {
-            flow.list.selected = Some(1);
-        }
-        base_state.base_filter_generation = 11;
-        process_app_event(
-            AppEvent::FilterCompleted {
-                target: FilterTarget::Bases,
-                generation: 11,
-                matches: vec![
-                    (FilterKey::Base("gamma".into()), 3),
-                    (FilterKey::Base("beta".into()), 2),
-                    (FilterKey::Base("alpha".into()), 1),
-                ],
-                selected: None,
-            },
-            &mut base_state,
-            &mut TickChanges::default(),
-        );
-        let Mode::SelectBaseBranch { flow, .. } = &base_state.mode else {
-            unreachable!()
-        };
-        let selected = flow.list.selected.unwrap();
-        let index = flow.list.filtered[selected].0;
-        assert_eq!(flow.bases[index], "beta");
-    }
-
-    #[test]
-    fn base_picker_text_actions_edit_only_the_base_query() {
-        let mut state = state_with_branch(false);
-        state.branch_view.list.input.text = "underlying".into();
-        state.mode = Mode::SelectBaseBranch {
-            context: BranchContext {
-                repo_path: "/repo".into(),
-                repo_name: "repo".into(),
-            },
-            flow: BaseBranchSelection {
-                new_name: "feat/new".into(),
-                bases: vec!["main".into(), "feature".into()],
-                list: SearchableList::new(2),
-            },
-        };
-        let Mode::SelectBaseBranch { flow, .. } = &mut state.mode else {
-            unreachable!()
-        };
-        flow.list.input.text = "one two".into();
-        flow.list.input.cursor = flow.list.input.text.len();
-
-        let git = Arc::new(MockGitProvider::default()) as Arc<dyn GitProvider>;
-        let (sender, _rx) = sender();
-        let worker = FilterWorker::spawn(sender.clone());
-        let keys = KeysConfig::default();
-        for action in [
-            Action::CursorLeft,
-            Action::CursorRight,
-            Action::Backspace,
-            Action::DeleteWord,
-            Action::Insert('x'),
-        ] {
-            process_action(action, &mut state, &git, None, &sender, &worker, &keys);
-        }
-        let Mode::SelectBaseBranch { flow, .. } = &state.mode else {
-            unreachable!()
-        };
-        assert_eq!(flow.list.input.text, "one x");
-        assert_eq!(state.branch_view.list.input.text, "underlying");
     }
 
     #[test]
@@ -1361,7 +878,7 @@ mod tests {
             &worker,
             &keys,
         );
-        assert_eq!(state.repo_list.input.text, "é");
+        assert_eq!(state.repo_view.list.input.text, "é");
 
         state.mode = Mode::BranchSelect(BranchContext {
             repo_path: "/repo".into(),
@@ -1381,12 +898,12 @@ mod tests {
 
     fn state_with_repo() -> AppState {
         let mut state = AppState::new(None);
-        state.repos.push(RepoEntry::new(Repo {
+        state.repo_view.entries.push(RepoEntry::new(Repo {
             name: "repo".into(),
             path: "/repo".into(),
             worktrees: Vec::new(),
         }));
-        state.repo_list = crate::state::SearchableList::new(1);
+        state.repo_view.list = crate::state::SearchableList::new(1);
         state
     }
 
@@ -1412,270 +929,8 @@ mod tests {
         state
     }
 
-    #[test]
-    fn validating_new_branch_keeps_branch_view_visible_under_popup() {
-        let mut state = state_with_branch(false);
-        state.mode = Mode::ValidatingNewBranch {
-            context: BranchContext {
-                repo_path: "/repo".into(),
-                repo_name: "repo".into(),
-            },
-            name: "feat/new".into(),
-        };
-        let backend = TestBackend::new(100, 30);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let theme = Theme::from_config(&crate::config::ThemeConfig::default());
-        terminal
-            .draw(|frame| {
-                draw(
-                    frame,
-                    &mut state,
-                    &theme,
-                    &KeysConfig::default(),
-                    Instant::now(),
-                );
-            })
-            .unwrap();
-        let buffer = terminal.backend().buffer();
-        let rendered = buffer
-            .content()
-            .iter()
-            .map(ratatui::buffer::Cell::symbol)
-            .collect::<String>();
-        assert!(rendered.contains("repo — select branch"));
-        assert!(rendered.contains("feature"));
-        assert!(rendered.contains("New branch \"feat/new\""));
-        assert!(rendered.contains("Validating branch name…"));
-    }
-
-    fn opened_worktree() -> OpenedWorktree {
-        OpenedWorktree {
-            root_pane_id: "p_root".into(),
-            path: "/repo-feature".into(),
-        }
-    }
-
-    fn create_response() -> WorktreeCreateResponse {
-        WorktreeCreateResponse {
-            opened: Some(opened_worktree()),
-            warning: None,
-        }
-    }
-
     fn sender() -> (EventSender, mpsc::Receiver<AppEvent>) {
         let (tx, rx) = mpsc::channel();
         (EventSender::new(tx, Arc::new(AtomicBool::new(false))), rx)
-    }
-
-    #[test]
-    fn opening_transitions_to_loading_and_dispatches_through_mock_provider() {
-        let mock = Arc::new(MockHerdrProvider::default());
-        mock.worktree_open_results
-            .lock()
-            .unwrap()
-            .push_back(Err(HerdrError::WorktreeOpenFailed("boom".into())));
-        let provider: Arc<dyn HerdrProvider> = mock.clone();
-        let (sender, rx) = sender();
-        let mut state = state_with_repo();
-
-        begin_open_selected(&mut state, Some(&provider), &sender);
-
-        assert_eq!(
-            state.mode,
-            Mode::Loading {
-                message: "Opening repo…".into(),
-                branch: None,
-            }
-        );
-        let event = rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        assert!(matches!(
-            &event,
-            AppEvent::RepoOpenFailed(message) if message.contains("boom")
-        ));
-        process_app_event(event, &mut state, &mut TickChanges::default());
-        assert_eq!(state.mode, Mode::RepoSelect);
-        assert!(state.toasts.front().unwrap().message.contains("boom"));
-        assert_eq!(mock.calls.lock().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn opening_without_herdr_keeps_picker_usable_and_shows_error() {
-        let (sender, _rx) = sender();
-        let mut state = state_with_repo();
-        begin_open_selected(&mut state, None, &sender);
-        assert_eq!(state.mode, Mode::RepoSelect);
-        assert_eq!(
-            state.toasts.front().unwrap().message,
-            "not running inside herdr"
-        );
-    }
-
-    #[test]
-    fn invalid_new_branch_name_is_validated_by_git_and_returns_to_branch_view() {
-        let git_mock = Arc::new(MockGitProvider {
-            invalid_branch_names: HashSet::from(["bad..name".into()]),
-            ..MockGitProvider::default()
-        });
-        let git: Arc<dyn GitProvider> = git_mock.clone();
-        let (sender, rx) = sender();
-        let mut state = state_with_branch(false);
-        state.branch_view.list.input.text = "bad..name".into();
-        state.branch_view.list.input.cursor = 9;
-
-        begin_start_new_branch(&mut state, &git, None, &sender);
-        assert!(matches!(state.mode, Mode::ValidatingNewBranch { .. }));
-        let event = rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        process_app_event(event, &mut state, &mut TickChanges::default());
-
-        assert!(matches!(state.mode, Mode::BranchSelect(_)));
-        assert!(
-            state
-                .toasts
-                .front()
-                .unwrap()
-                .message
-                .contains("Invalid branch name")
-        );
-        assert_eq!(
-            *git_mock.validation_calls.lock().unwrap(),
-            [(PathBuf::from("/repo"), "bad..name".into())]
-        );
-    }
-
-    #[test]
-    fn new_branch_before_local_load_stays_in_branch_view_then_works_after_load() {
-        let git_mock = Arc::new(MockGitProvider::default());
-        let git: Arc<dyn GitProvider> = git_mock.clone();
-        let (sender, rx) = sender();
-        let mut state = state_with_branch(false);
-        state.branch_view.entries.clear();
-        state.branch_view.list = SearchableList::new(0);
-        state.branch_view.list.input.text = "feat/new".into();
-        state.branch_view.list.input.cursor = "feat/new".len();
-        state.branch_view.loading = true;
-
-        begin_start_new_branch(&mut state, &git, None, &sender);
-
-        assert!(matches!(state.mode, Mode::BranchSelect(_)));
-        assert!(state.branch_view.loading);
-        assert!(
-            state
-                .toasts
-                .back()
-                .unwrap()
-                .message
-                .contains("still loading")
-        );
-        assert!(rx.try_recv().is_err());
-
-        state.branch_view.loading = false;
-        begin_start_new_branch(&mut state, &git, None, &sender);
-
-        assert!(matches!(state.mode, Mode::ValidatingNewBranch { .. }));
-        let event = rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        assert!(matches!(event, AppEvent::BranchNameValidated { .. }));
-        assert_eq!(
-            *git_mock.validation_calls.lock().unwrap(),
-            [(PathBuf::from("/repo"), "feat/new".into())]
-        );
-    }
-
-    #[test]
-    fn validated_new_branch_preselects_known_default_local_base() {
-        let mut state = state_with_branch(false);
-        state.branch_view.entries = vec![
-            BranchEntry {
-                name: "feature".into(),
-                worktree_path: None,
-                is_current: false,
-                is_default: false,
-                remote: None,
-                open_workspace_id: None,
-            },
-            BranchEntry {
-                name: "main".into(),
-                worktree_path: Some("/repo".into()),
-                is_current: true,
-                is_default: true,
-                remote: None,
-                open_workspace_id: Some("w_1".into()),
-            },
-            BranchEntry {
-                name: "remote".into(),
-                worktree_path: None,
-                is_current: false,
-                is_default: false,
-                remote: Some("origin".into()),
-                open_workspace_id: None,
-            },
-        ];
-        state.mode = Mode::ValidatingNewBranch {
-            context: BranchContext {
-                repo_path: "/repo".into(),
-                repo_name: "repo".into(),
-            },
-            name: "feat/new".into(),
-        };
-        process_app_event(
-            AppEvent::BranchNameValidated {
-                repo_path: "/repo".into(),
-                branch_name: "feat/new".into(),
-                valid: true,
-                error: None,
-            },
-            &mut state,
-            &mut TickChanges::default(),
-        );
-
-        let Mode::SelectBaseBranch { flow, .. } = &state.mode else {
-            panic!("expected base picker")
-        };
-        assert_eq!(flow.bases, ["feature", "main"]);
-        let selected = flow.list.filtered[flow.list.selected.unwrap()].0;
-        assert_eq!(flow.bases[selected], "main");
-    }
-
-    #[test]
-    fn selected_base_is_passed_to_focused_new_branch_creation() {
-        let herdr_mock = Arc::new(MockHerdrProvider::default());
-        herdr_mock
-            .worktree_create_results
-            .lock()
-            .unwrap()
-            .push_back(Ok(create_response()));
-        let herdr: Arc<dyn HerdrProvider> = herdr_mock.clone();
-        let (sender, rx) = sender();
-        let mut state = state_with_branch(false);
-        state.mode = Mode::SelectBaseBranch {
-            context: BranchContext {
-                repo_path: "/repo".into(),
-                repo_name: "repo".into(),
-            },
-            flow: BaseBranchSelection {
-                new_name: "feat/new".into(),
-                bases: vec!["main".into(), "feature".into()],
-                list: SearchableList {
-                    selected: Some(1),
-                    ..SearchableList::new(2)
-                },
-            },
-        };
-
-        begin_create_new_branch(&mut state, Some(&herdr), &sender);
-        assert!(matches!(
-            &state.mode,
-            Mode::Loading { message, .. } if message == "Creating feat/new from feature…"
-        ));
-        let event = rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        let mut changes = TickChanges::default();
-        process_app_event(event, &mut state, &mut changes);
-        assert!(changes.workspace_opened);
-        let calls = herdr_mock.calls.lock().unwrap();
-        let HerdrCall::WorktreeCreate(request) = &calls[0] else {
-            panic!("expected worktree create")
-        };
-        assert_eq!(request.branch, "feat/new");
-        assert_eq!(request.base.as_deref(), Some("feature"));
-        assert!(request.focus);
     }
 }

@@ -32,14 +32,17 @@ pub fn draw(
             border_color: theme.accent,
             muted_color: theme.muted,
         },
-        &state.repo_list.input.text,
-        state.repo_list.input.cursor,
+        &state.repo_view.list.input.text,
+        state.repo_view.list.input.cursor,
     );
 
     state.active_list_rows = usize::from(list_area.height.saturating_sub(2)).max(1);
-    state.repo_list.update_scroll_offset(state.active_list_rows);
-    let visible = state.repo_list.visible_items(state.active_list_rows);
-    let selected = state.repo_list.selected.and_then(|selected| {
+    state
+        .repo_view
+        .list
+        .update_scroll_offset(state.active_list_rows);
+    let visible = state.repo_view.list.visible_items(state.active_list_rows);
+    let selected = state.repo_view.list.selected.and_then(|selected| {
         visible
             .iter()
             .position(|(position, _)| *position == selected)
@@ -47,7 +50,7 @@ pub fn draw(
     let row_width = usize::from(list_area.width.saturating_sub(4));
     let mut items: Vec<_> = visible
         .iter()
-        .filter_map(|(_, index)| state.repos.get(*index))
+        .filter_map(|(_, index)| state.repo_view.entries.get(*index))
         .map(|entry| {
             let left = [Span::raw(
                 crate::display::sanitize(&entry.display_name()).into_owned(),
@@ -64,14 +67,14 @@ pub fn draw(
             ListItem::new(Line::from(spans))
         })
         .collect();
-    if state.loading_repos && items.is_empty() {
+    if state.repo_view.loading && items.is_empty() {
         items.push(ListItem::new(Span::styled(
             "Discovering repos…",
             Style::default().fg(theme.muted),
         )));
     }
 
-    let scan_suffix = if state.loading_repos {
+    let scan_suffix = if state.repo_view.loading {
         let frame = (spinner_start.elapsed().as_millis() / 80) as usize % SPINNER_FOR_LOADING.len();
         format!(" | scanning… {}", SPINNER_FOR_LOADING[frame])
     } else {
@@ -83,8 +86,8 @@ pub fn draw(
                 .borders(Borders::ALL)
                 .title(format!(
                     " {} of {} repos{scan_suffix} ",
-                    state.repo_list.filtered.len(),
-                    state.repos.len()
+                    state.repo_view.list.filtered.len(),
+                    state.repo_view.entries.len()
                 ))
                 .border_style(Style::default().fg(theme.border)),
         )
@@ -118,14 +121,14 @@ mod tests {
     #[test]
     fn repo_controls_render_as_visible_text_on_one_row() {
         let mut state = AppState::new(None);
-        state.loading_repos = false;
-        state.repos = vec![RepoEntry::new(Repo {
+        state.repo_view.loading = false;
+        state.repo_view.entries = vec![RepoEntry::new(Repo {
             name: "repo\nname\u{1b}".into(),
             path: "/repo".into(),
             worktrees: Vec::new(),
         })];
-        state.repo_list = SearchableList::new(1);
-        state.repo_list.selected = None;
+        state.repo_view.list = SearchableList::new(1);
+        state.repo_view.list.selected = None;
         let theme = Theme::from_config(&crate::config::ThemeConfig::default());
         let backend = TestBackend::new(80, 8);
         let mut terminal = Terminal::new(backend).unwrap();

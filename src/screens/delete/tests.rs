@@ -28,12 +28,12 @@ use super::*;
 
 fn state_with_repo() -> AppState {
     let mut state = AppState::new(None);
-    state.repos.push(RepoEntry::new(Repo {
+    state.repo_view.entries.push(RepoEntry::new(Repo {
         name: "repo".into(),
         path: "/repo".into(),
         worktrees: Vec::new(),
     }));
-    state.repo_list = SearchableList::new(1);
+    state.repo_view.list = SearchableList::new(1);
     state
 }
 
@@ -399,7 +399,7 @@ fn post_deletion_refresh_rejects_old_final_fetch_without_clearing_spinner() {
 #[test]
 fn late_recovered_delete_completion_does_not_change_a_newer_mode() {
     let mut state = state_with_repo();
-    state.repos[0].repo.worktrees.push(Worktree {
+    state.repo_view.entries[0].repo.worktrees.push(Worktree {
         path: "/repo-feature".into(),
         branch: Some("feature".into()),
     });
@@ -423,6 +423,6 @@ fn late_recovered_delete_completion_does_not_change_a_newer_mode() {
 
     assert_eq!(state.mode, Mode::RepoSelect);
     assert!(state.delete.pending.is_empty());
-    assert!(state.repos[0].repo.worktrees.is_empty());
+    assert!(state.repo_view.entries[0].repo.worktrees.is_empty());
     assert!(changes.refresh_branch.is_none());
 }

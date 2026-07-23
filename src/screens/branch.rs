@@ -206,7 +206,8 @@ pub(crate) fn handle_event(
         } => {
             if branch_view_generation_matches(state, &repo_path, generation) {
                 if let Some(entry) = state
-                    .repos
+                    .repo_view
+                    .entries
                     .iter_mut()
                     .find(|entry| entry.repo.path == repo_path)
                 {
@@ -368,7 +369,8 @@ pub(crate) fn handle_event(
                         state.branch_view.loading = true;
                         state.branch_view.reset_remotes();
                         changes.refresh_branch = state
-                            .repos
+                            .repo_view
+                            .entries
                             .iter()
                             .find(|entry| entry.repo.path == repo_path)
                             .map(|entry| entry.repo.clone());
@@ -579,7 +581,13 @@ pub(crate) fn enter(
     state.branch_view.filter_generation = state.branch_view.filter_generation.wrapping_add(1);
     advance_generation(state);
     let generation = state.branch_view.generation;
-    spawn_branch_loading(git, sender, repo, state.current_cwd.clone(), generation);
+    spawn_branch_loading(
+        git,
+        sender,
+        repo,
+        state.repo_view.current_cwd.clone(),
+        generation,
+    );
     if let Some(provider) = herdr {
         spawn_open_worktrees(provider, sender, repo_path, generation);
     }
@@ -595,7 +603,13 @@ pub(crate) fn refresh(
     advance_generation(state);
     let repo_path = repo.path.clone();
     let generation = state.branch_view.generation;
-    spawn_branch_loading(git, sender, repo, state.current_cwd.clone(), generation);
+    spawn_branch_loading(
+        git,
+        sender,
+        repo,
+        state.repo_view.current_cwd.clone(),
+        generation,
+    );
     if let Some(provider) = herdr {
         spawn_open_worktrees(provider, sender, repo_path, generation);
     }

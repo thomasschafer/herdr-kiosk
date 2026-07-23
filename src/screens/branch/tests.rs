@@ -38,12 +38,12 @@ fn repo(path: &str) -> Repo {
 
 fn state_with_repo() -> AppState {
     let mut state = AppState::new(None);
-    state.repos.push(RepoEntry::new(Repo {
+    state.repo_view.entries.push(RepoEntry::new(Repo {
         name: "repo".into(),
         path: "/repo".into(),
         worktrees: Vec::new(),
     }));
-    state.repo_list = SearchableList::new(1);
+    state.repo_view.list = SearchableList::new(1);
     state
 }
 
@@ -115,10 +115,10 @@ fn git_provider() -> Arc<dyn GitProvider> {
 #[test]
 fn branch_view_transition_and_back_preserve_repo_filter_and_selection() {
     let mut state = state_with_repo();
-    state.repo_list.input.text = "repo".into();
-    state.repo_list.input.cursor = 4;
-    state.repo_list.scroll_offset = 3;
-    state.selection_touched = true;
+    state.repo_view.list.input.text = "repo".into();
+    state.repo_view.list.input.cursor = 4;
+    state.repo_view.list.scroll_offset = 3;
+    state.repo_view.selection_touched = true;
     let git = Arc::new(MockGitProvider {
         branches: vec!["main".into()],
         worktrees: vec![Worktree {
@@ -131,9 +131,9 @@ fn branch_view_transition_and_back_preserve_repo_filter_and_selection() {
 
     crate::screens::branch::enter(&mut state, &git, None, &sender);
     assert!(matches!(state.mode, Mode::BranchSelect(_)));
-    assert_eq!(state.repo_list.input.text, "repo");
-    assert_eq!(state.repo_list.selected, Some(0));
-    assert_eq!(state.repo_list.scroll_offset, 3);
+    assert_eq!(state.repo_view.list.input.text, "repo");
+    assert_eq!(state.repo_view.list.selected, Some(0));
+    assert_eq!(state.repo_view.list.scroll_offset, 3);
 
     let filter_worker = FilterWorker::spawn(sender.clone());
     process_action(
@@ -146,9 +146,9 @@ fn branch_view_transition_and_back_preserve_repo_filter_and_selection() {
         &KeysConfig::default(),
     );
     assert_eq!(state.mode, Mode::RepoSelect);
-    assert_eq!(state.repo_list.input.text, "repo");
-    assert_eq!(state.repo_list.selected, Some(0));
-    assert_eq!(state.repo_list.scroll_offset, 3);
+    assert_eq!(state.repo_view.list.input.text, "repo");
+    assert_eq!(state.repo_view.list.selected, Some(0));
+    assert_eq!(state.repo_view.list.scroll_offset, 3);
 }
 
 #[test]

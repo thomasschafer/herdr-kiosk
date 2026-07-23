@@ -169,7 +169,8 @@ fn handle_removed(
     clear_pending(state, worktree_path);
     persist(state);
     if let Some(entry) = state
-        .repos
+        .repo_view
+        .entries
         .iter_mut()
         .find(|entry| entry.repo.path == repo_path)
     {
@@ -187,7 +188,8 @@ fn handle_removed(
     let context = BranchContext {
         repo_path: repo_path.to_path_buf(),
         repo_name: state
-            .repos
+            .repo_view
+            .entries
             .iter()
             .find(|entry| entry.repo.path == repo_path)
             .map_or_else(|| "repository".into(), |entry| entry.repo.name.clone()),
@@ -207,7 +209,8 @@ fn handle_removed(
         branch.open_workspace_id = None;
     }
     changes.refresh_branch = state
-        .repos
+        .repo_view
+        .entries
         .iter()
         .find(|entry| entry.repo.path == repo_path)
         .map(|entry| entry.repo.clone());
@@ -405,7 +408,8 @@ pub(crate) fn resume(
 
 pub(crate) fn reconcile_pending(state: &mut AppState, repo_path: &Path) {
     let active = state
-        .repos
+        .repo_view
+        .entries
         .iter()
         .find(|repo| repo.repo.path == repo_path)
         .map(|repo| {

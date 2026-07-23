@@ -1,6 +1,5 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    ffi::OsString,
     path::{Path, PathBuf},
 };
 
@@ -11,35 +10,16 @@ use crate::{
     config::OnOpenConfig,
     git::Repo,
     herdr::WorktreeInfo,
-    screens::{branch::BranchViewState, delete::DeleteState},
+    screens::{
+        branch::BranchViewState, delete::DeleteState, new_branch::NewBranchState,
+        repo::RepoViewState,
+    },
 };
 
 pub use crate::screens::branch::{BranchContext, BranchId, OpenWorktreeLoadState};
 pub use crate::screens::delete::DeleteFlowState;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RepoEntry {
-    pub repo: Repo,
-    pub disambiguator: Option<String>,
-    pub is_open: bool,
-}
-
-impl RepoEntry {
-    pub fn new(repo: Repo) -> Self {
-        Self {
-            repo,
-            disambiguator: None,
-            is_open: false,
-        }
-    }
-
-    pub fn display_name(&self) -> String {
-        self.disambiguator.as_ref().map_or_else(
-            || self.repo.name.clone(),
-            |suffix| format!("{} ({suffix})", self.repo.name),
-        )
-    }
-}
+pub use crate::screens::new_branch::BaseBranchSelection;
+pub use crate::screens::repo::RepoEntry;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TextInput {
@@ -192,13 +172,6 @@ impl SearchableList {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BaseBranchSelection {
-    pub new_name: String,
-    pub bases: Vec<String>,
-    pub list: SearchableList,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HelpBindingRow {
     pub section_name: &'static str,
     pub key_display: String,
@@ -219,15 +192,6 @@ impl HelpBindingRow {
 pub struct HelpOverlayState {
     pub rows: Vec<HelpBindingRow>,
     pub list: SearchableList,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NewBranchRoute {
-    Existing(BranchEntry),
-    Validate {
-        context: BranchContext,
-        name: String,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -271,56 +235,40 @@ enum ToastCategory {
 #[derive(Debug)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct AppState {
-    pub repos: Vec<RepoEntry>,
-    pub repo_list: SearchableList,
+    pub repo_view: RepoViewState,
     pub branch_view: BranchViewState,
     pub mode: Mode,
-    pub loading_repos: bool,
-    pub seen_repo_paths: HashSet<PathBuf>,
-    pub open_repo_roots: HashSet<PathBuf>,
-    pub current_cwd: Option<PathBuf>,
-    pub selection_touched: bool,
     pub toasts: VecDeque<Toast>,
     toast_messages: HashSet<String>,
     scan_warning_count: usize,
     pub help_overlay: Option<HelpOverlayState>,
     pub active_list_rows: usize,
-    pub repo_filter_generation: u64,
-    pub base_filter_generation: u64,
     pub help_filter_generation: u64,
     pub(crate) delete: DeleteState,
+    pub(crate) new_branch: NewBranchState,
     pub on_open: OnOpenConfig,
 }
 
 impl AppState {
     pub fn new(current_cwd: Option<PathBuf>) -> Self {
         Self {
-            repos: Vec::new(),
-            repo_list: SearchableList::new(0),
+            repo_view: RepoViewState::new(current_cwd),
             branch_view: BranchViewState::default(),
             mode: Mode::RepoSelect,
-            loading_repos: true,
-            seen_repo_paths: HashSet::new(),
-            open_repo_roots: HashSet::new(),
-            current_cwd,
-            selection_touched: false,
             toasts: VecDeque::new(),
             toast_messages: HashSet::new(),
             scan_warning_count: 0,
             help_overlay: None,
             active_list_rows: 1,
-            repo_filter_generation: 0,
-            base_filter_generation: 0,
             help_filter_generation: 0,
             delete: DeleteState::default(),
+            new_branch: NewBranchState::default(),
             on_open: OnOpenConfig::default(),
         }
     }
 
     pub fn selected_repo(&self) -> Option<&RepoEntry> {
-        let selected = self.repo_list.selected?;
-        let index = self.repo_list.filtered.get(selected)?.0;
-        self.repos.get(index)
+        self.repo_view.selected()
     }
 
     pub fn selected_branch(&self) -> Option<&BranchEntry> {
@@ -339,31 +287,6 @@ impl AppState {
             Mode::ConfirmWorktreeDelete(flow) => Some(flow.context()),
             Mode::RepoSelect | Mode::Loading { branch: None, .. } => None,
         }
-    }
-
-    pub fn new_branch_route(&self) -> Result<NewBranchRoute, &'static str> {
-        let Mode::BranchSelect(context) = &self.mode else {
-            return Err("New branches can only be created from the branch view");
-        };
-        if self.branch_view.loading {
-            return Err("Branches are still loading");
-        }
-        let name = self.branch_view.list.input.text.clone();
-        if name.is_empty() {
-            return Err("Type a branch name first");
-        }
-        if let Some(branch) = self
-            .branch_view
-            .entries
-            .iter()
-            .find(|branch| branch.remote.is_none() && branch.name == name)
-        {
-            return Ok(NewBranchRoute::Existing(branch.clone()));
-        }
-        Ok(NewBranchRoute::Validate {
-            context: context.clone(),
-            name,
-        })
     }
 
     pub fn push_toast(&mut self, kind: ToastKind, message: impl Into<String>) {
@@ -436,161 +359,6 @@ impl AppState {
             category,
         });
     }
-
-    pub fn canonical_sort(&mut self) {
-        let selected_path = self.selected_repo().map(|entry| entry.repo.path.clone());
-        let filtered_paths = self
-            .repo_list
-            .filtered
-            .iter()
-            .filter_map(|(index, score)| {
-                self.repos
-                    .get(*index)
-                    .map(|entry| (entry.repo.path.clone(), *score))
-            })
-            .collect::<Vec<_>>();
-        self.repos.sort_by(|left, right| {
-            left.repo
-                .name
-                .to_lowercase()
-                .cmp(&right.repo.name.to_lowercase())
-                .then(left.repo.name.cmp(&right.repo.name))
-                .then(left.repo.path.cmp(&right.repo.path))
-        });
-        if self.repo_list.input.text.is_empty() {
-            self.repo_list.filtered = (0..self.repos.len()).map(|index| (index, 0)).collect();
-            self.repo_list.selected = selected_path
-                .and_then(|path| self.repos.iter().position(|entry| entry.repo.path == path))
-                .or_else(|| (!self.repos.is_empty()).then_some(0));
-        } else {
-            let indices: HashMap<_, _> = self
-                .repos
-                .iter()
-                .enumerate()
-                .map(|(index, entry)| (entry.repo.path.as_path(), index))
-                .collect();
-            self.repo_list.filtered = filtered_paths
-                .iter()
-                .filter_map(|(path, score)| {
-                    indices.get(path.as_path()).map(|index| (*index, *score))
-                })
-                .collect();
-            self.repo_list.selected = selected_path.and_then(|path| {
-                self.repo_list
-                    .filtered
-                    .iter()
-                    .position(|(index, _)| self.repos[*index].repo.path == path)
-            });
-        }
-    }
-
-    pub fn apply_current_repo_selection(&mut self) {
-        if self.selection_touched {
-            return;
-        }
-        let Some(cwd) = self.current_cwd.as_deref() else {
-            return;
-        };
-        let best = self
-            .repo_list
-            .filtered
-            .iter()
-            .enumerate()
-            .filter(|(_, (index, _))| crate::path::starts_with(cwd, &self.repos[*index].repo.path))
-            .max_by_key(|(_, (index, _))| self.repos[*index].repo.path.components().count())
-            .map(|(position, _)| position);
-        if best.is_some() {
-            self.repo_list.selected = best;
-        }
-    }
-}
-
-pub fn collision_disambiguators(repos: &[Repo]) -> Vec<Option<String>> {
-    collision_disambiguators_with_case(repos, cfg!(windows))
-}
-
-fn collision_disambiguators_with_case(
-    repos: &[Repo],
-    case_insensitive: bool,
-) -> Vec<Option<String>> {
-    let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
-    for (index, repo) in repos.iter().enumerate() {
-        let key = if case_insensitive {
-            repo.name.to_lowercase()
-        } else {
-            repo.name.clone()
-        };
-        groups.entry(key).or_default().push(index);
-    }
-    let parents: Vec<Vec<OsString>> = repos
-        .iter()
-        .map(|repo| {
-            repo.path
-                .parent()
-                .map(|parent| {
-                    parent
-                        .components()
-                        .filter_map(|component| match component {
-                            std::path::Component::Normal(value) => Some(value.to_os_string()),
-                            std::path::Component::Prefix(value) => {
-                                Some(value.as_os_str().to_os_string())
-                            }
-                            std::path::Component::RootDir
-                            | std::path::Component::CurDir
-                            | std::path::Component::ParentDir => None,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default()
-        })
-        .collect();
-    let mut result = vec![None; repos.len()];
-
-    for indices in groups.values().filter(|indices| indices.len() > 1) {
-        for &index in indices {
-            let parent = &parents[index];
-            let depth = (1..=parent.len())
-                .find(|depth| {
-                    let suffix = &parent[parent.len() - depth..];
-                    indices.iter().all(|other| {
-                        *other == index
-                            || parents[*other].len() < *depth
-                            || !path_components_equal(
-                                &parents[*other][parents[*other].len() - depth..],
-                                suffix,
-                                case_insensitive,
-                            )
-                    })
-                })
-                .unwrap_or_else(|| {
-                    panic!(
-                        "duplicate repository path invariant violated for {}",
-                        repos[index].path.display()
-                    )
-                });
-            let suffix = parent[parent.len() - depth..]
-                .iter()
-                .map(|part| part.to_string_lossy())
-                .collect::<Vec<_>>()
-                .join("/");
-            result[index] = Some(if depth < parent.len() {
-                format!("…/{suffix}")
-            } else {
-                suffix
-            });
-        }
-    }
-    result
-}
-
-fn path_components_equal(left: &[OsString], right: &[OsString], case_insensitive: bool) -> bool {
-    left.len() == right.len()
-        && left.iter().zip(right).all(|(left, right)| {
-            left == right
-                || case_insensitive
-                    && left.to_string_lossy().to_lowercase()
-                        == right.to_string_lossy().to_lowercase()
-        })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -726,75 +494,6 @@ mod tests {
     }
 
     #[test]
-    fn collision_disambiguates_two_equal_names_with_shortest_parent_suffix() {
-        let repos = [repo("foo/bar/baz"), repo("qux/bar/baz")];
-        assert_eq!(
-            collision_disambiguators(&repos),
-            [Some("foo/bar".into()), Some("qux/bar".into())]
-        );
-    }
-
-    #[test]
-    fn collision_disambiguates_three_places_independently() {
-        let repos = [
-            repo("/root/a/shared/demo"),
-            repo("/root/b/shared/demo"),
-            repo("/root/unique/demo"),
-        ];
-        assert_eq!(
-            collision_disambiguators(&repos),
-            [
-                Some("…/a/shared".into()),
-                Some("…/b/shared".into()),
-                Some("…/unique".into()),
-            ]
-        );
-    }
-
-    #[test]
-    fn collision_handles_parents_that_also_collide() {
-        let repos = [repo("/one/team/api"), repo("/two/team/api")];
-        assert_eq!(
-            collision_disambiguators(&repos),
-            [Some("one/team".into()), Some("two/team".into())]
-        );
-    }
-
-    #[test]
-    fn collision_handles_repos_nested_below_search_roots() {
-        let repos = [
-            repo("/search/client/ios/app"),
-            repo("/search/client/web/app"),
-            repo("/search/direct/app"),
-            repo("/search/other"),
-        ];
-        assert_eq!(
-            collision_disambiguators(&repos),
-            [
-                Some("…/ios".into()),
-                Some("…/web".into()),
-                Some("…/direct".into()),
-                None,
-            ]
-        );
-    }
-
-    #[test]
-    fn collision_leaves_unique_names_unchanged() {
-        let repos = [repo("/one/alpha"), repo("/two/beta")];
-        assert_eq!(collision_disambiguators(&repos), [None, None]);
-    }
-
-    #[test]
-    fn collision_windows_mode_is_case_insensitive_and_uses_forward_slashes() {
-        let repos = [repo("C:/One/Team/API"), repo("c:/two/team/api")];
-        assert_eq!(
-            collision_disambiguators_with_case(&repos, true),
-            [Some("…/One/Team".into()), Some("…/two/team".into())]
-        );
-    }
-
-    #[test]
     fn text_input_deletes_unicode_graphemes_and_words() {
         let mut input = TextInput::default();
         for character in "one 👩‍💻".chars() {
@@ -871,18 +570,6 @@ mod tests {
     }
 
     #[test]
-    fn current_repo_selection_prefers_the_deepest_containing_repo() {
-        let mut state = AppState::new(Some("/work/outer/inner/src".into()));
-        state.repos = vec![
-            RepoEntry::new(repo("/work/outer")),
-            RepoEntry::new(repo("/work/outer/inner")),
-        ];
-        state.repo_list = SearchableList::new(2);
-        state.apply_current_repo_selection();
-        assert_eq!(state.repo_list.selected, Some(1));
-    }
-
-    #[test]
     fn branch_entries_derive_current_default_worktree_and_open_markers() {
         let repo = Repo {
             name: "repo".into(),
@@ -952,24 +639,5 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].remote.as_deref(), Some("upstream"));
         assert_eq!(entries[0].name, "feature");
-    }
-
-    #[test]
-    fn new_branch_routing_rejects_empty_and_routes_existing_local() {
-        let mut state = AppState::new(None);
-        state.mode = Mode::BranchSelect(BranchContext {
-            repo_path: "/repo".into(),
-            repo_name: "repo".into(),
-        });
-        assert_eq!(state.new_branch_route(), Err("Type a branch name first"));
-
-        state.branch_view.entries =
-            BranchEntry::build_local(&repo("/repo"), &["feature".into()], None, None);
-        state.branch_view.list = SearchableList::new(1);
-        state.branch_view.list.input.text = "feature".into();
-        assert!(matches!(
-            state.new_branch_route(),
-            Ok(NewBranchRoute::Existing(branch)) if branch.name == "feature"
-        ));
     }
 }
