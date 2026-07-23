@@ -55,7 +55,7 @@ fn draw_welcome(frame: &mut Frame, area: Rect, theme: &Theme, path: &str) {
         )),
         Line::raw(""),
         Line::raw("Pick repositories and branches without leaving herdr."),
-        Line::raw("This setup will choose the directories to scan for git repositories."),
+        Line::raw("This setup will choose the directories to scan."),
         Line::raw(""),
         Line::from(vec![
             Span::styled("Config: ", Style::default().fg(theme.muted)),

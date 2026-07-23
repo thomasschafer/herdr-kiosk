@@ -1,7 +1,7 @@
 # herdr-kiosk
 
-Fuzzy-find Git repositories and branches, then open them as Herdr workspaces and
-worktrees.
+Fuzzy-find Git repositories (or any folder) and branches, then open them as Herdr
+workspaces and worktrees.
 
 ![Demo of fuzzy-finding a repository and branch, then opening its Herdr worktree](media/preview.gif)
 
@@ -45,9 +45,10 @@ from GitHub to update to a newer version.
 
 ## Usage
 
-Type to fuzzy-search repositories and branches. `enter` opens the selected checkout,
-`tab` opens the selected repository's branch view, and `ctrl+h` shows all active
-bindings for the current view.
+Type to fuzzy-search repositories and branches — and plain folders, if you enable
+`include_non_git`. `enter` opens the selected checkout or folder, `tab` opens a
+repository's branch view (Git repositories only), and `ctrl+h` shows all active bindings
+for the current view.
 
 ## Configuration
 
