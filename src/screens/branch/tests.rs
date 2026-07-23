@@ -1029,6 +1029,103 @@ fn branch_recency_sort_uses_rank_then_existing_order_for_unseen_entries() {
 }
 
 #[test]
+fn pins_float_above_resting_branch_order_in_both_sort_modes() {
+    let entries = || {
+        ["delta", "alpha", "charlie", "bravo"]
+            .into_iter()
+            .map(|name| BranchEntry {
+                name: name.into(),
+                worktree_path: None,
+                is_current: false,
+                is_default: false,
+                remote: None,
+                open_workspace_id: None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let names = |state: &AppState| {
+        state
+            .branch_view
+            .entries
+            .iter()
+            .map(|entry| entry.name.clone())
+            .collect::<Vec<_>>()
+    };
+
+    let mut alphabetical = state_with_branch(false);
+    alphabetical.branch_view.entries = entries();
+    for name in ["charlie", "alpha"] {
+        alphabetical.pins.toggle(RecencyKey::branch(
+            Path::new("/repo"),
+            BranchId::Local(name.into()),
+        ));
+    }
+    sort_entries(&mut alphabetical);
+    assert_eq!(names(&alphabetical), ["alpha", "charlie", "bravo", "delta"]);
+
+    let mut recency = state_with_branch(false);
+    recency.sort_order = SortOrder::Recency;
+    recency.branch_view.entries = entries();
+    for name in ["alpha", "charlie", "delta"] {
+        recency.recency.record(RecencyKey::branch(
+            Path::new("/repo"),
+            BranchId::Local(name.into()),
+        ));
+    }
+    for name in ["charlie", "alpha"] {
+        recency.pins.toggle(RecencyKey::branch(
+            Path::new("/repo"),
+            BranchId::Local(name.into()),
+        ));
+    }
+    sort_entries(&mut recency);
+    assert_eq!(names(&recency), ["charlie", "alpha", "delta", "bravo"]);
+}
+
+#[test]
+fn open_filter_restricts_branches_and_composes_with_pins_and_sort() {
+    let (sender, _rx) = sender();
+    let worker = FilterWorker::spawn(sender);
+    let mut state = state_with_branch(false);
+    state.sort_order = SortOrder::Recency;
+    state.branch_view.entries = ["alpha", "bravo", "charlie"]
+        .into_iter()
+        .map(|name| BranchEntry {
+            name: name.into(),
+            worktree_path: None,
+            is_current: false,
+            is_default: false,
+            remote: None,
+            open_workspace_id: matches!(name, "alpha" | "charlie").then(|| format!("w_{name}")),
+        })
+        .collect();
+    state.recency.record(RecencyKey::branch(
+        Path::new("/repo"),
+        BranchId::Local("alpha".into()),
+    ));
+    state.pins.toggle(RecencyKey::branch(
+        Path::new("/repo"),
+        BranchId::Local("charlie".into()),
+    ));
+
+    toggle_open_filter(&mut state, &worker);
+
+    let visible = state
+        .branch_view
+        .list
+        .filtered
+        .iter()
+        .map(|(index, _)| state.branch_view.entries[*index].name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(visible, ["charlie", "alpha"]);
+    assert!(state.branch_view.open_filter.is_active());
+
+    toggle_open_filter(&mut state, &worker);
+    assert_eq!(state.branch_view.list.filtered.len(), 3);
+    assert!(!state.branch_view.open_filter.is_active());
+}
+
+#[test]
 fn branch_recency_defaults_to_previous_while_alphabetical_keeps_current() {
     let entries = || {
         ["alpha", "beta"]

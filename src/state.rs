@@ -11,6 +11,7 @@ use crate::{
     config::{OnOpenConfig, SortOrder},
     git::Repo,
     herdr::WorktreeInfo,
+    pins::PinStore,
     recency::RecencyStore,
     screens::{
         branch::BranchViewState, delete::DeleteState, new_branch::NewBranchState,
@@ -22,6 +23,30 @@ pub use crate::screens::branch::{BranchContext, BranchId, OpenWorktreeLoadState}
 pub use crate::screens::delete::DeleteFlowState;
 pub use crate::screens::new_branch::BaseBranchSelection;
 pub use crate::screens::repo::RepoEntry;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OpenFilter {
+    #[default]
+    All,
+    OpenOnly,
+}
+
+impl OpenFilter {
+    pub const fn includes(self, is_open: bool) -> bool {
+        matches!(self, Self::All) || is_open
+    }
+
+    pub const fn is_active(self) -> bool {
+        matches!(self, Self::OpenOnly)
+    }
+
+    pub fn toggle(&mut self) {
+        *self = match self {
+            Self::All => Self::OpenOnly,
+            Self::OpenOnly => Self::All,
+        };
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TextInput {
@@ -252,6 +277,7 @@ pub struct AppState {
     pub on_open: OnOpenConfig,
     pub sort_order: SortOrder,
     pub recency: RecencyStore,
+    pub pins: PinStore,
 }
 
 impl AppState {
@@ -272,12 +298,14 @@ impl AppState {
             on_open: OnOpenConfig::default(),
             sort_order: SortOrder::Alphabetical,
             recency: RecencyStore::default(),
+            pins: PinStore::default(),
         }
     }
 
-    pub fn configure_sort(&mut self, sort_order: SortOrder, recency: RecencyStore) {
+    pub fn configure_sort(&mut self, sort_order: SortOrder, recency: RecencyStore, pins: PinStore) {
         self.sort_order = sort_order;
         self.recency = recency;
+        self.pins = pins;
     }
 
     pub fn selected_repo(&self) -> Option<&RepoEntry> {

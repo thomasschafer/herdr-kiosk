@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     sync::{
         Arc, Condvar, Mutex,
@@ -85,24 +85,56 @@ pub(crate) struct FilterRequest {
     pub(crate) ordering: FilterOrdering,
 }
 
-pub(crate) enum FilterOrdering {
-    Alphabetical,
-    Recency(HashMap<FilterKey, usize>),
+pub(crate) struct FilterOrdering {
+    pinned: HashSet<FilterKey>,
+    recency_ranks: Option<HashMap<FilterKey, usize>>,
 }
 
 impl FilterOrdering {
+    pub(crate) fn alphabetical() -> Self {
+        Self {
+            pinned: HashSet::new(),
+            recency_ranks: None,
+        }
+    }
+
+    pub(crate) fn pinned(pinned: HashSet<FilterKey>) -> Self {
+        Self {
+            pinned,
+            recency_ranks: None,
+        }
+    }
+
+    pub(crate) fn pinned_by_recency(
+        pinned: HashSet<FilterKey>,
+        recency_ranks: HashMap<FilterKey, usize>,
+    ) -> Self {
+        Self {
+            pinned,
+            recency_ranks: Some(recency_ranks),
+        }
+    }
+
     fn apply(&self, matches: &mut [(FilterKey, i64)]) {
-        let Self::Recency(ranks) = self else {
-            return;
-        };
         matches.sort_by(|(left_key, left_score), (right_key, right_score)| {
-            right_score.cmp(left_score).then_with(|| {
-                ranks
-                    .get(left_key)
-                    .copied()
-                    .unwrap_or(usize::MAX)
-                    .cmp(&ranks.get(right_key).copied().unwrap_or(usize::MAX))
-            })
+            right_score
+                .cmp(left_score)
+                .then_with(|| {
+                    self.pinned
+                        .contains(right_key)
+                        .cmp(&self.pinned.contains(left_key))
+                })
+                .then_with(|| {
+                    self.recency_ranks
+                        .as_ref()
+                        .map_or(std::cmp::Ordering::Equal, |ranks| {
+                            ranks
+                                .get(left_key)
+                                .copied()
+                                .unwrap_or(usize::MAX)
+                                .cmp(&ranks.get(right_key).copied().unwrap_or(usize::MAX))
+                        })
+                })
         });
     }
 }
@@ -426,6 +458,20 @@ pub(crate) fn process_action(
                 crate::screens::branch::queue_filter(state, filter_worker, selected);
             }
         }
+        Action::TogglePin => {
+            if matches!(state.mode, Mode::RepoSelect) {
+                crate::screens::repo::toggle_pin(state, filter_worker);
+            } else if matches!(state.mode, Mode::BranchSelect(_)) {
+                crate::screens::branch::toggle_pin(state, filter_worker);
+            }
+        }
+        Action::ToggleOpenFilter => {
+            if matches!(state.mode, Mode::RepoSelect) {
+                crate::screens::repo::toggle_open_filter(state, filter_worker);
+            } else if matches!(state.mode, Mode::BranchSelect(_)) {
+                crate::screens::branch::toggle_open_filter(state, filter_worker);
+            }
+        }
         Action::ConfirmDeleteWorktree => {
             crate::screens::delete::confirm(state, git, herdr, sender);
         }
@@ -513,7 +559,7 @@ fn queue_help_filter(state: &mut AppState, worker: &FilterWorker, selected_index
             })
             .collect(),
         selected: selected_index.map(FilterKey::Help),
-        ordering: FilterOrdering::Alphabetical,
+        ordering: FilterOrdering::alphabetical(),
     });
 }
 
@@ -627,7 +673,22 @@ pub(crate) fn draw(
         }
     }
     let binding_mode = KeysConfig::mode_for(&state.mode);
-    let footer = footer_spans(keys, binding_mode, &state.mode, state.sort_order, theme);
+    let open_only = match state.mode {
+        Mode::RepoSelect => state.repo_view.open_filter.is_active(),
+        Mode::BranchSelect(_) => state.branch_view.open_filter.is_active(),
+        Mode::ValidatingNewBranch { .. }
+        | Mode::SelectBaseBranch { .. }
+        | Mode::ConfirmWorktreeDelete(_)
+        | Mode::Loading { .. } => false,
+    };
+    let footer = footer_spans(
+        keys,
+        binding_mode,
+        &state.mode,
+        state.sort_order,
+        open_only,
+        theme,
+    );
     frame.render_widget(
         Paragraph::new(Line::from(footer)).alignment(Alignment::Center),
         footer_area,
@@ -660,6 +721,7 @@ fn footer_spans<'a>(
     binding_mode: BindingMode,
     mode: &Mode,
     sort_order: crate::config::SortOrder,
+    open_only: bool,
     theme: &Theme,
 ) -> Vec<Span<'a>> {
     let mut hints = Vec::new();
@@ -705,6 +767,8 @@ fn footer_spans<'a>(
     }
     if matches!(mode, Mode::RepoSelect | Mode::BranchSelect(_)) {
         add(Command::ToggleSort, "sort");
+        add(Command::TogglePin, "pin");
+        add(Command::ToggleOpenFilter, "open");
     }
     if matches!(
         mode,
@@ -722,6 +786,12 @@ fn footer_spans<'a>(
             format!("sort: {}", sort_order.label()),
             Style::default().fg(theme.muted),
         ));
+        if open_only {
+            hints.push(Span::styled(
+                " | open only",
+                Style::default().fg(theme.muted),
+            ));
+        }
     }
     hints
 }
@@ -842,11 +912,43 @@ mod tests {
         let ranks = HashMap::from([(beta.clone(), 0), (gamma.clone(), 1)]);
 
         let mut alphabetical = baseline.clone();
-        FilterOrdering::Alphabetical.apply(&mut alphabetical);
+        FilterOrdering::alphabetical().apply(&mut alphabetical);
         assert_eq!(alphabetical, baseline);
 
         let mut recency = baseline;
-        FilterOrdering::Recency(ranks).apply(&mut recency);
+        FilterOrdering::pinned_by_recency(HashSet::new(), ranks).apply(&mut recency);
+        assert_eq!(recency, [(beta, 100), (alpha, 100), (gamma, 90)]);
+    }
+
+    #[test]
+    fn pins_reorder_only_equal_fuzzy_scores_before_mode_tiebreaks() {
+        let alpha = FilterKey::Branch("alpha".into());
+        let beta = FilterKey::Branch("beta".into());
+        let gamma = FilterKey::Branch("gamma".into());
+        let baseline = vec![
+            (alpha.clone(), 100),
+            (beta.clone(), 100),
+            (gamma.clone(), 90),
+        ];
+        let pinned = HashSet::from([beta.clone(), gamma.clone()]);
+
+        let mut alphabetical = baseline.clone();
+        FilterOrdering::pinned(pinned.clone()).apply(&mut alphabetical);
+        assert_eq!(
+            alphabetical,
+            [
+                (beta.clone(), 100),
+                (alpha.clone(), 100),
+                (gamma.clone(), 90)
+            ]
+        );
+
+        let mut recency = baseline;
+        FilterOrdering::pinned_by_recency(
+            pinned,
+            HashMap::from([(alpha.clone(), 0), (beta.clone(), 1)]),
+        )
+        .apply(&mut recency);
         assert_eq!(recency, [(beta, 100), (alpha, 100), (gamma, 90)]);
     }
 
@@ -879,13 +981,29 @@ mod tests {
             BindingMode::Repo,
             &state.mode,
             state.sort_order,
+            false,
             &theme,
         )
         .into_iter()
         .map(|span| span.content.into_owned())
         .collect::<String>();
         assert!(footer.contains("ctrl+r sort"));
+        assert!(footer.contains("ctrl+b pin"));
+        assert!(footer.contains("ctrl+f open"));
         assert!(footer.contains("sort: recency"));
+
+        let filtered_footer = footer_spans(
+            &keys,
+            BindingMode::Repo,
+            &state.mode,
+            state.sort_order,
+            true,
+            &theme,
+        )
+        .into_iter()
+        .map(|span| span.content.into_owned())
+        .collect::<String>();
+        assert!(filtered_footer.contains("open only"));
     }
 
     #[test]

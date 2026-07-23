@@ -61,14 +61,20 @@ pub fn draw(
                     Span::styled("  dir", Style::default().fg(theme.muted)),
                 ]
             };
-            let spans = if entry.is_open {
-                right_align_suffix(
-                    &left,
-                    &[Span::styled("● open", Style::default().fg(theme.open))],
-                    row_width,
-                )
-            } else {
+            let mut suffix = Vec::new();
+            if state.pins.repo_is_pinned(&entry.repo.path) {
+                suffix.push(Span::styled("◆ pin", Style::default().fg(theme.muted)));
+            }
+            if entry.is_open {
+                if !suffix.is_empty() {
+                    suffix.push(Span::raw("  "));
+                }
+                suffix.push(Span::styled("● open", Style::default().fg(theme.open)));
+            }
+            let spans = if suffix.is_empty() {
                 truncate_spans(&left, row_width)
+            } else {
+                right_align_suffix(&left, &suffix, row_width)
             };
             ListItem::new(Line::from(spans))
         })
@@ -189,5 +195,43 @@ mod tests {
             .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
         assert!(rendered.contains("folder  dir"));
+    }
+
+    #[test]
+    fn pinned_repo_renders_a_text_marker() {
+        let mut state = AppState::new(None);
+        state.repo_view.loading = false;
+        state.repo_view.entries = vec![RepoEntry::new(Repo {
+            name: "repo".into(),
+            path: "/repo".into(),
+            is_git: true,
+            worktrees: Vec::new(),
+        })];
+        state.repo_view.list = SearchableList::new(1);
+        state.repo_view.list.selected = None;
+        state
+            .pins
+            .toggle(crate::recency::RecencyKey::repo(std::path::Path::new(
+                "/repo",
+            )));
+        let theme = Theme::from_config(&crate::config::ThemeConfig::default());
+        let backend = TestBackend::new(40, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw(frame, area, &mut state, &theme, Instant::now());
+            })
+            .unwrap();
+
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(rendered.contains("◆ pin"));
     }
 }

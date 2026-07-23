@@ -199,6 +199,148 @@ fn recency_resting_sort_uses_rank_then_alphabetical_fallback() {
 }
 
 #[test]
+fn pins_float_above_resting_repo_order_in_both_sort_modes() {
+    let entries = || {
+        [
+            "/repos/delta",
+            "/repos/alpha",
+            "/repos/charlie",
+            "/repos/bravo",
+        ]
+        .into_iter()
+        .map(repo)
+        .map(RepoEntry::new)
+        .collect::<Vec<_>>()
+    };
+    let names = |state: &AppState| {
+        state
+            .repo_view
+            .entries
+            .iter()
+            .map(|entry| entry.repo.name.clone())
+            .collect::<Vec<_>>()
+    };
+
+    let mut alphabetical = AppState::new(None);
+    alphabetical.repo_view.entries = entries();
+    alphabetical.repo_view.list = SearchableList::new(4);
+    alphabetical
+        .pins
+        .toggle(RecencyKey::repo(Path::new("/repos/charlie")));
+    alphabetical
+        .pins
+        .toggle(RecencyKey::repo(Path::new("/repos/alpha")));
+    sort_entries(&mut alphabetical);
+    assert_eq!(names(&alphabetical), ["alpha", "charlie", "bravo", "delta"]);
+
+    let mut recency = AppState::new(None);
+    recency.sort_order = SortOrder::Recency;
+    recency.repo_view.entries = entries();
+    recency.repo_view.list = SearchableList::new(4);
+    for path in ["/repos/alpha", "/repos/charlie", "/repos/delta"] {
+        recency.recency.record(RecencyKey::repo(Path::new(path)));
+    }
+    recency
+        .pins
+        .toggle(RecencyKey::repo(Path::new("/repos/charlie")));
+    recency
+        .pins
+        .toggle(RecencyKey::repo(Path::new("/repos/alpha")));
+    sort_entries(&mut recency);
+    assert_eq!(names(&recency), ["charlie", "alpha", "delta", "bravo"]);
+}
+
+#[test]
+fn corrupt_pin_state_leaves_repo_order_unchanged() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("pins.json");
+    std::fs::write(&path, b"{not json").unwrap();
+    let (pins, warning) = crate::pins::PinStore::load_from(&path);
+    assert!(warning.is_some());
+
+    let mut state = AppState::new(None);
+    state.pins = pins;
+    state.repo_view.entries = ["/repos/zulu", "/repos/alpha", "/repos/beta"]
+        .into_iter()
+        .map(repo)
+        .map(RepoEntry::new)
+        .collect();
+    state.repo_view.list = SearchableList::new(3);
+    sort_entries(&mut state);
+
+    assert_eq!(
+        state
+            .repo_view
+            .entries
+            .iter()
+            .map(|entry| entry.repo.name.as_str())
+            .collect::<Vec<_>>(),
+        ["alpha", "beta", "zulu"]
+    );
+}
+
+#[test]
+fn open_filter_restricts_repos_and_composes_with_pins_and_sort() {
+    let (sender, _rx) = sender();
+    let worker = FilterWorker::spawn(sender);
+    let mut state = AppState::new(None);
+    state.sort_order = SortOrder::Recency;
+    state.repo_view.entries = ["/repos/alpha", "/repos/bravo", "/repos/charlie"]
+        .into_iter()
+        .map(repo)
+        .map(RepoEntry::new)
+        .collect();
+    state.repo_view.entries[0].is_open = true;
+    state.repo_view.entries[2].is_open = true;
+    state.repo_view.list = SearchableList::new(3);
+    state
+        .recency
+        .record(RecencyKey::repo(Path::new("/repos/alpha")));
+    state
+        .pins
+        .toggle(RecencyKey::repo(Path::new("/repos/charlie")));
+
+    toggle_open_filter(&mut state, &worker);
+
+    let visible = state
+        .repo_view
+        .list
+        .filtered
+        .iter()
+        .map(|(index, _)| state.repo_view.entries[*index].repo.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(visible, ["charlie", "alpha"]);
+    assert!(state.repo_view.open_filter.is_active());
+
+    toggle_open_filter(&mut state, &worker);
+    assert_eq!(state.repo_view.list.filtered.len(), 3);
+    assert!(!state.repo_view.open_filter.is_active());
+}
+
+#[test]
+fn fuzzy_search_runs_only_within_open_repo_subset() {
+    let (sender, rx) = sender();
+    let worker = FilterWorker::spawn(sender);
+    let mut state = AppState::new(None);
+    state.repo_view.entries = ["/repos/alpha-open", "/repos/alpha-closed"]
+        .into_iter()
+        .map(repo)
+        .map(RepoEntry::new)
+        .collect();
+    state.repo_view.entries[0].is_open = true;
+    state.repo_view.list = SearchableList::new(2);
+    state.repo_view.list.input.text = "alpha".into();
+    state.repo_view.open_filter = crate::state::OpenFilter::OpenOnly;
+
+    queue_filter(&mut state, &worker, false);
+    let event = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    process_app_event(event, &mut state, &mut TickChanges::default());
+
+    assert_eq!(state.repo_view.list.filtered.len(), 1);
+    assert_eq!(state.selected_repo().unwrap().repo.name, "alpha-open");
+}
+
+#[test]
 fn recency_defaults_to_previous_repo_while_alphabetical_keeps_current_repo() {
     let entries = || {
         ["/work/alpha", "/work/beta"]

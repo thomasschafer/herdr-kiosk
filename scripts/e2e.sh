@@ -287,6 +287,30 @@ wait_screen_contains "● open"
 assert_screen_contains "open-me"
 printf 'open indicator: ok\n'
 
+t send-keys -t "$SESSION" Escape
+wait_screen_contains "4 of 4 repos"
+t send-keys -t "$SESSION" beta
+wait_screen_contains "1 of 4 repos"
+t send-keys -t "$SESSION" C-b
+wait_screen_contains "◆ pin"
+t send-keys -t "$SESSION" Escape
+wait_screen_contains "4 of 4 repos"
+assert_screen_line_contains_all "repo-same (…/beta)" "◆ pin"
+assert_screen_line_before "repo-same (…/beta)" "nested-repo"
+t send-keys -t "$SESSION" C-f
+wait_screen_contains "open only"
+wait_screen_contains "1 of 4 repos"
+assert_screen_contains "open-me"
+assert_screen_absent "nested-repo"
+assert_screen_absent "repo-same"
+t send-keys -t "$SESSION" C-f
+wait_screen_absent "open only"
+wait_screen_contains "4 of 4 repos"
+assert_screen_line_before "repo-same (…/beta)" "nested-repo"
+t send-keys -t "$SESSION" open-me
+wait_screen_contains "1 of 4 repos"
+printf 'repo pin ordering and reversible open-only filter: ok\n'
+
 t send-keys -t "$SESSION" Tab
 wait_screen_contains "open-me — select branch"
 wait_screen_contains "feature"
