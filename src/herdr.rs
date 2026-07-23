@@ -471,9 +471,8 @@ impl HerdrProvider for CliHerdrProvider {
         require_nonempty("pane id", pane_id)?;
         require_nonempty("command", command)?;
         let args = vec!["pane".into(), "run".into(), pane_id.into(), command.into()];
-        match self.invoke::<PaneRunResult>(&args)? {
-            PaneRunResult::Ok {} => Ok(PaneRunResponse),
-        }
+        self.invoke_output(&args)?;
+        Ok(PaneRunResponse)
     }
 
     fn notification_show(&self, title: &str, body: &str) -> Result<(), HerdrError> {
@@ -558,12 +557,6 @@ enum WorktreeOpenResult {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum PaneSplitResult {
     PaneInfo { pane: RootPaneInfo },
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum PaneRunResult {
-    Ok {},
 }
 
 #[derive(Deserialize)]
@@ -784,12 +777,23 @@ mod tests {
 
     #[cfg(unix)]
     fn fake_herdr(temp: &TempDir, response: &str) -> (PathBuf, PathBuf) {
+        fake_herdr_with_output(temp, response, "", 0)
+    }
+
+    #[cfg(unix)]
+    fn fake_herdr_with_output(
+        temp: &TempDir,
+        stdout: &str,
+        stderr: &str,
+        exit_status: u8,
+    ) -> (PathBuf, PathBuf) {
         let binary = temp.path().join("fake-herdr");
         let args_file = temp.path().join("args");
         let script = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" > '{}'\nprintf '%s\\n' '{}'\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" > '{}'\nprintf '%s' '{}'\nprintf '%s' '{}' >&2\nexit {exit_status}\n",
             args_file.display(),
-            response
+            stdout,
+            stderr
         );
         fs::write(&binary, script).unwrap();
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
@@ -1054,7 +1058,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn cli_builds_exact_pane_split_and_run_calls() {
+    fn cli_builds_exact_pane_split_call() {
         let split_temp = TempDir::new().unwrap();
         let (binary, args_file) = fake_herdr(
             &split_temp,
@@ -1075,14 +1079,34 @@ mod tests {
             fs::read_to_string(args_file).unwrap().trim(),
             "pane split p_root --direction right --ratio 0.4 --cwd /repo checkout --no-focus"
         );
+    }
 
+    #[cfg(unix)]
+    #[test]
+    fn cli_pane_run_accepts_empty_stdout_and_surfaces_error_envelopes() {
         let run_temp = TempDir::new().unwrap();
-        let (binary, args_file) = fake_herdr(&run_temp, r#"{"id":"run","result":{"type":"ok"}}"#);
+        let (binary, args_file) = fake_herdr_with_output(&run_temp, "", "", 0);
         let provider = CliHerdrProvider::new(binary);
         retry_fake_herdr(|| provider.pane_run("p_2", "printf ONOPEN_OK"));
         assert_eq!(
             fs::read_to_string(args_file).unwrap().trim(),
             "pane run p_2 printf ONOPEN_OK"
+        );
+
+        let error_temp = TempDir::new().unwrap();
+        let (binary, _) = fake_herdr_with_output(
+            &error_temp,
+            "",
+            r#"{"error":{"code":"pane_run_failed","message":"pane unavailable"}}"#,
+            1,
+        );
+        let provider = CliHerdrProvider::new(binary);
+        assert_eq!(
+            provider.pane_run("p_2", "printf ONOPEN_OK"),
+            Err(HerdrError::Other {
+                code: "pane_run_failed".into(),
+                message: "pane unavailable".into(),
+            })
         );
     }
 

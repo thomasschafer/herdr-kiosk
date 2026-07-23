@@ -57,8 +57,8 @@ pub fn draw(
                 vec![Span::raw(name)]
             } else {
                 vec![
-                    Span::styled("dir ", Style::default().fg(theme.muted)),
                     Span::raw(name),
+                    Span::styled("  dir", Style::default().fg(theme.muted)),
                 ]
             };
             let spans = if entry.is_open {
@@ -188,6 +188,6 @@ mod tests {
             .iter()
             .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
-        assert!(rendered.contains("dir folder"));
+        assert!(rendered.contains("folder  dir"));
     }
 }
