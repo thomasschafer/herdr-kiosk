@@ -19,6 +19,7 @@ SESSION=hk-install
 LAST_SCREEN="$HK_ROOT/last-screen.txt"
 CARGO_PATH=/Users/tomschafer/.cargo/bin:/etc/profiles/per-user/tomschafer/bin:/usr/bin:/bin:/usr/sbin:/sbin
 export PATH="$CARGO_PATH"
+TMUX_BIN=${HK_TMUX:-$(command -v tmux || true)}
 
 # Herdr gets a sandbox HOME, but rustup's cargo shim still needs the invoking
 # user's toolchain homes. Resolve them before h() applies the HOME override and
@@ -44,6 +45,10 @@ case "$HK_ROOT" in
 esac
 if [ ! -x "$HERDR_BIN" ]; then
     printf 'Herdr binary is not executable: %s\n' "$HERDR_BIN" >&2
+    exit 2
+fi
+if [ ! -x "$TMUX_BIN" ]; then
+    printf 'tmux binary is not executable: %s\n' "$TMUX_BIN" >&2
     exit 2
 fi
 
