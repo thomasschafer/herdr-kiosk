@@ -13,7 +13,7 @@ use crate::{
     herdr::HerdrProvider,
     recency::RecencyStore,
     spawn::{EventSender, spawn_open_folder, spawn_open_repo},
-    state::{AppState, Mode, SearchableList, ToastKind},
+    state::{AppState, Mode, OpenFilter, SearchableList, ToastKind},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +46,7 @@ pub struct RepoViewState {
     pub list: SearchableList,
     pub loading: bool,
     pub selection_touched: bool,
+    pub open_filter: OpenFilter,
     seen_paths: HashSet<PathBuf>,
     open_roots: HashSet<PathBuf>,
     open_folder_roots: HashSet<PathBuf>,
@@ -61,6 +62,7 @@ impl RepoViewState {
             list: SearchableList::new(0),
             loading: true,
             selection_touched: false,
+            open_filter: OpenFilter::All,
             seen_paths: HashSet::new(),
             open_roots: HashSet::new(),
             open_folder_roots: HashSet::new(),
@@ -77,17 +79,7 @@ impl RepoViewState {
     }
 
     fn canonical_sort(&mut self) {
-        let selected_path = self.selected().map(|entry| entry.repo.path.clone());
-        let filtered_paths = self
-            .list
-            .filtered
-            .iter()
-            .filter_map(|(index, score)| {
-                self.entries
-                    .get(*index)
-                    .map(|entry| (entry.repo.path.clone(), *score))
-            })
-            .collect::<Vec<_>>();
+        let (selected_path, filtered_paths) = self.ordering_snapshot();
         self.entries.sort_by(|left, right| {
             left.repo
                 .name
@@ -96,54 +88,52 @@ impl RepoViewState {
                 .then(left.repo.name.cmp(&right.repo.name))
                 .then(left.repo.path.cmp(&right.repo.path))
         });
-        if self.list.input.text.is_empty() {
-            self.list.filtered = (0..self.entries.len()).map(|index| (index, 0)).collect();
-            self.list.selected = selected_path
-                .and_then(|path| {
-                    self.entries
-                        .iter()
-                        .position(|entry| entry.repo.path == path)
-                })
-                .or_else(|| (!self.entries.is_empty()).then_some(0));
-        } else {
-            let indices: HashMap<_, _> = self
-                .entries
-                .iter()
-                .enumerate()
-                .map(|(index, entry)| (entry.repo.path.as_path(), index))
-                .collect();
-            self.list.filtered = filtered_paths
-                .iter()
-                .filter_map(|(path, score)| {
-                    indices.get(path.as_path()).map(|index| (*index, *score))
-                })
-                .collect();
-            self.list.selected = selected_path.and_then(|path| {
-                self.list
-                    .filtered
-                    .iter()
-                    .position(|(index, _)| self.entries[*index].repo.path == path)
-            });
-        }
+        self.rebuild_after_sort(selected_path, &filtered_paths);
     }
 
     fn recency_sort(&mut self, recency: &RecencyStore) {
         self.canonical_sort();
-        let selected_path = self.selected().map(|entry| entry.repo.path.clone());
-        let filtered_paths = self
-            .list
-            .filtered
-            .iter()
-            .filter_map(|(index, score)| {
-                self.entries
-                    .get(*index)
-                    .map(|entry| (entry.repo.path.clone(), *score))
-            })
-            .collect::<Vec<_>>();
+        let (selected_path, filtered_paths) = self.ordering_snapshot();
         self.entries
             .sort_by_key(|entry| recency.repo_rank(&entry.repo.path).unwrap_or(usize::MAX));
+        self.rebuild_after_sort(selected_path, &filtered_paths);
+    }
+
+    fn pin_sort(&mut self, pins: &crate::pins::PinStore) {
+        let (selected_path, filtered_paths) = self.ordering_snapshot();
+        self.entries
+            .sort_by_key(|entry| !pins.repo_is_pinned(&entry.repo.path));
+        self.rebuild_after_sort(selected_path, &filtered_paths);
+    }
+
+    fn ordering_snapshot(&self) -> (Option<PathBuf>, Vec<(PathBuf, i64)>) {
+        (
+            self.selected().map(|entry| entry.repo.path.clone()),
+            self.list
+                .filtered
+                .iter()
+                .filter_map(|(index, score)| {
+                    self.entries
+                        .get(*index)
+                        .map(|entry| (entry.repo.path.clone(), *score))
+                })
+                .collect(),
+        )
+    }
+
+    fn rebuild_after_sort(
+        &mut self,
+        selected_path: Option<PathBuf>,
+        filtered_paths: &[(PathBuf, i64)],
+    ) {
         if self.list.input.text.is_empty() {
-            self.list.filtered = (0..self.entries.len()).map(|index| (index, 0)).collect();
+            self.list.filtered = self
+                .entries
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| self.open_filter.includes(entry.is_open))
+                .map(|(index, _)| (index, 0))
+                .collect();
         } else {
             let indices: HashMap<_, _> = self
                 .entries
@@ -165,7 +155,7 @@ impl RepoViewState {
                     .iter()
                     .position(|(index, _)| self.entries[*index].repo.path == path)
             })
-            .or_else(|| (!self.entries.is_empty()).then_some(0));
+            .or_else(|| (!self.list.filtered.is_empty()).then_some(0));
     }
 
     pub(crate) fn apply_current_selection(&mut self) {
@@ -234,6 +224,7 @@ pub(crate) fn handle_event(
                 .map(|worktree| crate::path::canonical_or_original(Path::new(&worktree.repo_root)))
                 .collect();
             apply_open_indicators(state);
+            changes.repos_changed |= state.repo_view.open_filter.is_active();
         }
         AppEvent::OpenFolderPanesLoaded { panes } => {
             state.repo_view.open_folder_roots = panes
@@ -243,6 +234,7 @@ pub(crate) fn handle_event(
                 .map(crate::path::canonical_or_original)
                 .collect();
             apply_open_indicators(state);
+            changes.repos_changed |= state.repo_view.open_filter.is_active();
         }
         AppEvent::FilterCompleted {
             target: FilterTarget::Repos,
@@ -306,7 +298,8 @@ pub(crate) fn queue_filter(state: &mut AppState, worker: &FilterWorker, preserve
     if state.repo_view.list.input.text.is_empty() {
         sort_entries(state);
         if !preserve_selection {
-            state.repo_view.list.selected = (!state.repo_view.entries.is_empty()).then_some(0);
+            state.repo_view.list.selected =
+                (!state.repo_view.list.filtered.is_empty()).then_some(0);
         }
         if preserve_selection {
             apply_default_selection(state);
@@ -325,6 +318,7 @@ pub(crate) fn queue_filter(state: &mut AppState, worker: &FilterWorker, preserve
             .repo_view
             .entries
             .iter()
+            .filter(|entry| state.repo_view.open_filter.includes(entry.is_open))
             .map(|entry| FilterItem {
                 key: FilterKey::Repo(entry.repo.path.clone()),
                 text: entry.display_name(),
@@ -332,8 +326,23 @@ pub(crate) fn queue_filter(state: &mut AppState, worker: &FilterWorker, preserve
             .collect(),
         selected,
         ordering: match state.sort_order {
-            SortOrder::Alphabetical => FilterOrdering::Alphabetical,
-            SortOrder::Recency => FilterOrdering::Recency(
+            SortOrder::Alphabetical => FilterOrdering::pinned(
+                state
+                    .repo_view
+                    .entries
+                    .iter()
+                    .filter(|entry| state.pins.repo_is_pinned(&entry.repo.path))
+                    .map(|entry| FilterKey::Repo(entry.repo.path.clone()))
+                    .collect(),
+            ),
+            SortOrder::Recency => FilterOrdering::pinned_by_recency(
+                state
+                    .repo_view
+                    .entries
+                    .iter()
+                    .filter(|entry| state.pins.repo_is_pinned(&entry.repo.path))
+                    .map(|entry| FilterKey::Repo(entry.repo.path.clone()))
+                    .collect(),
                 state
                     .repo_view
                     .entries
@@ -355,6 +364,7 @@ fn sort_entries(state: &mut AppState) {
         SortOrder::Alphabetical => state.repo_view.canonical_sort(),
         SortOrder::Recency => state.repo_view.recency_sort(&state.recency),
     }
+    state.repo_view.pin_sort(&state.pins);
 }
 
 fn apply_default_selection(state: &mut AppState) {
@@ -388,6 +398,24 @@ pub(crate) fn open_selected(
     } else {
         spawn_open_folder(provider, sender, repo_path);
     }
+}
+
+pub(crate) fn toggle_pin(state: &mut AppState, worker: &FilterWorker) {
+    let Some(key) = state
+        .selected_repo()
+        .map(|entry| crate::recency::RecencyKey::repo(&entry.repo.path))
+    else {
+        return;
+    };
+    state.pins.toggle(key);
+    state.repo_view.selection_touched = true;
+    queue_filter(state, worker, true);
+}
+
+pub(crate) fn toggle_open_filter(state: &mut AppState, worker: &FilterWorker) {
+    state.repo_view.open_filter.toggle();
+    state.repo_view.selection_touched = true;
+    queue_filter(state, worker, true);
 }
 
 fn add(state: &mut AppState, repo: Repo) -> bool {

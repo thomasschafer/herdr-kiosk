@@ -17,7 +17,7 @@ use crate::{
         EventSender, spawn_branch_loading, spawn_open_branch, spawn_open_remote_branch,
         spawn_open_worktrees,
     },
-    state::{AppState, BranchEntry, Mode, SearchableList, ToastKind},
+    state::{AppState, BranchEntry, Mode, OpenFilter, SearchableList, ToastKind},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +59,7 @@ pub struct BranchViewState {
     pub entries: Vec<BranchEntry>,
     pub list: SearchableList,
     pub loading: bool,
+    pub open_filter: OpenFilter,
     pub filter_generation: u64,
     pub generation: u64,
     pub pending_selection: Option<BranchId>,
@@ -76,6 +77,7 @@ impl Default for BranchViewState {
             entries: Vec::new(),
             list: SearchableList::new(0),
             loading: false,
+            open_filter: OpenFilter::All,
             filter_generation: 0,
             generation: 0,
             pending_selection: None,
@@ -326,6 +328,7 @@ pub(crate) fn handle_event(
                     generation,
                 };
                 state.branch_view.apply_open_indicators();
+                changes.branches_changed |= state.branch_view.open_filter.is_active();
                 crate::screens::delete::refresh_open_state(state);
                 changes.resume_pending_deletes = true;
             }
@@ -475,10 +478,20 @@ pub(crate) fn queue_filter(
     state.branch_view.filter_generation = state.branch_view.filter_generation.wrapping_add(1);
     sort_entries(state);
     if state.branch_view.list.input.text.is_empty() {
-        state.branch_view.list.filtered = (0..state.branch_view.entries.len())
-            .map(|index| (index, 0))
+        state.branch_view.list.filtered = state
+            .branch_view
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, branch)| {
+                state
+                    .branch_view
+                    .open_filter
+                    .includes(branch.open_workspace_id.is_some())
+            })
+            .map(|(index, _)| (index, 0))
             .collect();
-        if state.branch_view.entries.is_empty() {
+        if state.branch_view.list.filtered.is_empty() {
             state.branch_view.list.selected = None;
         } else {
             state.branch_view.list.selected = selected_id
@@ -486,17 +499,19 @@ pub(crate) fn queue_filter(
                 .and_then(|id| {
                     state
                         .branch_view
-                        .entries
+                        .list
+                        .filtered
                         .iter()
-                        .position(|branch| branch.id() == *id)
+                        .position(|(index, _)| state.branch_view.entries[*index].id() == *id)
                 })
                 .or_else(|| match state.sort_order {
                     SortOrder::Alphabetical => Some(0),
                     SortOrder::Recency => state
                         .branch_view
-                        .entries
+                        .list
+                        .filtered
                         .iter()
-                        .position(|branch| !branch.is_current)
+                        .position(|(index, _)| !state.branch_view.entries[*index].is_current)
                         .or(Some(0)),
                 });
         }
@@ -511,52 +526,73 @@ pub(crate) fn queue_filter(
             .branch_view
             .entries
             .iter()
+            .filter(|branch| {
+                state
+                    .branch_view
+                    .open_filter
+                    .includes(branch.open_workspace_id.is_some())
+            })
             .map(|branch| FilterItem {
                 key: FilterKey::Branch(branch.id()),
                 text: branch.display_name(),
             })
             .collect(),
         selected: selected_id.map(FilterKey::Branch),
-        ordering: match state.sort_order {
-            SortOrder::Alphabetical => FilterOrdering::Alphabetical,
-            SortOrder::Recency => {
-                let repo_path = state.branch_context().map(|context| &context.repo_path);
-                FilterOrdering::Recency(
-                    state
-                        .branch_view
-                        .entries
-                        .iter()
-                        .filter_map(|branch| {
-                            let id = branch.id();
-                            state
-                                .recency
-                                .branch_rank(repo_path?, &id)
-                                .map(|rank| (FilterKey::Branch(id), rank))
-                        })
-                        .collect(),
-                )
-            }
-        },
+        ordering: filter_ordering(state),
     });
+}
+
+fn filter_ordering(state: &AppState) -> FilterOrdering {
+    let Some(repo_path) = state.branch_context().map(|context| &context.repo_path) else {
+        return FilterOrdering::alphabetical();
+    };
+    let pinned = state
+        .branch_view
+        .entries
+        .iter()
+        .filter(|branch| state.pins.branch_is_pinned(repo_path, &branch.id()))
+        .map(|branch| FilterKey::Branch(branch.id()))
+        .collect();
+    match state.sort_order {
+        SortOrder::Alphabetical => FilterOrdering::pinned(pinned),
+        SortOrder::Recency => FilterOrdering::pinned_by_recency(
+            pinned,
+            state
+                .branch_view
+                .entries
+                .iter()
+                .filter_map(|branch| {
+                    let id = branch.id();
+                    state
+                        .recency
+                        .branch_rank(repo_path, &id)
+                        .map(|rank| (FilterKey::Branch(id), rank))
+                })
+                .collect(),
+        ),
+    }
 }
 
 fn sort_entries(state: &mut AppState) {
     BranchEntry::sort(&mut state.branch_view.entries);
-    if !matches!(state.sort_order, SortOrder::Recency) {
-        return;
-    }
     let Some(repo_path) = state
         .branch_context()
         .map(|context| context.repo_path.clone())
     else {
         return;
     };
-    state.branch_view.entries.sort_by_key(|branch| {
-        state
-            .recency
-            .branch_rank(&repo_path, &branch.id())
-            .unwrap_or(usize::MAX)
-    });
+    if matches!(state.sort_order, SortOrder::Recency) {
+        state.branch_view.entries.sort_by_key(|branch| {
+            state
+                .recency
+                .branch_rank(&repo_path, &branch.id())
+                .unwrap_or(usize::MAX)
+        });
+    }
+    state
+        .branch_view
+        .entries
+        .sort_by_key(|branch| !state.pins.branch_is_pinned(&repo_path, &branch.id()));
 }
 
 fn apply_filter_result(
@@ -691,6 +727,27 @@ pub(crate) fn open_selected(
         return;
     };
     open(state, git, herdr, sender, &branch);
+}
+
+pub(crate) fn toggle_pin(state: &mut AppState, worker: &FilterWorker) {
+    let Some((repo_path, branch)) = state
+        .branch_context()
+        .map(|context| context.repo_path.clone())
+        .zip(state.selected_branch().map(BranchEntry::id))
+    else {
+        return;
+    };
+    state.pins.toggle(crate::recency::RecencyKey::branch(
+        &repo_path,
+        branch.clone(),
+    ));
+    queue_filter(state, worker, Some(branch));
+}
+
+pub(crate) fn toggle_open_filter(state: &mut AppState, worker: &FilterWorker) {
+    let selected = state.selected_branch().map(BranchEntry::id);
+    state.branch_view.open_filter.toggle();
+    queue_filter(state, worker, selected);
 }
 
 pub(crate) fn open(

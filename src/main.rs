@@ -77,6 +77,7 @@ fn start() -> Result<()> {
     state.configure_sort(
         loaded.config.sort,
         herdr_kiosk::recency::RecencyStore::load(),
+        herdr_kiosk::pins::PinStore::load(),
     );
     state.on_open = loaded.config.on_open.clone();
     warnings.extend(herdr_kiosk::screens::delete::load_pending(&mut state));

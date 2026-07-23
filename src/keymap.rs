@@ -86,7 +86,9 @@ fn help_command_to_action(command: Command) -> Option<Action> {
         | Command::Back
         | Command::NewBranch
         | Command::Delete
-        | Command::ToggleSort => None,
+        | Command::ToggleSort
+        | Command::TogglePin
+        | Command::ToggleOpenFilter => None,
     }
 }
 
@@ -141,6 +143,10 @@ fn command_to_action(command: Command, state: &AppState) -> Option<Action> {
         }
         Command::ToggleSort => matches!(state.mode, Mode::RepoSelect | Mode::BranchSelect(_))
             .then_some(Action::ToggleSort),
+        Command::TogglePin => matches!(state.mode, Mode::RepoSelect | Mode::BranchSelect(_))
+            .then_some(Action::TogglePin),
+        Command::ToggleOpenFilter => matches!(state.mode, Mode::RepoSelect | Mode::BranchSelect(_))
+            .then_some(Action::ToggleOpenFilter),
         Command::Clear => {
             if !active_query(state).is_empty() {
                 Some(Action::ClearQuery)

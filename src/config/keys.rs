@@ -173,6 +173,8 @@ pub enum Command {
     NewBranch,
     Delete,
     ToggleSort,
+    TogglePin,
+    ToggleOpenFilter,
     Clear,
     Backspace,
     DeleteWord,
@@ -195,6 +197,8 @@ impl Command {
             Self::NewBranch => "new_branch",
             Self::Delete => "delete",
             Self::ToggleSort => "toggle_sort",
+            Self::TogglePin => "toggle_pin",
+            Self::ToggleOpenFilter => "toggle_open_filter",
             Self::Clear => "clear",
             Self::Backspace => "backspace",
             Self::DeleteWord => "delete_word",
@@ -217,6 +221,8 @@ impl Command {
             Self::NewBranch => "Create a new branch",
             Self::Delete => "Delete the selected checkout",
             Self::ToggleSort => "Toggle alphabetical and recency sorting",
+            Self::TogglePin => "Pin or unpin the selected entry",
+            Self::ToggleOpenFilter => "Show only open entries",
             Self::Clear => "Clear the search query",
             Self::Backspace => "Delete the previous character",
             Self::DeleteWord => "Delete the previous word",
@@ -243,6 +249,8 @@ impl FromStr for Command {
             "new_branch" => Ok(Self::NewBranch),
             "delete" | "delete_worktree" => Ok(Self::Delete),
             "toggle_sort" => Ok(Self::ToggleSort),
+            "toggle_pin" => Ok(Self::TogglePin),
+            "toggle_open_filter" => Ok(Self::ToggleOpenFilter),
             "clear" | "clear_query" => Ok(Self::Clear),
             "backspace" => Ok(Self::Backspace),
             "delete_word" => Ok(Self::DeleteWord),
@@ -273,10 +281,12 @@ pub struct KeysConfig {
     /// actions are `open`, `back`, and `noop`.
     modal: HashMap<KeyChord, Command>,
     /// Bindings specific to the repository picker. Accepted actions are `open`,
-    /// `branches_view`, `toggle_sort`, `quit`, and `noop`.
+    /// `branches_view`, `toggle_sort`, `toggle_pin`, `toggle_open_filter`, `quit`,
+    /// and `noop`.
     repo_select: HashMap<KeyChord, Command>,
     /// Bindings specific to the branch picker. Accepted actions are `open`, `back`,
-    /// `new_branch`, `delete`, `toggle_sort`, and `noop`.
+    /// `new_branch`, `delete`, `toggle_sort`, `toggle_pin`, `toggle_open_filter`,
+    /// and `noop`.
     branch_select: HashMap<KeyChord, Command>,
 }
 
@@ -331,6 +341,8 @@ impl Default for KeysConfig {
             repo_select: map(&[
                 ("enter", Command::Open),
                 ("tab", Command::BranchesView),
+                ("C-b", Command::TogglePin),
+                ("C-f", Command::ToggleOpenFilter),
                 ("C-r", Command::ToggleSort),
                 ("q", Command::Quit),
             ]),
@@ -339,6 +351,8 @@ impl Default for KeysConfig {
                 ("esc", Command::Back),
                 ("C-o", Command::NewBranch),
                 ("C-x", Command::Delete),
+                ("C-b", Command::TogglePin),
+                ("C-f", Command::ToggleOpenFilter),
                 ("C-r", Command::ToggleSort),
             ]),
         }
@@ -548,6 +562,8 @@ const REPO_SELECT: &[Command] = &[
     Command::Open,
     Command::BranchesView,
     Command::ToggleSort,
+    Command::TogglePin,
+    Command::ToggleOpenFilter,
     Command::Quit,
 ];
 const BRANCH_SELECT: &[Command] = &[
@@ -557,6 +573,8 @@ const BRANCH_SELECT: &[Command] = &[
     Command::NewBranch,
     Command::Delete,
     Command::ToggleSort,
+    Command::TogglePin,
+    Command::ToggleOpenFilter,
 ];
 
 fn extend_layer(
@@ -586,18 +604,20 @@ const fn command_rank(command: Command) -> u8 {
         Command::NewBranch => 2,
         Command::Delete => 3,
         Command::ToggleSort => 4,
-        Command::Back => 5,
-        Command::MoveUp => 6,
-        Command::MoveDown => 7,
-        Command::Clear => 8,
-        Command::Backspace => 9,
-        Command::DeleteWord => 10,
-        Command::CursorLeft => 11,
-        Command::CursorRight => 12,
-        Command::Help => 13,
-        Command::DismissToast => 14,
-        Command::Quit => 15,
-        Command::Noop => 16,
+        Command::TogglePin => 5,
+        Command::ToggleOpenFilter => 6,
+        Command::Back => 7,
+        Command::MoveUp => 8,
+        Command::MoveDown => 9,
+        Command::Clear => 10,
+        Command::Backspace => 11,
+        Command::DeleteWord => 12,
+        Command::CursorLeft => 13,
+        Command::CursorRight => 14,
+        Command::Help => 15,
+        Command::DismissToast => 16,
+        Command::Quit => 17,
+        Command::Noop => 18,
     }
 }
 
@@ -674,6 +694,25 @@ mod tests {
             keys.command_for(BindingMode::Branch, "C-o".parse().unwrap()),
             Some(Command::Noop)
         );
+    }
+
+    #[test]
+    fn picker_pin_and_open_filter_defaults_are_collision_free() {
+        let keys = KeysConfig::default();
+        for mode in [BindingMode::Repo, BindingMode::Branch] {
+            assert_eq!(
+                keys.command_for(mode, "C-b".parse().unwrap()),
+                Some(Command::TogglePin)
+            );
+            assert_eq!(
+                keys.command_for(mode, "C-f".parse().unwrap()),
+                Some(Command::ToggleOpenFilter)
+            );
+            assert_eq!(
+                keys.command_for(mode, "C-r".parse().unwrap()),
+                Some(Command::ToggleSort)
+            );
+        }
     }
 
     #[test]

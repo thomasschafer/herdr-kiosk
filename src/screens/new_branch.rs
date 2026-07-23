@@ -254,7 +254,7 @@ fn queue_filter(state: &mut AppState, worker: &FilterWorker, selected_name: Opti
             })
             .collect(),
         selected: selected_name.map(FilterKey::Base),
-        ordering: FilterOrdering::Alphabetical,
+        ordering: FilterOrdering::alphabetical(),
     });
 }
 
