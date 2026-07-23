@@ -316,7 +316,7 @@ t send-keys -t "$SESSION" Enter
 wait_screen_absent "open-me — select branch" 120
 
 PLAIN_WORKTREE="$HK_ROOT/worktrees/open-me/plain"
-[ -d "$PLAIN_WORKTREE" ] || fail "plain worktree was not created under sandbox worktrees"
+wait_path_exists "$PLAIN_WORKTREE"
 assert_focused_checkout "$PLAIN_WORKTREE"
 printf 'plain branch create and focus: ok\n'
 
@@ -384,7 +384,7 @@ t send-keys -t "$SESSION" Enter
 wait_screen_absent "open-me — select branch" 120
 
 REMOTE_WORKTREE="$HK_ROOT/worktrees/open-me/remote-only"
-[ -d "$REMOTE_WORKTREE" ] || fail "remote-only worktree was not created"
+wait_path_exists "$REMOTE_WORKTREE"
 assert_focused_checkout "$REMOTE_WORKTREE"
 UPSTREAM=$(git -C "$HK_ROOT/repos/direct/open-me" rev-parse --abbrev-ref 'remote-only@{upstream}')
 [ "$UPSTREAM" = "upstream/remote-only" ] \
@@ -422,7 +422,7 @@ t send-keys -t "$SESSION" Enter
 wait_screen_absent "open-me — select branch" 120
 
 NEW_BRANCH_WORKTREE="$HK_ROOT/worktrees/open-me/feat-new-branch"
-[ -d "$NEW_BRANCH_WORKTREE" ] || fail "new branch worktree was not created"
+wait_path_exists "$NEW_BRANCH_WORKTREE"
 assert_focused_checkout "$NEW_BRANCH_WORKTREE"
 FEATURE_TIP=$(git -C "$HK_ROOT/repos/direct/open-me" rev-parse feature)
 NEW_BRANCH_TIP=$(git -C "$HK_ROOT/repos/direct/open-me" rev-parse feat/new-branch)
@@ -464,7 +464,7 @@ wait_screen_contains "1 of 8 branches"
 t send-keys -t "$SESSION" Enter
 wait_screen_absent "open-me — select branch" 120
 DELETE_OPEN_WORKTREE="$HK_ROOT/worktrees/open-me/delete-open"
-[ -d "$DELETE_OPEN_WORKTREE" ] || fail "delete-open worktree was not created"
+wait_path_exists "$DELETE_OPEN_WORKTREE"
 assert_focused_checkout "$DELETE_OPEN_WORKTREE"
 
 h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
@@ -497,7 +497,7 @@ wait_screen_contains "1 of 8 branches"
 t send-keys -t "$SESSION" Enter
 wait_screen_absent "open-me — select branch" 120
 DIRTY_OPEN_WORKTREE="$HK_ROOT/worktrees/open-me/dirty-open"
-[ -d "$DIRTY_OPEN_WORKTREE" ] || fail "dirty-open worktree was not created"
+wait_path_exists "$DIRTY_OPEN_WORKTREE"
 printf 'untracked\n' >"$DIRTY_OPEN_WORKTREE/untracked.txt"
 
 h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null

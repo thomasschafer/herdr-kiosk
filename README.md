@@ -13,6 +13,9 @@ Install from GitHub:
 herdr plugin install thomasschafer/herdr-kiosk
 ```
 
+On Linux, macOS, and Windows, the installer downloads and verifies the matching
+release binary, falling back to a Cargo build when a prebuilt is unavailable.
+
 Add a keybinding to open the picker (here, `prefix+f`):
 
 ```toml
@@ -192,7 +195,17 @@ Defaults:
 ## Windows support
 
 Windows is supported and uses PowerShell launch shims plus a native
-`x86_64-pc-windows-msvc` binary. Installation currently needs Rust and Cargo.
+`x86_64-pc-windows-msvc` binary. Installation downloads and verifies that prebuilt,
+with Cargo used only as a fallback.
+
+## Trust and security
+
+Herdr does not sandbox or review plugins: their build and runtime commands run as
+your user with your environment and full Herdr CLI access. During installation,
+this plugin downloads and verifies a release binary or runs Cargo. At runtime it
+executes `git` to inspect repositories and branches and the `herdr` CLI to open,
+focus, create, and remove Herdr worktrees and workspaces. Review the manifest,
+scripts, and source before installing if that access is not acceptable.
 
 ## Development
 

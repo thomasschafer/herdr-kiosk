@@ -319,33 +319,31 @@ configuration defaults and explicit overrides.
 - [x] Shipped platform-gated `picker-windows` / `open-picker-windows` entries and
   PowerShell shims. `powershell.exe` is PATH-resolved; the pane shim strips any `\\?\`
   prefix and launches `herdr-kiosk.exe` by absolute path. The Unix action shim is
-  unchanged. Build invocation is direct `cargo build --release`, without a shell.
+  unchanged.
 - [x] Added `windows-latest` to normal CI formatting, PowerShell syntax validation,
   clippy, build, and unit/startup tests. The tmux e2e remains Unix-only.
 - [x] From here on, every milestone's work lands with Windows parity or a tracked
   exception.
 
-Real-Windows hand-test checklist (compilation and CI unit tests do not cover these):
+Windows manual verification (compilation and CI unit tests do not cover these):
 
-- Install and link flows, including a plugin root containing spaces; invoke
-  `open-picker-windows` and confirm the 90% session-modal popup opens and exits cleanly.
-- Confirm managed-install and linked-plugin roots work when herdr reports `\\?\` and
-  `\\?\UNC\` paths, and that no verbatim prefix leaks into picker dialogs/errors.
-- Complete first-run setup with drive-letter and UNC search paths, including Tab
-  completion with backslashes; verify guarded config creation never overwrites a file
-  created concurrently.
-- Exercise repo discovery, case-insensitive collision labels (rendered with `/`),
-  current/open indicators, local and remote branch flows, background fetch with auth
-  prompts disabled, new-branch creation, and clean/dirty worktree removal.
-- Git stderr classification assumes the standard English Git-for-Windows messages.
+- Hand-test managed install and link paths, including a plugin root containing spaces;
+  invoke `open-picker-windows` and confirm the popup opens and exits cleanly.
+- Complete first-run setup and repository discovery with drive-letter and UNC search
+  paths, including Tab completion with backslashes.
+- Verify the supported Git for Windows installation produces the expected error text
+  for existing-branch, stale-worktree, and dirty-worktree paths.
+- Exercise remote authentication failures and confirm disabled prompts
+  (`GIT_TERMINAL_PROMPT=0`) do not block background fetches.
+- Create and delete linked worktrees, including clean and dirty removal paths.
+- Confirm herdr's verbatim `\\?\` and `\\?\UNC\` managed-install and linked-plugin
+  roots are normalized by the PowerShell launchers; retain both forms in the manual
+  release check.
 - The Windows pane command references `scripts/run-picker.ps1` cwd-relative; herdr
   runs plugin commands with the plugin directory as cwd, but a launcher passing an
   explicit `--cwd` override would break that resolution. If the hand-test shows
   breakage, switch the pane command to `powershell -Command` with
   `$env:HERDR_PLUGIN_ROOT` expansion so it becomes cwd-independent.
-  Verify the existing-branch, stale-worktree, and dirty-worktree paths on the supported
-  Git for Windows installation; `LC_ALL=C` is not relied on to change Windows Git's
-  locale. Also confirm `GIT_TERMINAL_PROMPT=0` prevents interactive fetch prompts.
 
 ### M9 — distribution and publishing
 - [x] `fetch-or-build.sh`: version-matched prebuilt download + SHA-256 verify, cargo
@@ -356,10 +354,13 @@ Real-Windows hand-test checklist (compilation and CI unit tests do not cover the
   to refresh" note for users.
 - [x] Hermetic shell tests cover missing assets, checksum mismatch, and a verified
   prebuilt install; Ubuntu CI runs them.
+- [x] `fetch-or-build.ps1`: verified `x86_64-pc-windows-msvc` prebuilt download with
+  Cargo fallback; hermetic PowerShell tests cover missing, mismatched, and valid assets
+  on Windows CI.
 - [x] Add an opt-in real-marketplace install rehearsal that reuses the tmux harness.
 
-Windows continues to use `cargo build --release` during install. There is no
-PowerShell prebuilt-fetch path yet; adding one is post-v1 work.
+Windows now uses the same verified prebuilt-fetch flow as Linux and macOS, with
+`cargo build --locked --release` retained as the fallback.
 
 ### Post-M9 fixes
 

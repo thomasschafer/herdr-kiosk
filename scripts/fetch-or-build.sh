@@ -1,10 +1,6 @@
 #!/bin/sh
 set -eu
 
-# Unix installs fetch a verified release binary when possible. Windows keeps the
-# manifest's cargo build for now because there is no PowerShell fetch path yet;
-# that follow-up is tracked in the M9 notes in docs/PLAN.md.
-
 REPO_ROOT=${HK_REPO_ROOT:-"$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"}
 OUT=${HK_OUT:-"$REPO_ROOT/target/release/herdr-kiosk"}
 UNAME=${HK_UNAME:-uname}
