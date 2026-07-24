@@ -8,9 +8,10 @@ use serde::{Deserialize, Serialize};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
-    config::OnOpenConfig,
+    config::{OnOpenConfig, SortOrder},
     git::Repo,
     herdr::WorktreeInfo,
+    recency::RecencyStore,
     screens::{
         branch::BranchViewState, delete::DeleteState, new_branch::NewBranchState,
         repo::RepoViewState,
@@ -249,6 +250,8 @@ pub struct AppState {
     pub(crate) delete: DeleteState,
     pub(crate) new_branch: NewBranchState,
     pub on_open: OnOpenConfig,
+    pub sort_order: SortOrder,
+    pub recency: RecencyStore,
 }
 
 impl AppState {
@@ -267,7 +270,14 @@ impl AppState {
             delete: DeleteState::default(),
             new_branch: NewBranchState::default(),
             on_open: OnOpenConfig::default(),
+            sort_order: SortOrder::Alphabetical,
+            recency: RecencyStore::default(),
         }
+    }
+
+    pub fn configure_sort(&mut self, sort_order: SortOrder, recency: RecencyStore) {
+        self.sort_order = sort_order;
+        self.recency = recency;
     }
 
     pub fn selected_repo(&self) -> Option<&RepoEntry> {

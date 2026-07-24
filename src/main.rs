@@ -74,6 +74,10 @@ fn start() -> Result<()> {
         .current_cwd()
         .map(|path| std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path)));
     let mut state = AppState::new(current_cwd);
+    state.configure_sort(
+        loaded.config.sort,
+        herdr_kiosk::recency::RecencyStore::load(),
+    );
     state.on_open = loaded.config.on_open.clone();
     warnings.extend(herdr_kiosk::screens::delete::load_pending(&mut state));
     for ConfigWarning { message } in warnings {

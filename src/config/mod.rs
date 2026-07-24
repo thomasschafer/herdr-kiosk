@@ -12,6 +12,36 @@ pub use keys::KeysConfig;
 pub const APP_NAME: &str = "herdr-kiosk";
 pub const DEFAULT_SEARCH_DEPTH: u16 = 1;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+/// Picker ordering.
+pub enum SortOrder {
+    /// Preserve the existing alphabetical ordering. Recency state is ignored
+    /// entirely, including for tiebreaks.
+    #[default]
+    Alphabetical,
+    /// Put recently opened repositories, folders, and branches first. Unseen
+    /// entries retain their alphabetical ordering.
+    Recency,
+}
+
+impl SortOrder {
+    #[must_use]
+    pub const fn toggled(self) -> Self {
+        match self {
+            Self::Alphabetical => Self::Recency,
+            Self::Recency => Self::Alphabetical,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Alphabetical => "a–z",
+            Self::Recency => "recency",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 /// A repository search root, written either as a path string or an inline table.
@@ -168,6 +198,10 @@ pub struct Config {
     /// entries can override this value with their own `include_non_git` setting.
     #[serde(default)]
     pub include_non_git: bool,
+    /// Order repository and branch results. `alphabetical` is the default and
+    /// ignores recency state entirely; `recency` puts the most recently opened
+    /// entries first while retaining alphabetical fallback ordering.
+    pub sort: SortOrder,
     /// Customize terminal-palette colors used by the picker. Light-terminal users
     /// can set `muted`, `border`, and other colors explicitly.
     pub theme: ThemeConfig,
@@ -448,6 +482,17 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn sort_parses_recency_defaults_to_alphabetical_and_rejects_unknown_values() {
+        assert_eq!(
+            parse_config("sort = \"recency\"").unwrap().0.sort,
+            SortOrder::Recency
+        );
+        assert_eq!(parse_config("").unwrap().0.sort, SortOrder::Alphabetical);
+        let error = parse_config("sort = \"newest\"").unwrap_err();
+        assert!(format!("{error:#}").contains("unknown variant `newest`"));
     }
 
     #[test]

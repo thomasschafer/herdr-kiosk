@@ -6,6 +6,7 @@ use std::{
 
 use crate::{
     app::{TickChanges, process_app_event},
+    config::SortOrder,
     event::{AppEvent, FilterKey, FilterTarget},
     git::Repo,
     herdr::{
@@ -13,6 +14,7 @@ use crate::{
         WorkspaceWorktreeInfo,
         mock::{HerdrCall, MockHerdrProvider},
     },
+    recency::RecencyKey,
     spawn::EventSender,
     state::{AppState, Mode, SearchableList},
 };
@@ -134,6 +136,97 @@ fn current_repo_selection_prefers_the_deepest_containing_repo() {
     state.repo_view.list = SearchableList::new(2);
     state.repo_view.apply_current_selection();
     assert_eq!(state.repo_view.list.selected, Some(1));
+}
+
+#[test]
+fn alphabetical_sort_is_unchanged_by_populated_recency_state() {
+    let mut state = AppState::new(None);
+    state.repo_view.entries = ["/repos/zulu", "/repos/Alpha", "/other/alpha", "/repos/beta"]
+        .into_iter()
+        .map(repo)
+        .map(RepoEntry::new)
+        .collect();
+    state.repo_view.list = SearchableList::new(state.repo_view.entries.len());
+    sort_entries(&mut state);
+    let baseline = state.repo_view.entries.clone();
+
+    state
+        .recency
+        .record(RecencyKey::repo(Path::new("/repos/zulu")));
+    state
+        .recency
+        .record(RecencyKey::repo(Path::new("/repos/beta")));
+    state.repo_view.entries.reverse();
+    sort_entries(&mut state);
+
+    assert_eq!(state.sort_order, SortOrder::Alphabetical);
+    assert_eq!(state.repo_view.entries, baseline);
+}
+
+#[test]
+fn recency_resting_sort_uses_rank_then_alphabetical_fallback() {
+    let mut state = AppState::new(None);
+    state.sort_order = SortOrder::Recency;
+    state.repo_view.entries = [
+        "/repos/delta",
+        "/repos/alpha",
+        "/repos/charlie",
+        "/repos/bravo",
+    ]
+    .into_iter()
+    .map(repo)
+    .map(RepoEntry::new)
+    .collect();
+    state.repo_view.list = SearchableList::new(state.repo_view.entries.len());
+    state
+        .recency
+        .record(RecencyKey::repo(Path::new("/repos/alpha")));
+    state
+        .recency
+        .record(RecencyKey::repo(Path::new("/repos/delta")));
+
+    sort_entries(&mut state);
+
+    assert_eq!(
+        state
+            .repo_view
+            .entries
+            .iter()
+            .map(|entry| entry.repo.name.as_str())
+            .collect::<Vec<_>>(),
+        ["delta", "alpha", "bravo", "charlie"]
+    );
+}
+
+#[test]
+fn recency_defaults_to_previous_repo_while_alphabetical_keeps_current_repo() {
+    let entries = || {
+        ["/work/alpha", "/work/beta"]
+            .into_iter()
+            .map(repo)
+            .map(RepoEntry::new)
+            .collect::<Vec<_>>()
+    };
+    let mut alphabetical = AppState::new(Some("/work/beta/src".into()));
+    alphabetical.repo_view.entries = entries();
+    alphabetical.repo_view.list = SearchableList::new(2);
+    sort_entries(&mut alphabetical);
+    apply_default_selection(&mut alphabetical);
+    assert_eq!(alphabetical.selected_repo().unwrap().repo.name, "beta");
+
+    let mut recency = AppState::new(Some("/work/beta/src".into()));
+    recency.sort_order = SortOrder::Recency;
+    recency.repo_view.entries = entries();
+    recency.repo_view.list = SearchableList::new(2);
+    recency
+        .recency
+        .record(RecencyKey::repo(Path::new("/work/alpha")));
+    recency
+        .recency
+        .record(RecencyKey::repo(Path::new("/work/beta")));
+    sort_entries(&mut recency);
+    apply_default_selection(&mut recency);
+    assert_eq!(recency.selected_repo().unwrap().repo.name, "alpha");
 }
 
 #[test]
