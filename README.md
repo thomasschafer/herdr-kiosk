@@ -120,16 +120,17 @@ The section is optional and contains no layout by default.
 Example:
 
 ```toml
-[on_open]
+# after a workspace opens, set up its tabs and panes
 [[on_open.tabs]]
-command = "hx ." # editor in the tab's main pane
-  [[on_open.tabs.panes]]
-  command = "lazygit" # opens in a split beside it
-  direction = "right" # "right" or "down"
-  ratio = 0.3 # split size, from 0 to 1
+command = "hx ." # runs in the tab's main pane
+
+[[on_open.tabs.panes]]
+command = "lazygit" # opens in a split beside it
+direction = "right" # "right" or "down"
+ratio = 0.3 # split size, from 0 to 1
 ```
 
-Add more `[[on_open.tabs]]` for extra tabs (each takes an optional `name`); set `on = "every_open"` to also run when focusing an existing workspace; give a pane an `id` and set `focus = "<id>"` to focus it; or add `[on_open.repos."repo-name"]` to override the layout for one repo. The older `panes = [ ... ]` form still works.
+Add more `[[on_open.tabs]]` for extra tabs (each takes an optional `name`). Under an `[on_open]` header you can set `on = "every_open"` to also run when focusing an existing workspace, or `focus = "<pane id>"` to focus a pane (give a pane an `id` to target it); `[on_open.repos."repo-name"]` overrides the layout for one repo. The older `panes = [ ... ]` form still works.
 
 #### `on`
 
