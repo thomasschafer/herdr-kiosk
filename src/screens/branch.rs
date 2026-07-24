@@ -473,8 +473,8 @@ pub(crate) fn queue_filter(
     selected_id: Option<BranchId>,
 ) {
     state.branch_view.filter_generation = state.branch_view.filter_generation.wrapping_add(1);
-    sort_entries(state);
     if state.branch_view.list.input.text.is_empty() {
+        sort_entries(state);
         state.branch_view.list.filtered = (0..state.branch_view.entries.len())
             .map(|index| (index, 0))
             .collect();
@@ -492,12 +492,29 @@ pub(crate) fn queue_filter(
                 })
                 .or_else(|| match state.sort_order {
                     SortOrder::Alphabetical => Some(0),
-                    SortOrder::Recency => state
-                        .branch_view
-                        .entries
-                        .iter()
-                        .position(|branch| !branch.is_current)
-                        .or(Some(0)),
+                    SortOrder::Recency => {
+                        let repo_path = state
+                            .branch_context()
+                            .map(|context| crate::path::canonical_or_original(&context.repo_path));
+                        let ranked = repo_path.as_deref().is_some_and(|repo_path| {
+                            state.branch_view.entries.iter().any(|branch| {
+                                state
+                                    .recency
+                                    .branch_rank_canonical(repo_path, &branch.id())
+                                    .is_some()
+                            })
+                        });
+                        ranked
+                            .then(|| {
+                                state
+                                    .branch_view
+                                    .entries
+                                    .iter()
+                                    .position(|branch| !branch.is_current)
+                            })
+                            .flatten()
+                            .or(Some(0))
+                    }
                 });
         }
         state.branch_view.list.scroll_offset = 0;
@@ -520,7 +537,9 @@ pub(crate) fn queue_filter(
         ordering: match state.sort_order {
             SortOrder::Alphabetical => FilterOrdering::Alphabetical,
             SortOrder::Recency => {
-                let repo_path = state.branch_context().map(|context| &context.repo_path);
+                let repo_path = state
+                    .branch_context()
+                    .map(|context| crate::path::canonical_or_original(&context.repo_path));
                 FilterOrdering::Recency(
                     state
                         .branch_view
@@ -530,7 +549,7 @@ pub(crate) fn queue_filter(
                             let id = branch.id();
                             state
                                 .recency
-                                .branch_rank(repo_path?, &id)
+                                .branch_rank_canonical(repo_path.as_deref()?, &id)
                                 .map(|rank| (FilterKey::Branch(id), rank))
                         })
                         .collect(),
@@ -547,14 +566,14 @@ fn sort_entries(state: &mut AppState) {
     }
     let Some(repo_path) = state
         .branch_context()
-        .map(|context| context.repo_path.clone())
+        .map(|context| crate::path::canonical_or_original(&context.repo_path))
     else {
         return;
     };
-    state.branch_view.entries.sort_by_key(|branch| {
+    state.branch_view.entries.sort_by_cached_key(|branch| {
         state
             .recency
-            .branch_rank(&repo_path, &branch.id())
+            .branch_rank_canonical(&repo_path, &branch.id())
             .unwrap_or(usize::MAX)
     });
 }

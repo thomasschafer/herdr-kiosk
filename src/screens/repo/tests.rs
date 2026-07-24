@@ -227,6 +227,14 @@ fn recency_defaults_to_previous_repo_while_alphabetical_keeps_current_repo() {
     sort_entries(&mut recency);
     apply_default_selection(&mut recency);
     assert_eq!(recency.selected_repo().unwrap().repo.name, "alpha");
+
+    let mut empty_recency = AppState::new(Some("/work/beta/src".into()));
+    empty_recency.sort_order = SortOrder::Recency;
+    empty_recency.repo_view.entries = entries();
+    empty_recency.repo_view.list = SearchableList::new(2);
+    sort_entries(&mut empty_recency);
+    apply_default_selection(&mut empty_recency);
+    assert_eq!(empty_recency.selected_repo().unwrap().repo.name, "beta");
 }
 
 #[test]

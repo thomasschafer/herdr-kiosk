@@ -46,8 +46,14 @@ Type to fuzzy-search repositories and branches (and plain folders, if you enable
 repository's branch view (for Git repositories), and `ctrl+h` shows all active bindings
 for the current view.
 
-Results are ordered alphabetically by default. Set `sort = "recency"` in your config (or
-press `ctrl+r` in the picker) to put the most recently opened entries first.
+Results are ordered alphabetically by default. Set `sort = "recency"` in your config to
+put the most recently opened entries first. In recency mode, the cursor deliberately starts
+on the previous entry so `enter` jumps back to it. Pressing `ctrl+r` toggles the ordering
+for the current picker session only; it does not update your config.
+
+Recency history is stored in `recency.json` under Herdr's plugin state directory, falling
+back to `$XDG_STATE_HOME/herdr-kiosk` or `~/.local/state/herdr-kiosk` outside Herdr. Delete
+that file to reset the history.
 
 ## Configuration
 

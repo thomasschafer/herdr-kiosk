@@ -360,14 +360,10 @@ pub(crate) fn apply_exit_effects(
     if !changes.workspace_opened {
         return None;
     }
-    if let Some(warning) = changes.open_warning.take() {
-        if let Some(provider) = herdr {
-            if let Err(error) = provider.notification_show("herdr-kiosk", &warning) {
-                eprintln!("herdr-kiosk: {warning} (notification failed: {error})");
-            }
-        } else {
-            eprintln!("herdr-kiosk: {warning}");
-        }
+    if let Some(warning) = changes.open_warning.take()
+        && let Some(provider) = herdr
+    {
+        let _ = provider.notification_show("herdr-kiosk", &warning);
     }
     Some(RunOutcome::Opened)
 }
@@ -419,7 +415,6 @@ pub(crate) fn process_action(
         Action::ToggleSort => {
             state.sort_order = state.sort_order.toggled();
             if matches!(state.mode, Mode::RepoSelect) {
-                state.repo_view.selection_touched = true;
                 crate::screens::repo::queue_filter(state, filter_worker, true);
             } else if matches!(state.mode, Mode::BranchSelect(_)) {
                 let selected = state.selected_branch().map(BranchEntry::id);
@@ -874,6 +869,7 @@ mod tests {
         );
 
         assert_eq!(state.sort_order, crate::config::SortOrder::Recency);
+        assert!(!state.repo_view.selection_touched);
         let footer = footer_spans(
             &keys,
             BindingMode::Repo,

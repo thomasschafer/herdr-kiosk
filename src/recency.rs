@@ -1,11 +1,17 @@
 use std::{
-    fs, io,
+    collections::HashMap,
+    io,
     path::{Path, PathBuf},
 };
 
 use serde::{Deserialize, Serialize};
 
-use crate::{path::canonical_or_original, state::BranchId};
+use crate::{
+    config::ConfigWarning,
+    path::{canonical_or_original, normalized_key},
+    state::BranchId,
+    state_store,
+};
 
 const FILE_NAME: &str = "recency.json";
 const STATE_VERSION: u32 = 1;
@@ -25,15 +31,30 @@ pub enum RecencyKey {
 
 impl RecencyKey {
     pub fn repo(path: &Path) -> Self {
-        Self::Repo {
-            path: canonical_or_original(path),
-        }
+        Self::repo_canonical(&canonical_or_original(path))
     }
 
     pub fn branch(repo_path: &Path, branch: BranchId) -> Self {
+        Self::branch_canonical(&canonical_or_original(repo_path), branch)
+    }
+
+    fn repo_canonical(path: &Path) -> Self {
+        Self::Repo {
+            path: normalized_key(path),
+        }
+    }
+
+    fn branch_canonical(repo_path: &Path, branch: BranchId) -> Self {
         Self::Branch {
-            repo_path: canonical_or_original(repo_path),
+            repo_path: normalized_key(repo_path),
             branch,
+        }
+    }
+
+    fn normalized(self) -> Self {
+        match self {
+            Self::Repo { path } => Self::repo(&path),
+            Self::Branch { repo_path, branch } => Self::branch(&repo_path, branch),
         }
     }
 }
@@ -47,58 +68,88 @@ struct RecencyFile {
 #[derive(Debug, Clone, Default)]
 pub struct RecencyStore {
     entries: Vec<RecencyKey>,
+    ranks: HashMap<RecencyKey, usize>,
+}
+
+#[derive(Debug, Default)]
+pub struct RecencyLoad {
+    pub store: RecencyStore,
+    pub warnings: Vec<ConfigWarning>,
 }
 
 impl RecencyStore {
-    pub fn load() -> Self {
-        let Some(directory) = std::env::var_os("HERDR_PLUGIN_STATE_DIR")
-            .filter(|directory| !directory.is_empty())
-            .map(PathBuf::from)
-        else {
-            return Self::default();
-        };
-        if !directory.is_absolute() {
-            warn(format!(
-                "refusing relative state directory from HERDR_PLUGIN_STATE_DIR: {}",
-                directory.display()
-            ));
-            return Self::default();
-        }
-        let (store, warning) = Self::load_from(&directory.join(FILE_NAME));
-        if let Some(warning) = warning {
-            warn(warning);
-        }
-        store
+    pub fn load() -> RecencyLoad {
+        Self::load_with(|name| std::env::var(name).ok())
     }
 
     pub fn repo_rank(&self, path: &Path) -> Option<usize> {
-        self.rank(&RecencyKey::repo(path))
+        self.repo_rank_canonical(&canonical_or_original(path))
+    }
+
+    pub(crate) fn repo_rank_canonical(&self, path: &Path) -> Option<usize> {
+        self.rank(&RecencyKey::repo_canonical(path))
     }
 
     pub fn branch_rank(&self, repo_path: &Path, branch: &BranchId) -> Option<usize> {
-        self.rank(&RecencyKey::branch(repo_path, branch.clone()))
+        self.branch_rank_canonical(&canonical_or_original(repo_path), branch)
+    }
+
+    pub(crate) fn branch_rank_canonical(
+        &self,
+        repo_path: &Path,
+        branch: &BranchId,
+    ) -> Option<usize> {
+        self.rank(&RecencyKey::branch_canonical(repo_path, branch.clone()))
     }
 
     fn rank(&self, key: &RecencyKey) -> Option<usize> {
-        self.entries.iter().position(|entry| entry == key)
+        self.ranks.get(key).copied()
     }
 
     pub(crate) fn record(&mut self, key: RecencyKey) {
         self.entries.retain(|entry| entry != &key);
         self.entries.insert(0, key);
         self.entries.truncate(MAX_ENTRIES);
+        self.rebuild_ranks();
     }
 
-    fn load_from(path: &Path) -> (Self, Option<String>) {
-        let contents = match fs::read(path) {
-            Ok(contents) => contents,
+    fn rebuild_ranks(&mut self) {
+        self.ranks = self
+            .entries
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(rank, key)| (key, rank))
+            .collect();
+    }
+
+    fn load_with(get_env: impl Fn(&str) -> Option<String>) -> RecencyLoad {
+        let resolution = state_store::resolve_state_path(FILE_NAME, get_env);
+        let Some(path) = resolution.path else {
+            let mut warnings = resolution.warnings;
+            warnings.push(ConfigWarning {
+                message: "Recency state is unavailable because no trusted state directory could be resolved"
+                    .into(),
+            });
+            return RecencyLoad {
+                warnings,
+                ..RecencyLoad::default()
+            };
+        };
+        let (store, mut load_warnings) = Self::load_from(&path);
+        let mut warnings = resolution.warnings;
+        warnings.append(&mut load_warnings);
+        RecencyLoad { store, warnings }
+    }
+
+    fn load_from(path: &Path) -> (Self, Vec<ConfigWarning>) {
+        let contents = match state_store::read(path) {
+            Ok(Some(contents)) => contents,
+            Ok(None) => return (Self::default(), Vec::new()),
             Err(error) => {
                 return (
                     Self::default(),
-                    Some(format!(
-                        "recency state at {} could not be read: {error}; using an empty store",
-                        path.display()
-                    )),
+                    vec![invalid_state(path, &format!("could not be read: {error}"))],
                 );
             }
         };
@@ -107,28 +158,27 @@ impl RecencyStore {
             Ok(file) => {
                 return (
                     Self::default(),
-                    Some(format!(
-                        "recency state at {} uses unsupported version {} (expected {STATE_VERSION}); using an empty store",
-                        path.display(),
-                        file.version
-                    )),
+                    vec![invalid_state(
+                        path,
+                        &format!(
+                            "uses unsupported version {} (expected {STATE_VERSION})",
+                            file.version
+                        ),
+                    )],
                 );
             }
             Err(error) => {
                 return (
                     Self::default(),
-                    Some(format!(
-                        "recency state at {} is corrupt: {error}; using an empty store",
-                        path.display()
-                    )),
+                    vec![invalid_state(path, &format!("is corrupt: {error}"))],
                 );
             }
         };
         let mut store = Self::default();
         for entry in file.entries.into_iter().rev() {
-            store.record(entry);
+            store.record(entry.normalized());
         }
-        (store, None)
+        (store, Vec::new())
     }
 
     fn save_to(&self, path: &Path) -> io::Result<()> {
@@ -137,53 +187,78 @@ impl RecencyStore {
             entries: self.entries.clone(),
         })
         .map_err(io::Error::other)?;
-        fs::write(path, contents)
+        state_store::write_atomic(path, &contents)
     }
 }
 
-pub fn record_success(key: RecencyKey) {
-    let Some(directory) = std::env::var_os("HERDR_PLUGIN_STATE_DIR")
-        .filter(|directory| !directory.is_empty())
-        .map(PathBuf::from)
-    else {
-        return;
+pub fn record_success(key: RecencyKey) -> Option<String> {
+    let warnings = record_success_with(key, |name| std::env::var(name).ok());
+    (!warnings.is_empty()).then(|| {
+        warnings
+            .into_iter()
+            .map(|warning| warning.message)
+            .collect::<Vec<_>>()
+            .join("; ")
+    })
+}
+
+fn record_success_with(
+    key: RecencyKey,
+    get_env: impl Fn(&str) -> Option<String>,
+) -> Vec<ConfigWarning> {
+    let resolution = state_store::resolve_state_path(FILE_NAME, get_env);
+    let Some(path) = resolution.path else {
+        let mut warnings = resolution.warnings;
+        warnings.push(ConfigWarning {
+            message: "Could not persist recency state because no trusted state directory could be resolved"
+                .into(),
+        });
+        return warnings;
     };
-    if !directory.is_absolute() {
-        warn(format!(
-            "could not persist recency state: refusing relative HERDR_PLUGIN_STATE_DIR {}",
-            directory.display()
-        ));
-        return;
+    let mut warnings = resolution.warnings;
+    match state_store::with_lock(&path, || {
+        let (mut store, load_warnings) = RecencyStore::load_from(&path);
+        if let RecencyKey::Branch { repo_path, .. } = &key {
+            store.record(RecencyKey::repo_canonical(repo_path));
+        }
+        store.record(key);
+        store.save_to(&path)?;
+        Ok(load_warnings)
+    }) {
+        Ok(mut persist_warnings) => warnings.append(&mut persist_warnings),
+        Err(error) => warnings.push(ConfigWarning {
+            message: format!(
+                "Could not persist recency state at {}: {error}",
+                path.display()
+            ),
+        }),
     }
-    let path = directory.join(FILE_NAME);
-    let (mut store, warning) = RecencyStore::load_from(&path);
-    if let Some(warning) = warning {
-        warn(warning);
-    }
-    if let RecencyKey::Branch { repo_path, .. } = &key {
-        store.record(RecencyKey::repo(repo_path));
-    }
-    store.record(key);
-    if let Err(error) = store.save_to(&path) {
-        warn(format!(
-            "could not persist recency state at {}: {error}",
-            path.display()
-        ));
-    }
+    warnings
 }
 
-fn warn(message: impl AsRef<str>) {
-    eprintln!("herdr-kiosk: warning: {}", message.as_ref());
+fn invalid_state(path: &Path, reason: &str) -> ConfigWarning {
+    state_store::invalid_warning(
+        path,
+        "Recency state",
+        reason,
+        "an empty recency store was used",
+    )
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use tempfile::tempdir;
 
     use super::*;
 
     fn local(name: &str) -> BranchId {
         BranchId::Local(name.into())
+    }
+
+    fn path_string(path: &Path) -> String {
+        path.to_string_lossy().into_owned()
     }
 
     #[test]
@@ -229,17 +304,19 @@ mod tests {
     }
 
     #[test]
-    fn missing_and_corrupt_files_load_empty_without_panicking() {
+    fn missing_file_loads_empty_without_a_warning_and_corrupt_file_is_quarantined() {
         let directory = tempdir().unwrap();
         let path = directory.path().join(FILE_NAME);
-        let (missing, missing_warning) = RecencyStore::load_from(&path);
+        let (missing, missing_warnings) = RecencyStore::load_from(&path);
         assert!(missing.entries.is_empty());
-        assert!(missing_warning.unwrap().contains("could not be read"));
+        assert!(missing_warnings.is_empty());
 
-        fs::write(&path, b"{not json").unwrap();
-        let (corrupt, corrupt_warning) = RecencyStore::load_from(&path);
+        std::fs::write(&path, b"{not json").unwrap();
+        let (corrupt, corrupt_warnings) = RecencyStore::load_from(&path);
         assert!(corrupt.entries.is_empty());
-        assert!(corrupt_warning.unwrap().contains("is corrupt"));
+        assert_eq!(corrupt_warnings.len(), 1);
+        assert!(corrupt_warnings[0].message.contains("is corrupt"));
+        assert!(!path.exists());
     }
 
     #[test]
@@ -251,13 +328,73 @@ mod tests {
         store.record(RecencyKey::branch(Path::new("/repos/alpha"), local("main")));
         store.save_to(&path).unwrap();
 
-        let (loaded, warning) = RecencyStore::load_from(&path);
+        let (loaded, warnings) = RecencyStore::load_from(&path);
 
-        assert!(warning.is_none());
+        assert!(warnings.is_empty());
         assert_eq!(
             loaded.branch_rank(Path::new("/repos/alpha"), &local("main")),
             Some(0)
         );
         assert_eq!(loaded.repo_rank(Path::new("/repos/alpha")), Some(1));
+    }
+
+    #[test]
+    fn record_success_resolves_fallback_and_round_trips_companion_repo() {
+        let directory = tempdir().unwrap();
+        let values = HashMap::from([("XDG_STATE_HOME", path_string(directory.path()))]);
+        let repo = directory.path().join("repo");
+        let warnings = record_success_with(RecencyKey::branch(&repo, local("main")), |name| {
+            values.get(name).cloned()
+        });
+        assert!(warnings.is_empty());
+
+        let path = directory.path().join("herdr-kiosk").join(FILE_NAME);
+        let (loaded, warnings) = RecencyStore::load_from(&path);
+        assert!(warnings.is_empty());
+        assert_eq!(loaded.branch_rank(&repo, &local("main")), Some(0));
+        assert_eq!(loaded.repo_rank(&repo), Some(1));
+    }
+
+    #[test]
+    fn record_success_reports_an_unwritable_state_path() {
+        let directory = tempdir().unwrap();
+        let blocked = directory.path().join("not-a-directory");
+        std::fs::write(&blocked, "file").unwrap();
+        let values = HashMap::from([("HERDR_PLUGIN_STATE_DIR", path_string(&blocked))]);
+
+        let warnings = record_success_with(RecencyKey::repo(Path::new("/repo")), |name| {
+            values.get(name).cloned()
+        });
+
+        assert_eq!(warnings.len(), 1);
+        assert!(
+            warnings[0]
+                .message
+                .contains("Could not persist recency state")
+        );
+    }
+
+    #[test]
+    fn concurrent_record_success_calls_preserve_both_updates() {
+        let directory = tempdir().unwrap();
+        let state_dir = path_string(directory.path());
+        let first_dir = state_dir.clone();
+        let first = std::thread::spawn(move || {
+            record_success_with(RecencyKey::repo(Path::new("/repo/first")), |name| {
+                (name == "HERDR_PLUGIN_STATE_DIR").then(|| first_dir.clone())
+            })
+        });
+        let second = std::thread::spawn(move || {
+            record_success_with(RecencyKey::repo(Path::new("/repo/second")), |name| {
+                (name == "HERDR_PLUGIN_STATE_DIR").then(|| state_dir.clone())
+            })
+        });
+        assert!(first.join().unwrap().is_empty());
+        assert!(second.join().unwrap().is_empty());
+
+        let (loaded, warnings) = RecencyStore::load_from(&directory.path().join(FILE_NAME));
+        assert!(warnings.is_empty());
+        assert!(loaded.repo_rank(Path::new("/repo/first")).is_some());
+        assert!(loaded.repo_rank(Path::new("/repo/second")).is_some());
     }
 }

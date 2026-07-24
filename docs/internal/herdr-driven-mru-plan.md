@@ -14,19 +14,18 @@ kiosk.
 
 - Opt-in recency sort has shipped. Config `sort = "recency"` (default `"alphabetical"`).
   The own-opens MRU store is `src/recency.rs`: a bounded, defensive JSON file
-  (`recency.json`) in `HERDR_PLUGIN_STATE_DIR` recording successful repo/folder/branch
-  opens (keyed by canonical path, or repo path + `BranchId`). The pickers order by it in
-  recency mode (`src/screens/repo.rs`, `src/screens/branch.rs`). Toggle key `ctrl+r`.
+  (`recency.json`) in the resolved plugin/XDG/user state directory recording successful
+  repo/folder/branch opens (keyed by canonical path, or repo path + `BranchId`). The
+  pickers order by it in recency mode (`src/screens/repo.rs`, `src/screens/branch.rs`).
+  Toggle key `ctrl+r`.
 - **Hard invariant to preserve:** alphabetical mode NEVER consults recency — the store is
   not even passed to the alphabetical sort/filter path. Any MRU work must keep this
   (focus history is consulted only when `SortOrder::Recency` is active).
-- Reusable persistence: the JSON-store boilerplate (state-dir resolution + absolute-only
-  guard, corruption-safe load returning `(data, warning)`, atomic temp+rename save,
-  warnings) is a shared helper `src/state_store.rs`. A `focus-history.json` store should be
-  built on it.
-- Prior art in-repo: `src/folder_bindings.rs` already persists a canonical-path →
-  `workspace_id` map and reconciles dead ids against live panes — a very similar shape to
-  what a focus recorder needs.
+- Reusable persistence: `src/state_store.rs` provides trusted state-dir resolution with
+  plugin/XDG/user fallbacks, missing-file handling, corrupt-file quarantine, serialized
+  updates, and atomic temp+rename saves. A `focus-history.json` store should be built on it.
+- A later phase may add a canonical-path → `workspace_id` binding store and reconcile dead
+  ids against live panes; no `src/folder_bindings.rs` exists in this branch yet.
 - Provider seam: herdr calls go through the `HerdrProvider` trait in `src/herdr.rs` (CLI
   impl + mock). A new headless `record-herdr-event` subcommand would live alongside the
   interactive picker entrypoint in `src/main.rs`; the manifest is `herdr-plugin.toml`.
@@ -440,4 +439,3 @@ Exit criterion: payload contract confirmed on macOS/Linux and at least a Windows
 - Decide closed-workspace retention and named-session policy from real usage.
 - If layering is sufficient, keep the two files and document precedence.
 - If strict chronology is required, design `recency.json` v2 with timestamped source-tagged records and an explicit, reversible migration from ordered v1 entries. Only then consider removing the old direct-write path.
-

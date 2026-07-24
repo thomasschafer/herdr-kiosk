@@ -553,13 +553,20 @@ wait_screen_contains "2 of 2 repos"
 assert_screen_contains "sort: recency"
 assert_screen_line_before "repo-same (…/beta)" "repo-same (…/alpha)"
 assert_screen_line_contains_all "repo-same (…/alpha)" "▸"
+t send-keys -t "$SESSION" repo
+wait_screen_contains "2 of 2 repos"
+assert_screen_line_contains_all "repo-same (…/alpha)" "▸"
+t send-keys -t "$SESSION" C-r
+wait_screen_contains "sort: alphabetical"
+assert_screen_line_contains_all "repo-same (…/alpha)" "▸"
 t send-keys -t "$SESSION" Enter
 wait_screen_absent "herdr-kiosk — select repo" 120
 assert_focused_checkout "$HK_ROOT/repos/alpha/repo-same"
-printf 'recency resting order and previous-workspace selection: ok\n'
+printf 'recency resting order, previous selection, and active-query toggle identity: ok\n'
 
 h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
 wait_screen_contains "herdr-kiosk — select repo"
+assert_screen_contains "sort: recency"
 t send-keys -t "$SESSION" C-c
 wait_screen_absent "herdr-kiosk — select repo"
 printf 'e2e: PASS\n'

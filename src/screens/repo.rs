@@ -19,14 +19,17 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoEntry {
     pub repo: Repo,
+    pub(crate) canonical_path: PathBuf,
     pub disambiguator: Option<String>,
     pub is_open: bool,
 }
 
 impl RepoEntry {
     pub fn new(repo: Repo) -> Self {
+        let canonical_path = crate::path::canonical_or_original(&repo.path);
         Self {
             repo,
+            canonical_path,
             disambiguator: None,
             is_open: false,
         }
@@ -140,8 +143,11 @@ impl RepoViewState {
                     .map(|entry| (entry.repo.path.clone(), *score))
             })
             .collect::<Vec<_>>();
-        self.entries
-            .sort_by_key(|entry| recency.repo_rank(&entry.repo.path).unwrap_or(usize::MAX));
+        self.entries.sort_by_cached_key(|entry| {
+            recency
+                .repo_rank_canonical(&entry.canonical_path)
+                .unwrap_or(usize::MAX)
+        });
         if self.list.input.text.is_empty() {
             self.list.filtered = (0..self.entries.len()).map(|index| (index, 0)).collect();
         } else {
@@ -165,7 +171,7 @@ impl RepoViewState {
                     .iter()
                     .position(|(index, _)| self.entries[*index].repo.path == path)
             })
-            .or_else(|| (!self.entries.is_empty()).then_some(0));
+            .or_else(|| (!self.list.filtered.is_empty()).then_some(0));
     }
 
     pub(crate) fn apply_current_selection(&mut self) {
@@ -204,6 +210,12 @@ impl RepoViewState {
         {
             self.list.selected = Some(previous);
         }
+    }
+
+    fn has_ranked_entry(&self, recency: &RecencyStore) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| recency.repo_rank_canonical(&entry.canonical_path).is_some())
     }
 }
 
@@ -341,7 +353,7 @@ pub(crate) fn queue_filter(state: &mut AppState, worker: &FilterWorker, preserve
                     .filter_map(|entry| {
                         state
                             .recency
-                            .repo_rank(&entry.repo.path)
+                            .repo_rank_canonical(&entry.canonical_path)
                             .map(|rank| (FilterKey::Repo(entry.repo.path.clone()), rank))
                     })
                     .collect(),
@@ -359,8 +371,12 @@ fn sort_entries(state: &mut AppState) {
 
 fn apply_default_selection(state: &mut AppState) {
     match state.sort_order {
-        SortOrder::Alphabetical => state.repo_view.apply_current_selection(),
-        SortOrder::Recency => state.repo_view.apply_previous_selection(),
+        SortOrder::Recency if state.repo_view.has_ranked_entry(&state.recency) => {
+            state.repo_view.apply_previous_selection();
+        }
+        SortOrder::Alphabetical | SortOrder::Recency => {
+            state.repo_view.apply_current_selection();
+        }
     }
 }
 
@@ -395,11 +411,13 @@ fn add(state: &mut AppState, repo: Repo) -> bool {
         return false;
     }
     let mut entry = RepoEntry::new(repo);
-    let canonical = crate::path::canonical_or_original(&entry.repo.path);
     entry.is_open = if entry.repo.is_git {
-        state.repo_view.open_roots.contains(&canonical)
+        state.repo_view.open_roots.contains(&entry.canonical_path)
     } else {
-        state.repo_view.open_folder_roots.contains(&canonical)
+        state
+            .repo_view
+            .open_folder_roots
+            .contains(&entry.canonical_path)
     };
     state.repo_view.entries.push(entry);
     true
@@ -420,7 +438,6 @@ fn apply_collisions(state: &mut AppState) {
 
 fn apply_open_indicators(state: &mut AppState) {
     for entry in &mut state.repo_view.entries {
-        let repo_path = crate::path::canonical_or_original(&entry.repo.path);
         let open_paths = if entry.repo.is_git {
             &state.repo_view.open_roots
         } else {
@@ -428,7 +445,7 @@ fn apply_open_indicators(state: &mut AppState) {
         };
         entry.is_open = open_paths
             .iter()
-            .any(|open_path| crate::path::equivalent(open_path, &repo_path));
+            .any(|open_path| crate::path::equivalent(open_path, &entry.canonical_path));
     }
 }
 

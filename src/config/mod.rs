@@ -36,7 +36,7 @@ impl SortOrder {
 
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Alphabetical => "a–z",
+            Self::Alphabetical => "alphabetical",
             Self::Recency => "recency",
         }
     }

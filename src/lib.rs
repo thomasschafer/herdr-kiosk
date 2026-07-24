@@ -15,4 +15,5 @@ pub mod screens;
 pub mod setup;
 pub mod spawn;
 pub mod state;
+mod state_store;
 pub mod theme;

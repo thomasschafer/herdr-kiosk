@@ -230,7 +230,8 @@ pub fn spawn_open_repo(
                         )
                     });
                 let warning = combine_warnings(response.warning, on_open_warning);
-                record_success(RecencyKey::repo(&repo_path));
+                let warning =
+                    combine_warnings(warning, record_success(RecencyKey::repo(&repo_path)));
                 sender.send(AppEvent::RepoOpened { warning });
             }
             Err(error) => {
@@ -267,7 +268,7 @@ pub fn spawn_open_folder(
         })();
         match result {
             Ok(warning) => {
-                record_success(RecencyKey::repo(&target));
+                let warning = combine_warnings(warning, record_success(RecencyKey::repo(&target)));
                 sender.send(AppEvent::RepoOpened { warning });
             }
             Err(error) => {
@@ -535,10 +536,13 @@ pub fn spawn_open_branch(
                     None
                 };
                 let warning = combine_warnings(response_warning, on_open_warning);
-                record_success(RecencyKey::branch(
-                    &repo_path,
-                    BranchId::Local(branch_name.clone()),
-                ));
+                let warning = combine_warnings(
+                    warning,
+                    record_success(RecencyKey::branch(
+                        &repo_path,
+                        BranchId::Local(branch_name.clone()),
+                    )),
+                );
                 sender.send(AppEvent::RepoOpened { warning });
             }
             Err(error) => {
@@ -609,7 +613,10 @@ pub fn spawn_create_new_branch(
                     )
                 });
                 let warning = combine_warnings(response.warning, on_open_warning);
-                record_success(RecencyKey::branch(&repo_path, BranchId::Local(branch_name)));
+                let warning = combine_warnings(
+                    warning,
+                    record_success(RecencyKey::branch(&repo_path, BranchId::Local(branch_name))),
+                );
                 sender.send(AppEvent::RepoOpened { warning });
             }
             Err(error) => {
@@ -757,10 +764,13 @@ pub fn spawn_open_remote_branch(
                     })
                     .flatten();
                 let warning = combine_warnings(response_warning, on_open_warning);
-                record_success(RecencyKey::branch(
-                    &repo_path,
-                    BranchId::Local(branch_name.clone()),
-                ));
+                let warning = combine_warnings(
+                    warning,
+                    record_success(RecencyKey::branch(
+                        &repo_path,
+                        BranchId::Local(branch_name.clone()),
+                    )),
+                );
                 sender.send(AppEvent::RepoOpened { warning });
             }
             Err(error) => {
