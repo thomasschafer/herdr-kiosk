@@ -46,6 +46,9 @@ Type to fuzzy-search repositories and branches (and plain folders, if you enable
 repository's branch view (for Git repositories), and `ctrl+h` shows all active bindings
 for the current view.
 
+Results are ordered alphabetically by default. Set `sort = "recency"` in your config (or
+press `ctrl+r` in the picker) to put the most recently opened entries first.
+
 ## Configuration
 
 <!-- CONFIG:START -->
