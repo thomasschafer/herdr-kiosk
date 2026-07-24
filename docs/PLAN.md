@@ -1,22 +1,19 @@
-# herdr-kiosk plan
+# herdr-kiosk design and decisions
 
-Living document. Update as work progresses: mark tasks done, record decisions, add
-discoveries. The companion research doc is [herdr-plugin-research.md](herdr-plugin-research.md);
-where this plan and that doc disagree, this plan wins (it incorporates source-verified
-corrections against herdr 0.7.4).
+This is the durable design and decisions reference for the shipped plugin. Future work
+and deferred items live in [the backlog](internal/backlog.md); the real-MRU design lives
+in [the herdr-driven MRU plan](internal/herdr-driven-mru-plan.md).
 
 ## 1. Goal
 
-A herdr plugin that ports the core of [kiosk](https://github.com/thomasschafer/kiosk):
-a fuzzy repo picker with streaming discovery, Tab into a branch picker (local first,
-remotes streamed in), Enter opens a herdr workspace — on a worktree when a branch is
-selected, creating the worktree/branch as needed. Snappiness of the streaming pickers is
-a hard requirement. Agent detection and the sessions view are out of scope (herdr owns
-those). Layout bootstrapping is out of scope (other plugins own that).
+herdr-kiosk ports the core of [kiosk](https://github.com/thomasschafer/kiosk) to herdr:
+a fast, streaming fuzzy picker for repositories and branches that opens or creates the
+appropriate herdr workspace and worktree. Agent detection and the sessions view remain
+herdr's responsibility.
 
 ## 2. Decisions log
 
-Product decisions made so far. Add new entries as they're made; don't relitigate silently.
+These decisions shaped v1:
 
 | # | Decision | Detail |
 |---|---|---|
@@ -31,24 +28,22 @@ Product decisions made so far. Add new entries as they're made; don't relitigate
 | D9 | Setup wizard | Keep. First run with no config gets the wizard, ported from kiosk. UX priority over code size |
 | D10 | Naming | Repo/dir/binary: `herdr-kiosk`. Plugin id: `thomasschafer.herdr-kiosk`. One name everywhere |
 | D11 | Theme | ANSI-16 + terminal default fg/bg so the picker visually matches everything else rendered in the user's terminal/herdr (see §6). Slim `[theme]` override section kept |
-| D12 | Windows | Not in v1, but an early milestone (M8) with full parity maintained afterwards — not a someday item |
+| D12 | Windows | Added before release after an initial Unix-only scope; full parity is maintained |
 | D13 | Crate layout | Single binary crate. Kiosk's three-crate split served its CLI surface, which herdr replaces |
 | D14 | Collision display | Repos sharing a name are disambiguated with the shortest distinguishing parent-path suffix (see §5) |
-| D15 | Process | Claude orchestrates/plans/verifies, Codex (gpt-5.6 sol, high reasoning) implements, Tom decides product questions and hand-tests (see §8) |
+| D15 | Process | Claude orchestrates/plans/verifies, Codex (gpt-5.6 sol, high reasoning) implements, Tom decides product questions and hand-tests (see §7) |
 | D16 | Version control | Commit each verified chunk and push to `origin main` (github.com/thomasschafer/herdr-kiosk) as we go; no co-author lines. Pause for Tom only when something genuinely needs review |
 | D17 | Performance | Users may have very large repo/branch counts. Correctness first, but weigh allocation, process-spawn, and traversal costs in reviews as a standing concern; pragmatic, not premature |
 | D18 | Help esc | `esc` always closes the help overlay, even with a non-empty help query; the overlay owns and discards its own query, leaving the underlying picker query untouched |
-| D19 | Editor-on-open | Reverses the research §7 "no layout bootstrapping" stance at Tom's request: after opening/creating a workspace, optionally split a pane and run a command (e.g. `hx`), configured via `[on_open]`. Uses herdr `pane split --direction` + `pane run` |
+| D19 | Editor-on-open | After opening or creating a workspace, optionally split a pane and run a command (e.g. `hx`), configured via `[on_open]`. Uses herdr `pane split --direction` + `pane run` |
 
-## 3. Corrections to the research doc (source-verified against herdr 0.7.4)
-
-These override the research doc:
+## 3. Source-verified herdr facts (0.7.4)
 
 1. `min_herdr_version = "0.7.4"`, not 0.7.0. Session-modal popup panes for plugins
    were added in 0.7.4 (changelog #1125). Popups are the launch surface, so 0.7.4 is
    the floor.
 2. Enter-on-repo is one call, not list-and-match. `workspace list --json` has no cwd
-   field, so the research doc's "match on cwd" is unimplementable. Instead:
+   field, so cwd matching is unavailable. Instead:
    `herdr worktree open --cwd <repo> --path <repo-root> --focus` is idempotent
    server-side. `open_workspace_idx_for_checkout` (herdr `src/app/api/worktrees.rs`)
    matches open workspaces by worktree membership, cached git-space metadata, and live
@@ -119,7 +114,8 @@ spinner state.
   exec-ing `"$HERDR_BIN_PATH" plugin pane open --plugin thomasschafer.herdr-kiosk
   --entrypoint picker`. Surface `ui_busy` legibly.
 - User keybinding (README, one-time): `[[keys.command]] type = "plugin_action"`.
-- Manifest: `platforms = ["linux", "macos"]` until M8.
+- Manifest supports Linux, macOS, and Windows, with platform-specific pane, action, and
+  build entries.
 
 ## 5. UX spec deltas vs kiosk
 
@@ -152,342 +148,8 @@ herdr" looks like in practice, and it is what herdr's own `theme.name = "termina
 is designed around. A slim `[theme]` config section provides explicit overrides;
 light-terminal users can set `muted`, `border`, and other colors there.
 
-## 7. Milestones
+## 7. Working process and future work
 
-Statuses: `[ ]` todo, `[~]` in progress, `[x]` done. Add follow-up tasks inline as
-they're discovered.
+Working process: see the project memory; work now lands via PRs into a protected `main`.
 
-### M0 — de-risk and harness
-- [x] Probe plugin validated the full popup lifecycle against herdr 0.7.4: env
-  injection as documented, all input delivered including Escape, fire-and-exit
-  teardown with focus landing on the opened/created workspace, `worktree create`
-  honouring `worktrees.directory` with sidebar grouping, idempotent re-open
-  (`already_open`, no duplicate), and clean `plugin_pane_open_failed: "popup already
-  open"` on double-open (surfaced via `plugin log list`). Findings and harness
-  constraints recorded in [VERIFYING.md](VERIFYING.md).
-- [x] Headless e2e harness proven (Tom's tmux approach): herdr client inside a
-  dedicated tmux server, `send-keys` to drive, `capture-pane` to read the real screen
-  popup included; sandbox `$HOME` isolates config/registry/socket/worktrees. Gotchas:
-  sandbox HOME must be a short path (macOS `sun_path` ~104-byte socket limit);
-  `workspace list` is JSON-by-default with no `--json` flag; herdr source builds need
-  its nix dev shell (zig 0.15 pin). See [VERIFYING.md](VERIFYING.md).
-- [x] Codex headless loop confirmed: `codex exec` (resume support for feedback rounds);
-  `~/.codex/config.toml` already pins `gpt-5.6-sol` + `model_reasoning_effort = "high"`.
-- [x] Local herdr 0.7.4 binary built from `../herdr` via
-  `nix develop --command cargo build --release`.
-- [x] Plugin actions in herdr 0.7.4 right-click menus: confirmed absent (herdr
-  `src/ui/menus.rs` contains no plugin-action entries), so keybindings remain the
-  only launch surface. Goes in the README keybinding section at M9.
-- [x] `ui_busy` from herdr's own modals: observed live during M1 verification (the
-  first-run welcome dialog blocks popup opening; error surfaced in `plugin log list`).
-  Harness must dismiss onboarding before invoking popup actions — see VERIFYING.md.
-
-### M1 — scaffold
-- [x] Cargo project (single crate, edition 2024, kiosk's lint posture), `herdr-plugin.toml`
-  (id `thomasschafer.herdr-kiosk`, `min_herdr_version = "0.7.4"`, linux+macos), action
-  shim script, `.gitignore`, justfile (build/lint/test/link/unlink, `HERDR` env
-  override). Implemented by Codex; placeholder TUI with panic-safe terminal restore
-  and tested quit handling. Verified independently: fmt/clippy/build/test clean, and
-  the linked plugin's popup opened, rendered, and quit cleanly inside a real herdr via
-  the tmux harness.
-- [x] CI skeleton: fmt, clippy, test on ubuntu-latest + macos-latest.
-- [x] `[[build]]` builds from source with cargo (prebuilt fast path comes in M9).
-- Environment note: this machine mixes a nix cargo (1.94) with rustup clippy (1.89);
-  Codex and the orchestrator both pin `PATH` to `~/.cargo/bin` first for consistent
-  toolchain runs. `just` is not currently on PATH; recipes were verified as raw
-  commands.
-
-### M2 — core port (foundations only; TUI-coupled state/keyboard/keymap move to M3
-where they are exercised)
-- [x] Port `git/` with tests (including linked-worktree dedup tests), `event.rs`
-  slimmed, the `spawn_work_parallel` helper. `Repo` loses `session_name`;
-  `BranchEntry` per §4.
-- [x] `HerdrProvider` trait + CLI implementation + mock; typed errors for the herdr
-  error codes in §3.4 and §4 (plus `ui_busy`, `plugin_pane_open_failed`).
-- [x] `context.rs` for `HERDR_PLUGIN_CONTEXT_JSON`.
-- [x] Config loading with injected env/fs, absolute-path trust rule, `search_dirs` + depth.
-- Review round 1 applied: scan error containment (loud for unreadable top-level
-  search dirs; `ScanWarning`s for nested/per-repo failures so one bad directory or
-  repo cannot blank the picker) and forward-tolerant `AgentStatus`
-  (`#[serde(other)]`) so future herdr status values cannot break `workspace list`
-  parsing. Carried into the M3 spec: render `ScanWarning`s and config warnings as
-  in-TUI toasts (stderr is invisible under the alternate screen), and warn visibly
-  when a configured search dir does not exist (currently filtered silently).
-
-### M3 — repo picker (the load-bearing UX)
-- [x] Streaming repo discovery rendering as results arrive; fuzzy search; collision
-  display per §5; current-repo highlight from context.
-- [x] Enter → `worktree open` → exit. Loading state while the call runs; error toast on
-  failure.
-- [x] Open-workspace indicators (D7).
-- [x] E2e: fixture repos discovered, filtered, opened; workspace focused/created asserted
-  via harness. Harness promoted to `scripts/e2e.sh` + `just e2e` (env-overridable
-  sandbox/binary) — the standing e2e gate for every milestone from here on.
-- Reviewed and independently verified (commit 5acd139): 69 tests, clean lints, e2e
-  PASS in a fresh sandbox. Notable implementation upgrades over kiosk, accepted in
-  review: fuzzy filtering on a coalescing worker thread with generation-guarded
-  results (keeps typing responsive at large repo counts, per D17), bounded fallback
-  in `spawn_work_parallel`, and non-blocking toast queue instead of kiosk's modal
-  errors. Awaiting Tom's hand-test of picker feel in a real herdr.
-
-### M4 — branch picker
-- [x] Tab on repo → branch view: local branches + worktree enrichment; current/default
-  markers; Enter open-vs-create rule from §3.3; back navigation.
-- [x] Open indicators per branch.
-- [x] E2e: existing-checkout open, new-checkout create, branch-checked-out-in-main-checkout
-  case (resolves to the source workspace).
-- Reviewed and independently verified (commit f051a83): 78 tests, lints clean, full
-  e2e PASS including the five new branch-flow assertions. Accepted deviation: the
-  current-branch marker no longer falls back to the main checkout's branch when the
-  context cwd is outside the repo (kiosk marked it anyway); the `(default)` marker
-  still identifies main/master. Stale-event guards (`branch_view_matches`) drop
-  late-arriving loads from a previously viewed repo.
-
-### M5 — remotes
-- [x] `git fetch` per remote on entering branch view (pool of 4), streamed updates,
-  spinner while fetching (D8). Hardening beyond kiosk: `GIT_TERMINAL_PROMPT=0` on
-  background fetches so credential prompts fail fast instead of hanging a thread.
-- [x] Remote-only branches streamed in, greyed, dedup against local names, ` (remote)`
-  suffix; Enter → tracking two-step with `BranchEntry.remote` (not hardcoded origin) and
-  the branch-already-exists guard (typed error via `LC_ALL=C` stderr matching, falls
-  through to worktree creation on the race).
-- [x] E2e with a local bare "remote" fixture, asserting dedup and that upstream
-  tracking is genuinely set (`git rev-parse <branch>@{upstream}`).
-- Reviewed and independently verified (commit 2ea01e7): 88 tests, lints clean, full
-  e2e PASS. No deviations.
-
-### M6 — new branch + deletion
-- [x] New-branch flow (D5): name input → base branch picker → `worktree create --base`.
-- [x] Deletion (D6): confirmation dialog; open-workspace path via herdr (incl. dirty →
-  force confirmation flow), closed-checkout path via git; `pending_delete` port.
-- [x] E2e for both, including dirty-worktree force path.
-
-Implemented and locally verified: git-backed ref-name validation; local-only searchable
-base picker with default-branch preselection; persisted, stale-event-safe deletion with
-main/remote guards and separate herdr/git dirty-force retries; branch/worktree/open-state
-refresh after removal. Kiosk defaults retained: Ctrl+O new branch, Ctrl+X delete, Enter
-confirm, Esc cancel, plus Enter on a non-empty no-match branch query. Strict fmt/clippy,
-103 unit tests plus the startup integration test, and the full M3–M6 tmux e2e pass.
-
-Reviewed and independently verified (commit 7f68d5c); one review round: pending-delete
-state now honours `HERDR_PLUGIN_STATE_DIR` before the XDG/HOME fallback, sharing the
-config module's absolute-path trust helper. Known benign overlap for the M7 keys pass:
-Ctrl+X dismisses a visible toast before it means delete-checkout. Resolved in M7 by
-making both bindings configurable while retaining dismiss precedence and documenting
-the active overlap in help whenever a toast is visible.
-
-### M7 — wizard, config polish, UX finish
-- [x] Setup wizard port (D9): first-run flow writing config to
-  `$HERDR_PLUGIN_CONFIG_DIR/config.toml` (path completion, dir management as in kiosk).
-- [x] `[keys]` in-TUI keybinding config; help overlay reflecting actual bindings.
-- [x] Terminal-palette theme configuration (§6). Error-toast and edge-case polish pass.
-
-Implemented and locally verified: missing-vs-empty config distinction; welcome → repeated
-directory/path-completion → per-entry depth → confirmation wizard with abort safety and
-atomic guarded config installation; direct continuation into discovery; six slim key
-layers with kiosk-compatible chord syntax, validation, defaults plus overrides/noop;
-mode-specific help generated from effective bindings; explicit ANSI-palette theme colors;
-binding-derived footers and queued-toast counters. The checked kiosk source uses `C-h`
-for help before its printable-character fallback, so `?` remains searchable here too.
-Strict fmt/clippy, 118 unit tests plus the startup integration test, and the full M3–M7
-tmux e2e pass, including first-run/relaunch, the explicit-empty-config path, remapped
-`Ctrl+B`, help content, and Esc return.
-
-Reviewed and independently verified (commit a991ce4): 119 tests, lints clean, full
-e2e PASS. Highlights from review: no-replace atomic config install via
-renameatx_np/renameat2 with portable fallback. The OSC 11 startup probe added in M7 was
-removed in Batch 6 to avoid consuming startup input; theme colors now come only from
-configuration defaults and explicit overrides.
-
-### M8 — Windows (early, then parity forever after)
-- [x] Re-verified against the current herdr 0.7.4 checkout (`a9b28f9`). The relative
-  pane-program problem remains: plugin panes pass manifest argv unchanged through
-  `TerminalRuntime::spawn_argv_command` (`../herdr/src/app/api/plugins/panes.rs:27-31`,
-  `../herdr/src/pane.rs:1659-1669`) and Windows ultimately supplies that program as
-  `CreateProcessW.lpApplicationName` with cwd separately
-  (`../herdr/vendor/portable-pty/src/win/psuedocon.rs:126-145`). Plugin roots are still
-  `canonicalize()` plus `display()` with no verbatim-prefix cleanup
-  (`../herdr/src/app/api/plugins/manifest.rs:128-139,208-216`), so Windows can expose
-  `\\?\` roots. The old "no `.exe` appending" finding is stale: current portable-pty
-  searches `PATH`/`PATHEXT` and tries extension candidates before `CreateProcessW`
-  (`../herdr/vendor/portable-pty/src/cmdbuilder.rs:598-623,685-701`).
-- [x] Confirmed popup plugin panes have no Unix gate. The shared placement dispatch
-  accepts `Popup` (`../herdr/src/app/api/plugins/mod.rs:385-445`), the shared popup path
-  spawns argv (`../herdr/src/app/api/plugins/panes.rs:11-41`,
-  `../herdr/src/app/popup.rs:86-115`), and PTY spawning has a Windows backend
-  (`../herdr/src/pty/backend.rs:7-39`).
-- [x] Shipped platform-gated `picker-windows` / `open-picker-windows` entries and
-  PowerShell shims. `powershell.exe` is PATH-resolved; the pane shim strips any `\\?\`
-  prefix and launches `herdr-kiosk.exe` by absolute path. The Unix action shim is
-  unchanged.
-- [x] Added `windows-latest` to normal CI formatting, PowerShell syntax validation,
-  clippy, build, and unit/startup tests. The tmux e2e remains Unix-only.
-- [x] From here on, every milestone's work lands with Windows parity or a tracked
-  exception.
-
-Windows manual verification (compilation and CI unit tests do not cover these):
-
-- Hand-test managed install and link paths, including a plugin root containing spaces;
-  invoke `open-picker-windows` and confirm the popup opens and exits cleanly.
-- Complete first-run setup and repository discovery with drive-letter and UNC search
-  paths, including Tab completion with backslashes.
-- Verify the supported Git for Windows installation produces the expected error text
-  for existing-branch, stale-worktree, and dirty-worktree paths.
-- Exercise remote authentication failures and confirm disabled prompts
-  (`GIT_TERMINAL_PROMPT=0`) do not block background fetches.
-- Create and delete linked worktrees, including clean and dirty removal paths.
-- Confirm herdr's verbatim `\\?\` and `\\?\UNC\` managed-install and linked-plugin
-  roots are normalized by the PowerShell launchers; retain both forms in the manual
-  release check.
-- The Windows pane command references `scripts/run-picker.ps1` cwd-relative; herdr
-  runs plugin commands with the plugin directory as cwd, but a launcher passing an
-  explicit `--cwd` override would break that resolution. If the hand-test shows
-  breakage, switch the pane command to `powershell -Command` with
-  `$env:HERDR_PLUGIN_ROOT` expansion so it becomes cwd-independent.
-
-### M9 — distribution and publishing
-- [x] `fetch-or-build.sh`: version-matched prebuilt download + SHA-256 verify, cargo
-  fallback, `~/.cargo/env` sourcing, env-overridable paths for hermetic tests.
-- [x] Release CI: cross-compile matrix (port from kiosk's `.github/`), checksums.
-- [x] README: install, keybinding setup, config reference, trust note (herdr doesn't
-  sandbox plugins), `plugin link` dev workflow, "no `plugin update` in v1 — reinstall
-  to refresh" note for users.
-- [x] Hermetic shell tests cover missing assets, checksum mismatch, and a verified
-  prebuilt install; Ubuntu CI runs them.
-- [x] `fetch-or-build.ps1`: verified `x86_64-pc-windows-msvc` prebuilt download with
-  Cargo fallback; hermetic PowerShell tests cover missing, mismatched, and valid assets
-  on Windows CI.
-- [x] Add an opt-in real-marketplace install rehearsal that reuses the tmux harness.
-
-Windows now uses the same verified prebuilt-fetch flow as Linux and macOS, with
-`cargo build --locked --release` retained as the fallback.
-
-### Post-M9 fixes
-
-- [x] Bound retries for Linux `ETXTBSY` around test-only fake-herdr invocations;
-  production CLI invocation remains unchanged.
-- [x] Wizard text input accepts Shift-modified characters while still rejecting
-  Control/Alt input.
-- [x] Directory depth is selected inline on the Search directories screen, preserving
-  the pending path and Added list; Esc restores the path for editing.
-- [x] UI polish batch: base-branch selection receives the full searchable-list key
-  layers; displayed chords use lowercase modifier/key conventions; repository,
-  branch, and help surfaces use magenta/cyan/green semantic accents; help fuzzy-filters
-  effective bindings by key, command, or description; new-branch validation remains
-  over the visible branch picker in the same container used by base selection.
-
-Publishing to herdr.dev/plugins (verified against herdr's marketplace doc; the index
-is automatic and unreviewed):
-
-1. Repo must be public on GitHub at `thomasschafer/herdr-kiosk` with
-   `herdr-plugin.toml` at the root. `herdr plugin install
-   thomasschafer/herdr-kiosk` works from that alone — no registry or submission.
-2. Install runs `[[build]]` on the user's machine after a confirmation preview, and a
-   build failure aborts the install — so publish-readiness means a fresh clone builds
-   with nothing but cargo (fetch-or-build makes that fast; plain `cargo build
-   --release` is acceptable but slow before prebuilts exist).
-3. Pre-listing verification (harness): in a sandbox HOME, run
-   `herdr plugin install thomasschafer/herdr-kiosk --yes` against the real GitHub
-   repo and drive the installed (not linked) plugin end to end. Note: installing over
-   a locally linked plugin is refused — unlink in the sandbox first.
-4. Listing: add the GitHub topic `herdr-plugin` to the repo. That topic is the only
-   signal the index uses; it refreshes every ~30 minutes. Dropping the topic delists
-   on the next refresh. Forks and archived repos are excluded.
-5. The card shows only GitHub metadata — repo name/owner, description, stars,
-   primary language, last push. The index does not parse the manifest in v1, so the
-   GitHub repo description is the marketing surface; write it deliberately (e.g.
-   "Fuzzy-find git repos and branches and open them as Herdr workspaces/worktrees").
-6. Gate: don't add the topic until install-from-GitHub passes (3) and the README
-   covers setup + keybinding + trust note. Tagged releases: manifest `version` must
-   match the release assets fetch-or-build looks for (match is by version, not
-   commit).
-
-Go-live steps (completed 2026-07-23, v0.1.0):
-
-- [x] Tag `v0.1.0` to trigger the release workflow.
-- [x] Confirm the release workflow completes on all five targets.
-- [x] Verify all five binaries and `SHA256SUMS` are attached and the checksums match.
-- [x] Run `HK_RUN_INSTALL_REHEARSAL=1 scripts/install-rehearsal.sh` against the public
-  release. (Fixed a missing `TMUX_BIN` in the rehearsal harness first.)
-- [x] Set the GitHub repository description (folder-inclusive copy, matching the
-  manifest `description`).
-- [x] Add the `herdr-plugin` GitHub topic — the repo is now publicly listed.
-
-## 8. Working process (D15)
-
-Three roles:
-
-- Tom: product decisions, end-to-end hand-testing (especially popup feel/keybindings,
-  which automation can't fully cover), final arbiter.
-- Claude (this assistant): planning, task specification, orchestration, independent
-  verification, plan upkeep. Writes no implementation code.
-- Codex (gpt-5.6 sol, high reasoning, headless): all implementation.
-
-Loop per task batch:
-
-1. Claude writes a task spec from this plan: scope, files, acceptance criteria, exact
-   verification commands (tests + harness invocations), and relevant context (e.g. the
-   §3 corrections so Codex doesn't rediscover or contradict them).
-2. Codex implements and must verify before reporting: fmt, clippy, `cargo test`, and the
-   M0 harness end-to-end where the task touches runtime behaviour. A report without
-   verification evidence goes back.
-3. Claude independently verifies: clean build, tests, runs the harness itself, reviews
-   the diff for correctness and for drift from this plan, and pushes feedback to Codex.
-   Iterate until green.
-4. Claude updates this plan (statuses, discoveries, decisions needed) and reports to Tom:
-   what landed, what was verified and how, what needs hand-testing, any product
-   questions. Git commits only when Tom asks.
-
-Notes: popup-placement behaviour is the one area automation can't reach (not a pane), so
-each report flags whether popup-relevant behaviour changed and needs a hand-test.
-Product questions found mid-implementation get parked in §9 and batched to Tom rather
-than guessed at, unless trivially reversible.
-
-## 9. Open questions
-
-- Editor-on-open config shape (D19 below): proceeding with `[on_open] panes = [{ command, direction }]`; Tom may prefer kiosk's flat `split_command`.
-- Ctrl+C semantics during an in-flight worktree create/remove (bug-hunt #4): default = relabel honestly ("operation continues"), not fake cancel. Awaiting Tom's steer.
-- Detached/branchless worktrees (bug-hunt #17): default = document as a v1 limitation.
-- Orphan-worktree cleanup feature (like `kiosk clean`): not building unless Tom wants it.
-- GIF content: default to a tight repo→search→branch→open showcase unless Tom names specific moments.
-
-## 8b. Post-feature-complete work (hardening + polish)
-
-After M9 the plugin was feature-complete; subsequent work is user-testing feedback and
-a deep bug hunt.
-
-- UI polish (commit 91d90dc): base-branch picker keymap fix (was miscategorised as a
-  modal, losing text-edit + list-navigation layers), lowercase chord display,
-  per-view accent colours (magenta repo / cyan branch / green help), fuzzy-searchable
-  help, non-blanking validate/base popup.
-- Wizard/CI fixes (commit 8c8b533): capital-letter input, inline depth entry,
-  ETXTBSY test-flake retry.
-- Deep bug hunt (Codex investigation, 18 findings) resolved across three batches:
-  - Batch A safety (commit 0b33e23): removed recursive-delete footgun; NUL/`-z`
-    path-safe porcelain parsing + UTF-8 rejection; deletion gated on open-state and
-    re-checked at confirm (no routing around herdr); per-visit branch-view generation
-    guard.
-  - Batch B input (commit da67e21): Unicode input everywhere; wizard depth 10/12 fix;
-    shifted-char chord handling; remap-aware dialog/toast hints; selection preserved
-    after navigation; minimal dependency-free OSC read (rejected a termwiz dep in
-    review).
-  - Batch C robustness (commit de6f601): symlink-loop-safe iterative scan with visited
-    set; 30s fetch timeout with child-kill; exact remote-prefix parsing; wizard
-    filesystem-root preservation; new-branch blocked until branches load; atomic
-    pending-delete writes.
-  - Deferred by decision: #4 (ctrl+c semantics), #17 (detached worktrees), orphan
-    cleanup — see §9.
-
-## 10. Risks and watch items
-
-- Herdr moves fast (0.7.0 → 0.7.4 during the research window alone). Re-verify
-  behavioural assumptions when bumping the herdr version; the §3 corrections show why.
-- Popup behaviour is validated manually only (not a pane). Keep the M0 manual checklist
-  short and repeatable.
-- `worktree create` blocks the CLI call; very slow filesystems/repos could make the
-  Loading state linger. Acceptable for v1; revisit if it bites.
-- Fetch-on-open (D8) can hang on interactive SSH auth. Kiosk runs it in the background
-  with a spinner, which mostly hides this; carry the behaviour over and revisit if
-  reports come in (e.g. `GIT_TERMINAL_PROMPT=0` for the background fetches).
-- The ecosystem-plugin claims in the research doc (file-viewer's Windows findings,
-  fetch-or-build details) were not locally verified; re-check them at M8/M9 time.
+Future work and deferred items: see [the backlog](internal/backlog.md).
