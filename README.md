@@ -117,48 +117,19 @@ Configure tabs and panes applied when a repository is opened.
 
 The section is optional and contains no layout by default.
 
-Legacy example:
+Example:
 
 ```toml
 [on_open]
-panes = [
-  { command = "hx", direction = "right" },
-]
+[[on_open.tabs]]
+command = "hx ." # editor in the tab's main pane
+  [[on_open.tabs.panes]]
+  command = "lazygit" # opens in a split beside it
+  direction = "right" # "right" or "down"
+  ratio = 0.3 # split size, from 0 to 1
 ```
 
-Declarative layout example:
-
-```toml
-[on_open]
-on = "created"
-focus = "editor"
-
-[[on_open.tabs]]
-name = "code"
-command = "hx ."
-
-[[on_open.tabs.panes]]
-id = "editor"
-command = "lazygit"
-direction = "right"
-ratio = 0.3
-
-[[on_open.tabs]]
-name = "server"
-command = "npm run dev"
-
-[on_open.repos."my-service"]
-on = "every_open"
-focus = "service-logs"
-
-[[on_open.repos."my-service".tabs]]
-name = "service"
-
-[[on_open.repos."my-service".tabs.panes]]
-id = "service-logs"
-command = "tail -f service.log"
-direction = "down"
-```
+Add more `[[on_open.tabs]]` for extra tabs (each takes an optional `name`); set `on = "every_open"` to also run when focusing an existing workspace; give a pane an `id` and set `focus = "<id>"` to focus it; or add `[on_open.repos."repo-name"]` to override the layout for one repo. The older `panes = [ ... ]` form still works.
 
 #### `on`
 
