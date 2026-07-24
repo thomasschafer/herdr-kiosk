@@ -40,10 +40,7 @@ fn state_with_repo() -> AppState {
 
 fn state_with_branch(has_worktree: bool) -> AppState {
     let mut state = state_with_repo();
-    state.mode = Mode::BranchSelect(BranchContext {
-        repo_path: "/repo".into(),
-        repo_name: "repo".into(),
-    });
+    state.mode = Mode::BranchSelect(BranchContext::new("/repo".into(), "repo".into()));
     state.branch_view.entries = vec![BranchEntry {
         name: "feature".into(),
         worktree_path: has_worktree.then(|| PathBuf::from("/repo-feature")),
@@ -88,10 +85,7 @@ fn remove_response(_forced: bool) -> WorktreeRemoveResponse {
 #[test]
 fn delete_guards_refuse_main_checkout_and_remote_only_entries_in_state() {
     let mut state = AppState::new(None);
-    state.mode = Mode::BranchSelect(BranchContext {
-        repo_path: "/repo".into(),
-        repo_name: "repo".into(),
-    });
+    state.mode = Mode::BranchSelect(BranchContext::new("/repo".into(), "repo".into()));
     state.branch_view.entries = vec![BranchEntry {
         name: "main".into(),
         worktree_path: Some("/repo".into()),

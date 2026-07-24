@@ -38,20 +38,20 @@ impl RecencyKey {
         Self::branch_canonical(&canonical_or_original(repo_path), branch)
     }
 
-    fn repo_canonical(path: &Path) -> Self {
+    pub(crate) fn repo_canonical(path: &Path) -> Self {
         Self::Repo {
             path: normalized_key(path),
         }
     }
 
-    fn branch_canonical(repo_path: &Path, branch: BranchId) -> Self {
+    pub(crate) fn branch_canonical(repo_path: &Path, branch: BranchId) -> Self {
         Self::Branch {
             repo_path: normalized_key(repo_path),
             branch,
         }
     }
 
-    fn normalized(self) -> Self {
+    pub(crate) fn normalized(self) -> Self {
         match self {
             Self::Repo { path } => Self::repo(&path),
             Self::Branch { repo_path, branch } => Self::branch(&repo_path, branch),

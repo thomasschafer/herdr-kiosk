@@ -17,13 +17,33 @@ use crate::{
         EventSender, spawn_branch_loading, spawn_open_branch, spawn_open_remote_branch,
         spawn_open_worktrees,
     },
-    state::{AppState, BranchEntry, Mode, SearchableList, ToastKind},
+    state::{AppState, BranchEntry, Mode, OpenFilter, SearchableList, ToastKind},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BranchContext {
     pub repo_path: PathBuf,
     pub repo_name: String,
+    pub(crate) canonical_repo_path: PathBuf,
+}
+
+impl BranchContext {
+    pub fn new(repo_path: PathBuf, repo_name: String) -> Self {
+        let canonical_repo_path = crate::path::canonical_or_original(&repo_path);
+        Self {
+            repo_path,
+            repo_name,
+            canonical_repo_path,
+        }
+    }
+
+    fn with_canonical(repo_path: PathBuf, repo_name: String, canonical_repo_path: PathBuf) -> Self {
+        Self {
+            repo_path,
+            repo_name,
+            canonical_repo_path,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -64,6 +84,7 @@ pub struct BranchViewState {
     pub pending_selection: Option<BranchId>,
     pub open_worktrees: Vec<WorktreeInfo>,
     pub open_worktree_load_state: OpenWorktreeLoadState,
+    pub open_filter: OpenFilter,
     remote_branches: BTreeMap<String, Vec<BranchEntry>>,
     pub fetching_remote_repo: Option<PathBuf>,
     fetch_warning_remotes: HashSet<String>,
@@ -81,6 +102,7 @@ impl Default for BranchViewState {
             pending_selection: None,
             open_worktrees: Vec::new(),
             open_worktree_load_state: OpenWorktreeLoadState::Unknown,
+            open_filter: OpenFilter::All,
             remote_branches: BTreeMap::new(),
             fetching_remote_repo: None,
             fetch_warning_remotes: HashSet::new(),
@@ -326,6 +348,10 @@ pub(crate) fn handle_event(
                     generation,
                 };
                 state.branch_view.apply_open_indicators();
+                if state.branch_view.open_filter.is_active() {
+                    pin_selection(state, changes);
+                    changes.branches_changed = true;
+                }
                 crate::screens::delete::refresh_open_state(state);
                 changes.resume_pending_deletes = true;
             }
@@ -475,10 +501,20 @@ pub(crate) fn queue_filter(
     state.branch_view.filter_generation = state.branch_view.filter_generation.wrapping_add(1);
     if state.branch_view.list.input.text.is_empty() {
         sort_entries(state);
-        state.branch_view.list.filtered = (0..state.branch_view.entries.len())
-            .map(|index| (index, 0))
+        state.branch_view.list.filtered = state
+            .branch_view
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, branch)| {
+                state
+                    .branch_view
+                    .open_filter
+                    .includes(branch.open_workspace_id.is_some())
+            })
+            .map(|(index, _)| (index, 0))
             .collect();
-        if state.branch_view.entries.is_empty() {
+        if state.branch_view.list.filtered.is_empty() {
             state.branch_view.list.selected = None;
         } else {
             state.branch_view.list.selected = selected_id
@@ -486,17 +522,18 @@ pub(crate) fn queue_filter(
                 .and_then(|id| {
                     state
                         .branch_view
-                        .entries
+                        .list
+                        .filtered
                         .iter()
-                        .position(|branch| branch.id() == *id)
+                        .position(|(index, _)| state.branch_view.entries[*index].id() == *id)
                 })
                 .or_else(|| match state.sort_order {
                     SortOrder::Alphabetical => Some(0),
                     SortOrder::Recency => {
                         let repo_path = state
                             .branch_context()
-                            .map(|context| crate::path::canonical_or_original(&context.repo_path));
-                        let ranked = repo_path.as_deref().is_some_and(|repo_path| {
+                            .map(|context| &context.canonical_repo_path);
+                        let ranked = repo_path.is_some_and(|repo_path| {
                             state.branch_view.entries.iter().any(|branch| {
                                 state
                                     .recency
@@ -508,9 +545,12 @@ pub(crate) fn queue_filter(
                             .then(|| {
                                 state
                                     .branch_view
-                                    .entries
+                                    .list
+                                    .filtered
                                     .iter()
-                                    .position(|branch| !branch.is_current)
+                                    .position(|(index, _)| {
+                                        !state.branch_view.entries[*index].is_current
+                                    })
                             })
                             .flatten()
                             .or(Some(0))
@@ -528,53 +568,87 @@ pub(crate) fn queue_filter(
             .branch_view
             .entries
             .iter()
+            .filter(|branch| {
+                state
+                    .branch_view
+                    .open_filter
+                    .includes(branch.open_workspace_id.is_some())
+            })
             .map(|branch| FilterItem {
                 key: FilterKey::Branch(branch.id()),
                 text: branch.display_name(),
             })
             .collect(),
         selected: selected_id.map(FilterKey::Branch),
-        ordering: match state.sort_order {
-            SortOrder::Alphabetical => FilterOrdering::Alphabetical,
-            SortOrder::Recency => {
-                let repo_path = state
-                    .branch_context()
-                    .map(|context| crate::path::canonical_or_original(&context.repo_path));
-                FilterOrdering::Recency(
-                    state
-                        .branch_view
-                        .entries
-                        .iter()
-                        .filter_map(|branch| {
-                            let id = branch.id();
-                            state
-                                .recency
-                                .branch_rank_canonical(repo_path.as_deref()?, &id)
-                                .map(|rank| (FilterKey::Branch(id), rank))
-                        })
-                        .collect(),
-                )
-            }
-        },
+        ordering: filter_ordering(state),
     });
+}
+
+fn filter_ordering(state: &AppState) -> FilterOrdering {
+    let Some(repo_path) = state
+        .branch_context()
+        .map(|context| &context.canonical_repo_path)
+    else {
+        return FilterOrdering::alphabetical();
+    };
+    let pinned = if state.pins.is_empty() {
+        HashSet::new()
+    } else {
+        state
+            .branch_view
+            .entries
+            .iter()
+            .filter(|branch| {
+                state
+                    .pins
+                    .branch_is_pinned_canonical(repo_path, &branch.id())
+            })
+            .map(|branch| FilterKey::Branch(branch.id()))
+            .collect()
+    };
+    match state.sort_order {
+        SortOrder::Alphabetical => FilterOrdering::pinned(pinned),
+        SortOrder::Recency => FilterOrdering::pinned_by_recency(
+            pinned,
+            state
+                .branch_view
+                .entries
+                .iter()
+                .filter_map(|branch| {
+                    let id = branch.id();
+                    state
+                        .recency
+                        .branch_rank_canonical(repo_path, &id)
+                        .map(|rank| (FilterKey::Branch(id), rank))
+                })
+                .collect(),
+        ),
+    }
 }
 
 fn sort_entries(state: &mut AppState) {
     BranchEntry::sort(&mut state.branch_view.entries);
-    if !matches!(state.sort_order, SortOrder::Recency) {
-        return;
-    }
     let Some(repo_path) = state
         .branch_context()
-        .map(|context| crate::path::canonical_or_original(&context.repo_path))
+        .map(|context| context.canonical_repo_path.clone())
     else {
         return;
     };
+    if matches!(state.sort_order, SortOrder::Recency) {
+        state.branch_view.entries.sort_by_cached_key(|branch| {
+            state
+                .recency
+                .branch_rank_canonical(&repo_path, &branch.id())
+                .unwrap_or(usize::MAX)
+        });
+    }
+    if state.pins.is_empty() {
+        return;
+    }
     state.branch_view.entries.sort_by_cached_key(|branch| {
-        state
-            .recency
-            .branch_rank_canonical(&repo_path, &branch.id())
-            .unwrap_or(usize::MAX)
+        !state
+            .pins
+            .branch_is_pinned_canonical(&repo_path, &branch.id())
     });
 }
 
@@ -642,10 +716,11 @@ pub(crate) fn enter(
         );
         return;
     }
-    let context = BranchContext {
-        repo_path: entry.repo.path.clone(),
-        repo_name: entry.repo.name.clone(),
-    };
+    let context = BranchContext::with_canonical(
+        entry.repo.path.clone(),
+        entry.repo.name.clone(),
+        entry.canonical_path.clone(),
+    );
     let repo = entry.repo.clone();
     let repo_path = context.repo_path.clone();
     state.mode = Mode::BranchSelect(context);
@@ -710,6 +785,30 @@ pub(crate) fn open_selected(
         return;
     };
     open(state, git, herdr, sender, &branch);
+}
+
+pub(crate) fn toggle_pin(state: &mut AppState, worker: &FilterWorker) {
+    let Some((repo_path, branch)) = state
+        .branch_context()
+        .map(|context| context.canonical_repo_path.clone())
+        .zip(state.selected_branch().map(BranchEntry::id))
+    else {
+        return;
+    };
+    let toggle = state
+        .pins
+        .toggle(crate::recency::RecencyKey::branch_canonical(
+            &repo_path,
+            branch.clone(),
+        ));
+    state.surface_pin_toggle(toggle);
+    queue_filter(state, worker, Some(branch));
+}
+
+pub(crate) fn toggle_open_filter(state: &mut AppState, worker: &FilterWorker) {
+    let selected = state.selected_branch().map(BranchEntry::id);
+    state.branch_view.open_filter.toggle();
+    queue_filter(state, worker, selected);
 }
 
 pub(crate) fn open(

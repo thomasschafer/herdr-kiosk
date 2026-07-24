@@ -53,10 +53,7 @@ fn state_with_repo() -> AppState {
 
 fn state_with_branch(has_worktree: bool) -> AppState {
     let mut state = state_with_repo();
-    state.mode = Mode::BranchSelect(BranchContext {
-        repo_path: "/repo".into(),
-        repo_name: "repo".into(),
-    });
+    state.mode = Mode::BranchSelect(BranchContext::new("/repo".into(), "repo".into()));
     state.branch_view.entries = vec![BranchEntry {
         name: "feature".into(),
         worktree_path: has_worktree.then(|| PathBuf::from("/repo-feature")),
@@ -1026,6 +1023,188 @@ fn branch_recency_sort_uses_rank_then_existing_order_for_unseen_entries() {
             .collect::<Vec<_>>(),
         ["delta", "alpha", "bravo", "charlie"]
     );
+}
+
+#[test]
+fn alphabetical_branch_pins_ignore_contradictory_recency_at_rest_and_with_a_query() {
+    let (sender, rx) = sender();
+    let worker = FilterWorker::spawn(sender);
+    let mut state = state_with_branch(false);
+    state.branch_view.entries = [
+        "branch-delta",
+        "branch-alpha",
+        "branch-charlie",
+        "branch-bravo",
+    ]
+    .into_iter()
+    .map(|name| BranchEntry {
+        name: name.into(),
+        worktree_path: None,
+        is_current: false,
+        is_default: false,
+        remote: None,
+        open_workspace_id: None,
+    })
+    .collect();
+    state.branch_view.list = SearchableList::new(4);
+    for name in [
+        "branch-alpha",
+        "branch-charlie",
+        "branch-bravo",
+        "branch-delta",
+    ] {
+        state.recency.record(RecencyKey::branch(
+            Path::new("/repo"),
+            BranchId::Local(name.into()),
+        ));
+    }
+    for name in ["branch-charlie", "branch-alpha"] {
+        state.pins.toggle(RecencyKey::branch(
+            Path::new("/repo"),
+            BranchId::Local(name.into()),
+        ));
+    }
+
+    sort_entries(&mut state);
+    assert_eq!(
+        state
+            .branch_view
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "branch-alpha",
+            "branch-charlie",
+            "branch-bravo",
+            "branch-delta"
+        ]
+    );
+
+    state.branch_view.list.input.text = "branch".into();
+    state.branch_view.list.input.cursor = 6;
+    queue_filter(&mut state, &worker, None);
+    process_app_event(
+        rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        &mut state,
+        &mut TickChanges::default(),
+    );
+    assert_eq!(
+        state
+            .branch_view
+            .list
+            .filtered
+            .iter()
+            .map(|(index, _)| state.branch_view.entries[*index].name.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "branch-alpha",
+            "branch-charlie",
+            "branch-bravo",
+            "branch-delta"
+        ]
+    );
+}
+
+#[test]
+fn branch_open_filter_composes_with_pins_and_recency_with_and_without_a_query() {
+    let (sender, rx) = sender();
+    let worker = FilterWorker::spawn(sender);
+    let mut state = state_with_branch(false);
+    state.sort_order = SortOrder::Recency;
+    state.branch_view.entries = ["branch-alpha", "branch-bravo", "branch-charlie"]
+        .into_iter()
+        .map(|name| BranchEntry {
+            name: name.into(),
+            worktree_path: None,
+            is_current: false,
+            is_default: false,
+            remote: None,
+            open_workspace_id: matches!(name, "branch-alpha" | "branch-charlie")
+                .then(|| format!("w_{name}")),
+        })
+        .collect();
+    state.branch_view.list = SearchableList::new(3);
+    state.recency.record(RecencyKey::branch(
+        Path::new("/repo"),
+        BranchId::Local("branch-alpha".into()),
+    ));
+    state.pins.toggle(RecencyKey::branch(
+        Path::new("/repo"),
+        BranchId::Local("branch-charlie".into()),
+    ));
+
+    toggle_open_filter(&mut state, &worker);
+    let visible = |state: &AppState| {
+        state
+            .branch_view
+            .list
+            .filtered
+            .iter()
+            .map(|(index, _)| state.branch_view.entries[*index].name.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(visible(&state), ["branch-charlie", "branch-alpha"]);
+
+    state.branch_view.list.input.text = "branch".into();
+    state.branch_view.list.input.cursor = 6;
+    queue_filter(&mut state, &worker, None);
+    process_app_event(
+        rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        &mut state,
+        &mut TickChanges::default(),
+    );
+    assert_eq!(visible(&state), ["branch-charlie", "branch-alpha"]);
+
+    toggle_open_filter(&mut state, &worker);
+    process_app_event(
+        rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        &mut state,
+        &mut TickChanges::default(),
+    );
+    assert_eq!(visible(&state).len(), 3);
+}
+
+#[test]
+fn branch_pin_filter_and_sort_toggles_preserve_selection_while_filtered() {
+    let git = git_provider();
+    let (sender, _rx) = sender();
+    let worker = FilterWorker::spawn(sender.clone());
+    let mut state = state_with_branch(false);
+    state.branch_view.entries = ["alpha", "beta", "gamma"]
+        .into_iter()
+        .map(|name| BranchEntry {
+            name: name.into(),
+            worktree_path: None,
+            is_current: false,
+            is_default: false,
+            remote: None,
+            open_workspace_id: matches!(name, "alpha" | "beta").then(|| format!("w_{name}")),
+        })
+        .collect();
+    state.branch_view.list = SearchableList::new(3);
+    state.branch_view.list.selected = Some(1);
+
+    toggle_open_filter(&mut state, &worker);
+    assert_eq!(state.selected_branch().unwrap().name, "beta");
+    toggle_pin(&mut state, &worker);
+    assert_eq!(state.selected_branch().unwrap().name, "beta");
+    assert!(state.pins.branch_is_pinned_canonical(
+        &state.branch_context().unwrap().canonical_repo_path,
+        &BranchId::Local("beta".into())
+    ));
+    process_action(
+        Action::ToggleSort,
+        &mut state,
+        &git,
+        None,
+        &sender,
+        &worker,
+        &KeysConfig::default(),
+    );
+    assert_eq!(state.selected_branch().unwrap().name, "beta");
+    toggle_open_filter(&mut state, &worker);
+    assert_eq!(state.selected_branch().unwrap().name, "beta");
 }
 
 #[test]

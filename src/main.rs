@@ -54,6 +54,8 @@ fn start() -> Result<()> {
     } else {
         herdr_kiosk::recency::RecencyStore::default()
     };
+    let pins = herdr_kiosk::pins::PinStore::load();
+    loaded.warnings.extend(pins.warnings);
 
     let theme = Theme::from_config(&loaded.config.theme);
     let _restore_guard = TerminalRestoreGuard;
@@ -81,7 +83,7 @@ fn start() -> Result<()> {
         .current_cwd()
         .map(|path| std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path)));
     let mut state = AppState::new(current_cwd);
-    state.configure_sort(loaded.config.sort, recency);
+    state.configure_sort(loaded.config.sort, recency, pins.store);
     state.on_open = loaded.config.on_open.clone();
     warnings.extend(herdr_kiosk::screens::delete::load_pending(&mut state));
     for ConfigWarning { message } in warnings {

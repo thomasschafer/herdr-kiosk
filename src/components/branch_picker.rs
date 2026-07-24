@@ -57,10 +57,20 @@ pub fn draw(
             .position(|(position, _)| *position == selected)
     });
     let row_width = usize::from(list_area.width.saturating_sub(4));
+    let repo_path = state
+        .branch_context()
+        .map(|context| context.canonical_repo_path.clone());
     let mut items: Vec<_> = visible
         .iter()
         .filter_map(|(_, index)| state.branch_view.entries.get(*index))
-        .map(|branch| branch_item(branch, theme, row_width))
+        .map(|branch| {
+            let pinned = repo_path.as_deref().is_some_and(|repo_path| {
+                state
+                    .pins
+                    .branch_is_pinned_canonical(repo_path, &branch.id())
+            });
+            branch_item(branch, pinned, theme, row_width)
+        })
         .collect();
     if state.branch_view.loading && items.is_empty() {
         items.push(ListItem::new(Span::styled(
@@ -87,9 +97,14 @@ pub fn draw(
             Block::default()
                 .borders(Borders::ALL)
                 .title(format!(
-                    " {} of {} branches{loading_suffix} ",
+                    " {} of {} branches{}{loading_suffix} ",
                     state.branch_view.list.filtered.len(),
-                    state.branch_view.entries.len()
+                    state.branch_view.entries.len(),
+                    if state.branch_view.open_filter.is_active() {
+                        " · open only"
+                    } else {
+                        ""
+                    }
                 ))
                 .border_style(Style::default().fg(theme.border)),
         )
@@ -106,7 +121,12 @@ pub fn draw(
     frame.render_stateful_widget(list, list_area, &mut list_state);
 }
 
-fn branch_item(branch: &BranchEntry, theme: &Theme, row_width: usize) -> ListItem<'static> {
+fn branch_item(
+    branch: &BranchEntry,
+    pinned: bool,
+    theme: &Theme,
+    row_width: usize,
+) -> ListItem<'static> {
     let mut left = if branch.remote.is_some() {
         vec![Span::styled(
             crate::display::sanitize(&branch.display_name()).into_owned(),
@@ -129,14 +149,20 @@ fn branch_item(branch: &BranchEntry, theme: &Theme, row_width: usize) -> ListIte
     if branch.remote.is_none() && branch.is_default {
         left.push(Span::styled(" (default)", Style::default().fg(theme.muted)));
     }
-    let spans = if branch.open_workspace_id.is_some() {
-        right_align_suffix(
-            &left,
-            &[Span::styled("● open", Style::default().fg(theme.open))],
-            row_width,
-        )
-    } else {
+    let mut suffix = Vec::new();
+    if pinned {
+        suffix.push(Span::styled("◆ pin", Style::default().fg(theme.open)));
+    }
+    if branch.open_workspace_id.is_some() {
+        if !suffix.is_empty() {
+            suffix.push(Span::raw("  "));
+        }
+        suffix.push(Span::styled("● open", Style::default().fg(theme.open)));
+    }
+    let spans = if suffix.is_empty() {
         truncate_spans(&left, row_width)
+    } else {
+        right_align_suffix(&left, &suffix, row_width)
     };
     ListItem::new(Line::from(spans))
 }
@@ -157,10 +183,7 @@ mod tests {
     #[test]
     fn remote_row_uses_qualified_name_without_redundant_suffix() {
         let mut state = AppState::new(None);
-        state.mode = Mode::BranchSelect(BranchContext {
-            repo_path: "/repo".into(),
-            repo_name: "repo".into(),
-        });
+        state.mode = Mode::BranchSelect(BranchContext::new("/repo".into(), "repo".into()));
         state.branch_view.entries = BranchEntry::build_remote("origin", &["feature".into()], &[]);
         state.branch_view.list = SearchableList::new(1);
         state.branch_view.list.selected = None;
@@ -203,5 +226,50 @@ mod tests {
                 .iter()
                 .all(|cell| cell.modifier.contains(Modifier::DIM))
         );
+    }
+
+    #[test]
+    fn pinned_branch_renders_with_the_significant_marker_style() {
+        let mut state = AppState::new(None);
+        state.mode = Mode::BranchSelect(BranchContext::new("/repo".into(), "repo".into()));
+        state.branch_view.entries = vec![BranchEntry {
+            name: "feature".into(),
+            worktree_path: None,
+            is_current: false,
+            is_default: false,
+            remote: None,
+            open_workspace_id: None,
+        }];
+        state.branch_view.list = SearchableList::new(1);
+        state.branch_view.list.selected = None;
+        state.pins.toggle(crate::recency::RecencyKey::branch(
+            std::path::Path::new("/repo"),
+            crate::state::BranchId::Local("feature".into()),
+        ));
+        let theme = Theme::from_config(&crate::config::ThemeConfig::default());
+        let backend = TestBackend::new(80, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw(frame, area, &mut state, &theme, Instant::now());
+            })
+            .unwrap();
+
+        let marker = ["◆", " ", "p", "i", "n"];
+        let cells = terminal
+            .backend()
+            .buffer()
+            .content()
+            .windows(marker.len())
+            .find(|cells| {
+                cells
+                    .iter()
+                    .zip(marker)
+                    .all(|(cell, symbol)| cell.symbol() == symbol)
+            })
+            .expect("pin marker cells");
+        assert!(cells.iter().all(|cell| cell.fg == theme.open));
     }
 }

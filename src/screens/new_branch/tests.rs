@@ -39,10 +39,7 @@ fn state_with_repo() -> AppState {
 
 fn state_with_branch(has_worktree: bool) -> AppState {
     let mut state = state_with_repo();
-    state.mode = Mode::BranchSelect(BranchContext {
-        repo_path: "/repo".into(),
-        repo_name: "repo".into(),
-    });
+    state.mode = Mode::BranchSelect(BranchContext::new("/repo".into(), "repo".into()));
     state.branch_view.entries = vec![BranchEntry {
         name: "feature".into(),
         worktree_path: has_worktree.then(|| PathBuf::from("/repo-feature")),
@@ -81,10 +78,7 @@ fn sender() -> (EventSender, mpsc::Receiver<AppEvent>) {
 #[test]
 fn new_branch_routing_rejects_empty_and_routes_existing_local() {
     let mut state = AppState::new(None);
-    state.mode = Mode::BranchSelect(BranchContext {
-        repo_path: "/repo".into(),
-        repo_name: "repo".into(),
-    });
+    state.mode = Mode::BranchSelect(BranchContext::new("/repo".into(), "repo".into()));
     assert_eq!(route(&state), Err("Type a branch name first"));
 
     state.branch_view.entries = BranchEntry::build_local(
@@ -110,10 +104,7 @@ fn new_branch_routing_rejects_empty_and_routes_existing_local() {
 fn current_logical_selection_survives_current_generation_filter_results() {
     let mut state = state_with_branch(false);
     state.mode = Mode::SelectBaseBranch {
-        context: BranchContext {
-            repo_path: "/repo".into(),
-            repo_name: "repo".into(),
-        },
+        context: BranchContext::new("/repo".into(), "repo".into()),
         flow: BaseBranchSelection {
             new_name: "new".into(),
             bases: vec!["alpha".into(), "beta".into(), "gamma".into()],
@@ -151,10 +142,7 @@ fn base_picker_text_actions_edit_only_the_base_query() {
     let mut state = state_with_branch(false);
     state.branch_view.list.input.text = "underlying".into();
     state.mode = Mode::SelectBaseBranch {
-        context: BranchContext {
-            repo_path: "/repo".into(),
-            repo_name: "repo".into(),
-        },
+        context: BranchContext::new("/repo".into(), "repo".into()),
         flow: BaseBranchSelection {
             new_name: "feat/new".into(),
             bases: vec!["main".into(), "feature".into()],
@@ -191,10 +179,7 @@ fn base_picker_text_actions_edit_only_the_base_query() {
 fn validating_new_branch_keeps_branch_view_visible_under_popup() {
     let mut state = state_with_branch(false);
     state.mode = Mode::ValidatingNewBranch {
-        context: BranchContext {
-            repo_path: "/repo".into(),
-            repo_name: "repo".into(),
-        },
+        context: BranchContext::new("/repo".into(), "repo".into()),
         name: "feat/new".into(),
     };
     let backend = TestBackend::new(100, 30);
@@ -323,10 +308,7 @@ fn validated_new_branch_preselects_known_default_local_base() {
         },
     ];
     state.mode = Mode::ValidatingNewBranch {
-        context: BranchContext {
-            repo_path: "/repo".into(),
-            repo_name: "repo".into(),
-        },
+        context: BranchContext::new("/repo".into(), "repo".into()),
         name: "feat/new".into(),
     };
     process_app_event(
@@ -360,10 +342,7 @@ fn selected_base_is_passed_to_focused_new_branch_creation() {
     let (sender, rx) = sender();
     let mut state = state_with_branch(false);
     state.mode = Mode::SelectBaseBranch {
-        context: BranchContext {
-            repo_path: "/repo".into(),
-            repo_name: "repo".into(),
-        },
+        context: BranchContext::new("/repo".into(), "repo".into()),
         flow: BaseBranchSelection {
             new_name: "feat/new".into(),
             bases: vec!["main".into(), "feature".into()],

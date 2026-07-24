@@ -185,15 +185,15 @@ fn handle_removed(
         }
         return;
     }
-    let context = BranchContext {
-        repo_path: repo_path.to_path_buf(),
-        repo_name: state
+    let context = BranchContext::new(
+        repo_path.to_path_buf(),
+        state
             .repo_view
             .entries
             .iter()
             .find(|entry| entry.repo.path == repo_path)
             .map_or_else(|| "repository".into(), |entry| entry.repo.name.clone()),
-    };
+    );
     state.mode = Mode::BranchSelect(context);
     state.branch_view.loading = true;
     state.branch_view.reset_remotes();
@@ -236,12 +236,12 @@ fn handle_failed(
         );
         return;
     }
-    let context = BranchContext {
+    let context = BranchContext::new(
         repo_path,
-        repo_name: state
+        state
             .branch_context()
             .map_or_else(|| "repository".into(), |context| context.repo_name.clone()),
-    };
+    );
     state.mode = Mode::BranchSelect(context);
     state.push_toast(
         ToastKind::Error,
