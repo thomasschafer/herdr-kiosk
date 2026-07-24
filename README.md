@@ -113,32 +113,70 @@ open = "green"
 
 ### `[on_open]`
 
-Configure command panes created after opening a new workspace.
+Configure tabs and panes applied when a repository is opened.
 
-The section is optional and contains no pane definitions by default.
+The section is optional and contains no layout by default.
 
 Example:
 
 ```toml
 [on_open]
-panes = [
-  { command = "hx", direction = "right" },
-]
+[[on_open.tabs]]
+command = "hx ." # editor in the tab's main pane
+  [[on_open.tabs.panes]]
+  command = "lazygit" # opens in a split beside it
+  direction = "right" # "right" or "down"
+  ratio = 0.3 # split size, from 0 to 1
 ```
+
+Add more `[[on_open.tabs]]` for extra tabs (each takes an optional `name`); set `on = "every_open"` to also run when focusing an existing workspace; give a pane an `id` and set `focus = "<id>"` to focus it; or add `[on_open.repos."repo-name"]` to override the layout for one repo. The older `panes = [ ... ]` form still works.
+
+#### `on`
+
+When to apply the global layout. The default, `created`, preserves the
+existing behavior; `every_open` also applies when focusing an existing
+workspace.
+
+Default: `"created"`
+
+#### `focus`
+
+Optional pane identifier to focus after the layout is built.
 
 #### `panes`
 
 Pane definitions, created in order without moving focus from the primary
-pane. Commands run from the opened repository or worktree. They run only
-when a workspace is newly opened, not when an existing workspace is focused.
+pane. Commands run from the opened repository or worktree according to
+`on`. This legacy form cannot be combined with `tabs`.
 
-A command pane created after a new workspace is opened.
+A command pane created while an on-open layout is applied.
 
 Each entry is an inline table with:
 
+- `id` — Optional identifier used by the layout's `focus` target.
 - `command` — Shell command Herdr runs in the opened checkout. The command must not be empty.
 - `direction` — Split direction: `right` or `down`.
 - `ratio` — Fraction of the resulting split occupied by the new command pane. The value must be greater than 0 and less than 1, and defaults to 0.5 when omitted.
+
+#### `tabs`
+
+Declarative tabs created in order. The first entry uses the workspace's
+existing tab; later entries create new tabs. Panes within each tab are
+chained from that tab's root pane.
+
+A tab in a declarative on-open layout.
+
+Each entry is an inline table with:
+
+- `name` — Optional label passed when an additional tab is created.
+- `command` — Optional shell command for the tab's root pane. When omitted, the root pane remains a shell.
+- `panes` — Panes split in order from the previously created pane in this tab.
+
+#### `repos`
+
+Per-repository declarative layouts keyed by exact repository name. An
+override replaces the global layout and applies to every repository
+sharing that name. These overrides live only in this central config.
 
 ### `[keys]`
 

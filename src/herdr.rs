@@ -50,6 +50,7 @@ pub struct WorktreeOpenResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenedWorktree {
+    pub workspace_id: String,
     pub root_pane_id: String,
     pub path: String,
 }
@@ -81,6 +82,18 @@ pub struct PaneSplitRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaneSplitResponse {
     pub pane_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TabCreateRequest {
+    pub workspace_id: String,
+    pub cwd: PathBuf,
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TabCreateResponse {
+    pub root_pane_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,8 +203,10 @@ pub trait HerdrProvider: Send + Sync {
         focus: bool,
     ) -> Result<WorkspaceCreateResponse, HerdrError>;
     fn workspace_focus(&self, workspace_id: &str) -> Result<(), HerdrError>;
+    fn tab_create(&self, request: &TabCreateRequest) -> Result<TabCreateResponse, HerdrError>;
     fn pane_split(&self, request: &PaneSplitRequest) -> Result<PaneSplitResponse, HerdrError>;
     fn pane_run(&self, pane_id: &str, command: &str) -> Result<PaneRunResponse, HerdrError>;
+    fn pane_focus(&self, pane_id: &str) -> Result<(), HerdrError>;
     fn notification_show(&self, title: &str, body: &str) -> Result<(), HerdrError>;
 }
 
@@ -259,6 +274,62 @@ impl CliHerdrProvider {
 
         Ok(output.stdout)
     }
+
+    fn pane_focus_directional(&self, pane_id: &str) -> Result<(), HerdrError> {
+        let args = vec![
+            "pane".into(),
+            "layout".into(),
+            "--pane".into(),
+            pane_id.into(),
+        ];
+        let PaneLayoutResult::PaneLayout { layout } = self.invoke(&args)?;
+        self.invoke_output(&["tab".into(), "focus".into(), layout.tab_id.clone()])?;
+
+        let mut focused_pane_id = layout.focused_pane_id;
+        let target = layout
+            .panes
+            .iter()
+            .find(|pane| pane.pane_id == pane_id)
+            .ok_or_else(|| {
+                HerdrError::InvalidResponse(format!(
+                    "pane layout did not contain focus target {pane_id}"
+                ))
+            })?;
+        for _ in 0..layout.panes.len().saturating_mul(2).max(1) {
+            if focused_pane_id == pane_id {
+                return Ok(());
+            }
+            let focused = layout
+                .panes
+                .iter()
+                .find(|pane| pane.pane_id == focused_pane_id)
+                .ok_or_else(|| {
+                    HerdrError::InvalidResponse(format!(
+                        "pane layout did not contain focused pane {focused_pane_id}"
+                    ))
+                })?;
+            let direction = direction_toward(focused.rect, target.rect);
+            let args = vec![
+                "pane".into(),
+                "focus".into(),
+                "--direction".into(),
+                direction.into(),
+                "--pane".into(),
+                focused_pane_id.clone(),
+            ];
+            let PaneFocusDirectionResult::PaneFocusDirection { focus } = self.invoke(&args)?;
+            let Some(next_pane_id) = focus.focused_pane_id else {
+                break;
+            };
+            if next_pane_id == focused_pane_id {
+                break;
+            }
+            focused_pane_id = next_pane_id;
+        }
+        Err(HerdrError::InvalidResponse(format!(
+            "directional pane focus could not reach {pane_id}"
+        )))
+    }
 }
 
 impl HerdrProvider for CliHerdrProvider {
@@ -290,11 +361,13 @@ impl HerdrProvider for CliHerdrProvider {
         let (result, warning) = self.invoke_side_effect::<WorktreeOpenResult>(&args)?;
         let (opened, already_open) = result.map_or((None, None), |result| match result {
             WorktreeOpenResult::WorktreeOpened {
+                workspace,
                 root_pane,
                 worktree,
                 already_open,
             } => (
                 Some(OpenedWorktree {
+                    workspace_id: workspace.workspace_id,
                     root_pane_id: root_pane.pane_id,
                     path: worktree.path,
                 }),
@@ -342,9 +415,11 @@ impl HerdrProvider for CliHerdrProvider {
         let (result, warning) = self.invoke_side_effect::<WorktreeCreateResult>(&args)?;
         let opened = result.map(|result| match result {
             WorktreeCreateResult::WorktreeCreated {
+                workspace,
                 root_pane,
                 worktree,
             } => OpenedWorktree {
+                workspace_id: workspace.workspace_id,
                 root_pane_id: root_pane.pane_id,
                 path: worktree.path,
             },
@@ -429,6 +504,29 @@ impl HerdrProvider for CliHerdrProvider {
         Ok(())
     }
 
+    fn tab_create(&self, request: &TabCreateRequest) -> Result<TabCreateResponse, HerdrError> {
+        require_nonempty("workspace id", &request.workspace_id)?;
+        require_absolute("cwd", &request.cwd)?;
+        let mut args = vec![
+            "tab".into(),
+            "create".into(),
+            "--workspace".into(),
+            request.workspace_id.clone(),
+            "--cwd".into(),
+            path_arg("cwd", &request.cwd)?,
+        ];
+        if let Some(label) = &request.label {
+            require_nonempty("tab label", label)?;
+            args.extend(["--label".into(), label.clone()]);
+        }
+        args.push("--no-focus".into());
+        match self.invoke::<TabCreateResult>(&args)? {
+            TabCreateResult::TabCreated { root_pane } => Ok(TabCreateResponse {
+                root_pane_id: root_pane.pane_id,
+            }),
+        }
+    }
+
     fn pane_split(&self, request: &PaneSplitRequest) -> Result<PaneSplitResponse, HerdrError> {
         require_nonempty("pane id", &request.pane_id)?;
         require_absolute("cwd", &request.cwd)?;
@@ -473,6 +571,19 @@ impl HerdrProvider for CliHerdrProvider {
         let args = vec!["pane".into(), "run".into(), pane_id.into(), command.into()];
         self.invoke_output(&args)?;
         Ok(PaneRunResponse)
+    }
+
+    fn pane_focus(&self, pane_id: &str) -> Result<(), HerdrError> {
+        require_nonempty("pane id", pane_id)?;
+        match self.invoke_output(&["pane".into(), "focus".into(), pane_id.into()]) {
+            Ok(_) => Ok(()),
+            Err(HerdrError::Invocation(message))
+                if message.contains("pane focus") && message.contains("--direction") =>
+            {
+                self.pane_focus_directional(pane_id)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     fn notification_show(&self, title: &str, body: &str) -> Result<(), HerdrError> {
@@ -538,6 +649,7 @@ enum WorktreeListResult {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum WorktreeCreateResult {
     WorktreeCreated {
+        workspace: WorkspaceIdentity,
         root_pane: RootPaneInfo,
         worktree: WorktreePath,
     },
@@ -547,6 +659,7 @@ enum WorktreeCreateResult {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum WorktreeOpenResult {
     WorktreeOpened {
+        workspace: WorkspaceIdentity,
         root_pane: RootPaneInfo,
         worktree: WorktreePath,
         already_open: bool,
@@ -555,8 +668,52 @@ enum WorktreeOpenResult {
 
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+enum TabCreateResult {
+    TabCreated { root_pane: RootPaneInfo },
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 enum PaneSplitResult {
     PaneInfo { pane: RootPaneInfo },
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum PaneLayoutResult {
+    PaneLayout { layout: PaneLayoutInfo },
+}
+
+#[derive(Deserialize)]
+struct PaneLayoutInfo {
+    tab_id: String,
+    focused_pane_id: String,
+    panes: Vec<PaneLayoutPaneInfo>,
+}
+
+#[derive(Deserialize)]
+struct PaneLayoutPaneInfo {
+    pane_id: String,
+    rect: PaneLayoutRect,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+struct PaneLayoutRect {
+    x: u16,
+    y: u16,
+    width: u16,
+    height: u16,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum PaneFocusDirectionResult {
+    PaneFocusDirection { focus: PaneFocusDirectionInfo },
+}
+
+#[derive(Deserialize)]
+struct PaneFocusDirectionInfo {
+    focused_pane_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -602,6 +759,18 @@ fn path_arg(name: &str, path: &Path) -> Result<String, HerdrError> {
             "{name} is not valid UTF-8 and cannot be passed to herdr"
         ))
     })
+}
+
+fn direction_toward(source: PaneLayoutRect, target: PaneLayoutRect) -> &'static str {
+    if target.x >= source.x.saturating_add(source.width) {
+        "right"
+    } else if source.x >= target.x.saturating_add(target.width) {
+        "left"
+    } else if target.y >= source.y.saturating_add(source.height) {
+        "down"
+    } else {
+        "up"
+    }
 }
 
 fn invalid_response(error: &serde_json::Error, output: &[u8]) -> HerdrError {
@@ -968,9 +1137,46 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn cli_builds_exact_tab_create_calls() {
+        let response =
+            r#"{"result":{"type":"tab_created","tab":{},"root_pane":{"pane_id":"p_tab"}}}"#;
+        let labeled_temp = TempDir::new().unwrap();
+        let (binary, args_file) = fake_herdr(&labeled_temp, response);
+        let provider = CliHerdrProvider::new(binary);
+        let created = retry_fake_herdr(|| {
+            provider.tab_create(&TabCreateRequest {
+                workspace_id: "w_1".into(),
+                cwd: "/repo checkout".into(),
+                label: Some("server".into()),
+            })
+        });
+        assert_eq!(created.root_pane_id, "p_tab");
+        assert_eq!(
+            fs::read_to_string(args_file).unwrap().trim(),
+            "tab create --workspace w_1 --cwd /repo checkout --label server --no-focus"
+        );
+
+        let unlabeled_temp = TempDir::new().unwrap();
+        let (binary, args_file) = fake_herdr(&unlabeled_temp, response);
+        let provider = CliHerdrProvider::new(binary);
+        retry_fake_herdr(|| {
+            provider.tab_create(&TabCreateRequest {
+                workspace_id: "w_1".into(),
+                cwd: "/repo".into(),
+                label: None,
+            })
+        });
+        assert_eq!(
+            fs::read_to_string(args_file).unwrap().trim(),
+            "tab create --workspace w_1 --cwd /repo --no-focus"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn side_effect_responses_ignore_unused_and_future_fields() {
         let temp = TempDir::new().unwrap();
-        let response = r#"{"result":{"type":"worktree_opened","root_pane":{"pane_id":"p_root","future_pane_field":1},"worktree":{"path":"/repo","renamed_label":"repo"},"already_open":false,"future_result_field":true}}"#;
+        let response = r#"{"result":{"type":"worktree_opened","workspace":{"workspace_id":"w_1","future_workspace_field":1},"root_pane":{"pane_id":"p_root","future_pane_field":1},"worktree":{"path":"/repo","renamed_label":"repo"},"already_open":false,"future_result_field":true}}"#;
         let (binary, _) = fake_herdr(&temp, response);
         let provider = CliHerdrProvider::new(binary);
 
@@ -982,7 +1188,9 @@ mod tests {
             )
         });
 
-        assert_eq!(opened.opened.unwrap().path, "/repo");
+        let opened_worktree = opened.opened.unwrap();
+        assert_eq!(opened_worktree.workspace_id, "w_1");
+        assert_eq!(opened_worktree.path, "/repo");
         assert_eq!(opened.already_open, Some(false));
         assert!(opened.warning.is_none());
     }
@@ -1107,6 +1315,20 @@ mod tests {
                 code: "pane_run_failed".into(),
                 message: "pane unavailable".into(),
             })
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_pane_focus_accepts_empty_stdout() {
+        let temp = TempDir::new().unwrap();
+        let (binary, args_file) = fake_herdr_with_output(&temp, "", "", 0);
+        let provider = CliHerdrProvider::new(binary);
+
+        retry_fake_herdr(|| provider.pane_focus("p_2"));
+        assert_eq!(
+            fs::read_to_string(args_file).unwrap().trim(),
+            "pane focus p_2"
         );
     }
 

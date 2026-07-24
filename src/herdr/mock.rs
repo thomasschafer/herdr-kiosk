@@ -6,8 +6,9 @@ use std::{
 
 use super::{
     HerdrError, HerdrProvider, PaneInfo, PaneRunResponse, PaneSplitRequest, PaneSplitResponse,
-    WorkspaceCreateResponse, WorkspaceInfo, WorktreeCreateRequest, WorktreeCreateResponse,
-    WorktreeListResponse, WorktreeOpenResponse, WorktreeOpenTarget, WorktreeRemoveResponse,
+    TabCreateRequest, TabCreateResponse, WorkspaceCreateResponse, WorkspaceInfo,
+    WorktreeCreateRequest, WorktreeCreateResponse, WorktreeListResponse, WorktreeOpenResponse,
+    WorktreeOpenTarget, WorktreeRemoveResponse,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -34,10 +35,14 @@ pub enum HerdrCall {
     WorkspaceFocus {
         workspace_id: String,
     },
+    TabCreate(TabCreateRequest),
     PaneSplit(PaneSplitRequest),
     PaneRun {
         pane_id: String,
         command: String,
+    },
+    PaneFocus {
+        pane_id: String,
     },
     NotificationShow {
         title: String,
@@ -56,8 +61,10 @@ pub struct MockHerdrProvider {
     pub pane_list_results: Mutex<VecDeque<Result<Vec<PaneInfo>, HerdrError>>>,
     pub workspace_create_results: Mutex<VecDeque<Result<WorkspaceCreateResponse, HerdrError>>>,
     pub workspace_focus_results: Mutex<VecDeque<Result<(), HerdrError>>>,
+    pub tab_create_results: Mutex<VecDeque<Result<TabCreateResponse, HerdrError>>>,
     pub pane_split_results: Mutex<VecDeque<Result<PaneSplitResponse, HerdrError>>>,
     pub pane_run_results: Mutex<VecDeque<Result<PaneRunResponse, HerdrError>>>,
+    pub pane_focus_results: Mutex<VecDeque<Result<(), HerdrError>>>,
     pub notification_show_results: Mutex<VecDeque<Result<(), HerdrError>>>,
 }
 
@@ -143,6 +150,14 @@ impl HerdrProvider for MockHerdrProvider {
         next(&self.workspace_focus_results, "workspace_focus")
     }
 
+    fn tab_create(&self, request: &TabCreateRequest) -> Result<TabCreateResponse, HerdrError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(HerdrCall::TabCreate(request.clone()));
+        next(&self.tab_create_results, "tab_create")
+    }
+
     fn pane_split(&self, request: &PaneSplitRequest) -> Result<PaneSplitResponse, HerdrError> {
         self.calls
             .lock()
@@ -157,6 +172,13 @@ impl HerdrProvider for MockHerdrProvider {
             command: command.into(),
         });
         next(&self.pane_run_results, "pane_run")
+    }
+
+    fn pane_focus(&self, pane_id: &str) -> Result<(), HerdrError> {
+        self.calls.lock().unwrap().push(HerdrCall::PaneFocus {
+            pane_id: pane_id.into(),
+        });
+        next(&self.pane_focus_results, "pane_focus")
     }
 
     fn notification_show(&self, title: &str, body: &str) -> Result<(), HerdrError> {
