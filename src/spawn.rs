@@ -19,8 +19,8 @@ use crate::{
         is_local_branch_already_exists,
     },
     herdr::{
-        HerdrError, HerdrProvider, OpenedWorktree, PaneSplitRequest, TabCreateRequest,
-        WorktreeCreateRequest, WorktreeOpenTarget,
+        ExistingWorkspaceLayout, HerdrError, HerdrProvider, OpenedWorktree, PaneSplitRequest,
+        TabCreateRequest, WorktreeCreateRequest, WorktreeOpenTarget,
     },
     state::BranchEntry,
 };
@@ -851,10 +851,17 @@ fn apply_on_open(
     }
 
     let mut errors = Vec::new();
-    if layout.tabs.is_empty() {
-        apply_legacy_on_open(provider, layout.panes, layout.focus, opened, &mut errors);
+    if newly_created {
+        match layout.layout {
+            EffectiveOnOpenLayout::Legacy(panes) => {
+                apply_legacy_on_open(provider, panes, layout.focus, opened, &mut errors);
+            }
+            EffectiveOnOpenLayout::Tabs(tabs) => {
+                apply_tab_layout(provider, tabs, layout.focus, opened, &mut errors);
+            }
+        }
     } else {
-        apply_tab_layout(provider, &layout, opened, &mut errors);
+        rerun_existing_on_open(provider, &layout, opened, &mut errors);
     }
     (!errors.is_empty()).then(|| format!("on_open: {}", errors.join("; ")))
 }
@@ -862,25 +869,38 @@ fn apply_on_open(
 struct EffectiveOnOpen<'a> {
     on: OnOpenWhen,
     focus: Option<&'a str>,
-    panes: &'a [OnOpenPaneConfig],
-    tabs: &'a [OnOpenTabConfig],
+    layout: EffectiveOnOpenLayout<'a>,
+}
+
+enum EffectiveOnOpenLayout<'a> {
+    Legacy(&'a [OnOpenPaneConfig]),
+    Tabs(&'a [OnOpenTabConfig]),
 }
 
 fn effective_on_open<'a>(on_open: &'a OnOpenConfig, repo_name: &str) -> EffectiveOnOpen<'a> {
     if let Some(repo) = on_open.repos.get(repo_name) {
         EffectiveOnOpen {
-            on: repo.on,
-            focus: repo.focus.as_deref(),
-            panes: &[],
-            tabs: &repo.tabs,
+            on: repo.on.unwrap_or(on_open.on),
+            focus: repo.focus.as_deref().or(on_open.focus.as_deref()),
+            layout: effective_layout(&repo.panes, &repo.tabs),
         }
     } else {
         EffectiveOnOpen {
             on: on_open.on,
             focus: on_open.focus.as_deref(),
-            panes: &on_open.panes,
-            tabs: &on_open.tabs,
+            layout: effective_layout(&on_open.panes, &on_open.tabs),
         }
+    }
+}
+
+fn effective_layout<'a>(
+    panes: &'a [OnOpenPaneConfig],
+    tabs: &'a [OnOpenTabConfig],
+) -> EffectiveOnOpenLayout<'a> {
+    if tabs.is_empty() {
+        EffectiveOnOpenLayout::Legacy(panes)
+    } else {
+        EffectiveOnOpenLayout::Tabs(tabs)
     }
 }
 
@@ -892,9 +912,34 @@ fn apply_legacy_on_open(
     errors: &mut Vec<String>,
 ) {
     let mut pane_ids = HashMap::new();
-    for (index, pane) in panes.iter().enumerate() {
+    apply_new_panes(
+        provider,
+        panes,
+        &opened.root_pane_id,
+        false,
+        None,
+        opened,
+        &mut pane_ids,
+        errors,
+    );
+    apply_focus(provider, focus, &pane_ids, errors);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_new_panes(
+    provider: &dyn HerdrProvider,
+    panes: &[OnOpenPaneConfig],
+    root_pane_id: &str,
+    chained: bool,
+    tab_index: Option<usize>,
+    opened: &OpenedWorktree,
+    pane_ids: &mut HashMap<String, String>,
+    errors: &mut Vec<String>,
+) {
+    let mut anchor_pane_id = root_pane_id.to_owned();
+    for (pane_index, pane) in panes.iter().enumerate() {
         let split = provider.pane_split(&PaneSplitRequest {
-            pane_id: opened.root_pane_id.clone(),
+            pane_id: anchor_pane_id.clone(),
             direction: pane.direction,
             ratio: pane.ratio.map(|ratio| 1.0 - ratio),
             cwd: PathBuf::from(&opened.path),
@@ -902,28 +947,49 @@ fn apply_legacy_on_open(
         });
         match split {
             Ok(response) => {
+                if chained {
+                    anchor_pane_id.clone_from(&response.pane_id);
+                }
                 if let Some(id) = &pane.id {
-                    pane_ids.insert(id.as_str(), response.pane_id.clone());
+                    pane_ids.insert(id.clone(), response.pane_id.clone());
                 }
                 if let Err(error) = provider.pane_run(&response.pane_id, &pane.command) {
-                    errors.push(format!("pane {} run failed: {error}", index + 1));
+                    errors.push(format!(
+                        "{} run failed: {error}",
+                        pane_location(tab_index, pane_index)
+                    ));
                 }
             }
-            Err(error) => errors.push(format!("pane {} split failed: {error}", index + 1)),
+            Err(error) => errors.push(format!(
+                "{} split failed: {error}",
+                pane_location(tab_index, pane_index)
+            )),
         }
     }
-    apply_focus(provider, focus, &pane_ids, errors);
+}
+
+fn pane_location(tab_index: Option<usize>, pane_index: usize) -> String {
+    tab_index.map_or_else(
+        || format!("pane {}", pane_index + 1),
+        |tab_index| format!("tab {} pane {}", tab_index + 1, pane_index + 1),
+    )
 }
 
 fn apply_tab_layout(
     provider: &dyn HerdrProvider,
-    layout: &EffectiveOnOpen<'_>,
+    tabs: &[OnOpenTabConfig],
+    focus: Option<&str>,
     opened: &OpenedWorktree,
     errors: &mut Vec<String>,
 ) {
     let mut pane_ids = HashMap::new();
-    for (tab_index, tab) in layout.tabs.iter().enumerate() {
+    for (tab_index, tab) in tabs.iter().enumerate() {
         let root_pane_id = if tab_index == 0 {
+            if let Some(name) = &tab.name
+                && let Err(error) = provider.tab_rename(&opened.root_pane_id, name)
+            {
+                errors.push(format!("tab 1 rename failed: {error}"));
+            }
             opened.root_pane_id.clone()
         } else {
             match provider.tab_create(&TabCreateRequest {
@@ -938,6 +1004,9 @@ fn apply_tab_layout(
                 }
             }
         };
+        if let Some(id) = &tab.id {
+            pane_ids.insert(id.clone(), root_pane_id.clone());
+        }
 
         if let Some(command) = &tab.command
             && let Err(error) = provider.pane_run(&root_pane_id, command)
@@ -945,43 +1014,199 @@ fn apply_tab_layout(
             errors.push(format!("tab {} root run failed: {error}", tab_index + 1));
         }
 
-        let mut previous_pane_id = root_pane_id;
-        for (pane_index, pane) in tab.panes.iter().enumerate() {
-            match provider.pane_split(&PaneSplitRequest {
-                pane_id: previous_pane_id.clone(),
-                direction: pane.direction,
-                ratio: pane.ratio.map(|ratio| 1.0 - ratio),
-                cwd: PathBuf::from(&opened.path),
-                focus: false,
-            }) {
-                Ok(response) => {
-                    previous_pane_id.clone_from(&response.pane_id);
-                    if let Some(id) = &pane.id {
-                        pane_ids.insert(id.as_str(), response.pane_id.clone());
-                    }
-                    if let Err(error) = provider.pane_run(&response.pane_id, &pane.command) {
-                        errors.push(format!(
-                            "tab {} pane {} run failed: {error}",
-                            tab_index + 1,
-                            pane_index + 1
-                        ));
-                    }
-                }
-                Err(error) => errors.push(format!(
-                    "tab {} pane {} split failed: {error}",
-                    tab_index + 1,
-                    pane_index + 1
-                )),
-            }
+        apply_new_panes(
+            provider,
+            &tab.panes,
+            &root_pane_id,
+            true,
+            Some(tab_index),
+            opened,
+            &mut pane_ids,
+            errors,
+        );
+    }
+    apply_focus(provider, focus, &pane_ids, errors);
+}
+
+fn rerun_existing_on_open(
+    provider: &dyn HerdrProvider,
+    effective: &EffectiveOnOpen<'_>,
+    opened: &OpenedWorktree,
+    errors: &mut Vec<String>,
+) {
+    let has_commands = match effective.layout {
+        EffectiveOnOpenLayout::Legacy(panes) => !panes.is_empty(),
+        EffectiveOnOpenLayout::Tabs(tabs) => tabs
+            .iter()
+            .any(|tab| tab.command.is_some() || !tab.panes.is_empty()),
+    };
+    if !has_commands && effective.focus.is_none() {
+        return;
+    }
+    let existing = match provider.workspace_layout(&opened.workspace_id) {
+        Ok(existing) => existing,
+        Err(error) => {
+            errors.push(format!(
+                "existing workspace layout could not be resolved: {error}"
+            ));
+            return;
+        }
+    };
+    let mut pane_ids = HashMap::new();
+    match effective.layout {
+        EffectiveOnOpenLayout::Legacy(panes) => {
+            rerun_existing_legacy(provider, panes, opened, &existing, &mut pane_ids, errors);
+        }
+        EffectiveOnOpenLayout::Tabs(tabs) => {
+            rerun_existing_tabs(provider, tabs, opened, &existing, &mut pane_ids, errors);
         }
     }
-    apply_focus(provider, layout.focus, &pane_ids, errors);
+    apply_existing_focus(provider, effective.focus, &pane_ids, errors);
+}
+
+fn rerun_existing_legacy(
+    provider: &dyn HerdrProvider,
+    panes: &[OnOpenPaneConfig],
+    opened: &OpenedWorktree,
+    existing: &ExistingWorkspaceLayout,
+    pane_ids: &mut HashMap<String, String>,
+    errors: &mut Vec<String>,
+) {
+    let Some(tab) = existing
+        .tabs
+        .iter()
+        .find(|tab| tab.pane_ids.contains(&opened.root_pane_id))
+    else {
+        errors.push("existing workspace root pane could not be resolved".into());
+        return;
+    };
+    rerun_existing_panes(
+        provider,
+        panes,
+        tab.pane_ids
+            .iter()
+            .filter(|pane_id| *pane_id != &opened.root_pane_id),
+        None,
+        pane_ids,
+        errors,
+    );
+}
+
+fn rerun_existing_tabs(
+    provider: &dyn HerdrProvider,
+    tabs: &[OnOpenTabConfig],
+    opened: &OpenedWorktree,
+    existing: &ExistingWorkspaceLayout,
+    pane_ids: &mut HashMap<String, String>,
+    errors: &mut Vec<String>,
+) {
+    let mut used_tabs = HashSet::new();
+    for (tab_index, tab) in tabs.iter().enumerate() {
+        let Some(existing_tab_index) =
+            resolve_existing_tab(tab_index, tab, opened, existing, &used_tabs)
+        else {
+            errors.push(format!(
+                "tab {} could not be resolved in the existing workspace",
+                tab_index + 1
+            ));
+            continue;
+        };
+        used_tabs.insert(existing_tab_index);
+        let existing_tab = &existing.tabs[existing_tab_index];
+        let root_pane_id = if tab_index == 0 {
+            opened.root_pane_id.as_str()
+        } else {
+            let Some(root_pane_id) = existing_tab.pane_ids.first() else {
+                errors.push(format!(
+                    "tab {} root pane could not be resolved in the existing workspace",
+                    tab_index + 1
+                ));
+                continue;
+            };
+            root_pane_id
+        };
+        if let Some(id) = &tab.id {
+            pane_ids.insert(id.clone(), root_pane_id.to_owned());
+        }
+        if let Some(command) = &tab.command
+            && let Err(error) = provider.pane_run(root_pane_id, command)
+        {
+            errors.push(format!("tab {} root run failed: {error}", tab_index + 1));
+        }
+        rerun_existing_panes(
+            provider,
+            &tab.panes,
+            existing_tab
+                .pane_ids
+                .iter()
+                .filter(|pane_id| pane_id.as_str() != root_pane_id),
+            Some(tab_index),
+            pane_ids,
+            errors,
+        );
+    }
+}
+
+fn resolve_existing_tab(
+    tab_index: usize,
+    tab: &OnOpenTabConfig,
+    opened: &OpenedWorktree,
+    existing: &ExistingWorkspaceLayout,
+    used_tabs: &HashSet<usize>,
+) -> Option<usize> {
+    if tab_index == 0 {
+        return existing
+            .tabs
+            .iter()
+            .position(|tab| tab.pane_ids.contains(&opened.root_pane_id));
+    }
+    if let Some(name) = &tab.name {
+        return existing
+            .tabs
+            .iter()
+            .enumerate()
+            .find(|(index, existing_tab)| !used_tabs.contains(index) && existing_tab.label == *name)
+            .map(|(index, _)| index);
+    }
+    existing
+        .tabs
+        .get(tab_index)
+        .filter(|_| !used_tabs.contains(&tab_index))
+        .map(|_| tab_index)
+}
+
+fn rerun_existing_panes<'a>(
+    provider: &dyn HerdrProvider,
+    panes: &[OnOpenPaneConfig],
+    mut existing_pane_ids: impl Iterator<Item = &'a String>,
+    tab_index: Option<usize>,
+    pane_ids: &mut HashMap<String, String>,
+    errors: &mut Vec<String>,
+) {
+    for (pane_index, pane) in panes.iter().enumerate() {
+        let Some(pane_id) = existing_pane_ids.next() else {
+            errors.push(format!(
+                "{} could not be resolved in the existing workspace",
+                pane_location(tab_index, pane_index)
+            ));
+            continue;
+        };
+        if let Some(id) = &pane.id {
+            pane_ids.insert(id.clone(), pane_id.clone());
+        }
+        if let Err(error) = provider.pane_run(pane_id, &pane.command) {
+            errors.push(format!(
+                "{} run failed: {error}",
+                pane_location(tab_index, pane_index)
+            ));
+        }
+    }
 }
 
 fn apply_focus(
     provider: &dyn HerdrProvider,
     focus: Option<&str>,
-    pane_ids: &HashMap<&str, String>,
+    pane_ids: &HashMap<String, String>,
     errors: &mut Vec<String>,
 ) {
     let Some(focus) = focus else {
@@ -989,6 +1214,26 @@ fn apply_focus(
     };
     let Some(pane_id) = pane_ids.get(focus) else {
         errors.push(format!("focus pane {focus} was not created"));
+        return;
+    };
+    if let Err(error) = provider.pane_focus(pane_id) {
+        errors.push(format!("focus pane {focus} failed: {error}"));
+    }
+}
+
+fn apply_existing_focus(
+    provider: &dyn HerdrProvider,
+    focus: Option<&str>,
+    pane_ids: &HashMap<String, String>,
+    errors: &mut Vec<String>,
+) {
+    let Some(focus) = focus else {
+        return;
+    };
+    let Some(pane_id) = pane_ids.get(focus) else {
+        errors.push(format!(
+            "focus pane {focus} could not be resolved in the existing workspace"
+        ));
         return;
     };
     if let Err(error) = provider.pane_focus(pane_id) {
@@ -1028,8 +1273,9 @@ mod tests {
         },
         git::{Repo, Worktree, mock::MockGitProvider},
         herdr::{
-            OpenedWorktree, PaneRunResponse, PaneSplitResponse, TabCreateResponse, WorktreeInfo,
-            WorktreeListResponse, WorktreeOpenResponse,
+            ExistingTabLayout, ExistingWorkspaceLayout, OpenedWorktree, PaneRunResponse,
+            PaneSplitResponse, TabCreateResponse, WorktreeInfo, WorktreeListResponse,
+            WorktreeOpenResponse,
             mock::{HerdrCall, MockHerdrProvider},
         },
     };
@@ -1200,6 +1446,19 @@ mod tests {
         }
     }
 
+    fn existing_layout(tabs: &[(&str, &str, &[&str])]) -> ExistingWorkspaceLayout {
+        ExistingWorkspaceLayout {
+            tabs: tabs
+                .iter()
+                .map(|(tab_id, label, pane_ids)| ExistingTabLayout {
+                    tab_id: (*tab_id).into(),
+                    label: (*label).into(),
+                    pane_ids: pane_ids.iter().map(|pane_id| (*pane_id).into()).collect(),
+                })
+                .collect(),
+        }
+    }
+
     #[test]
     fn on_open_splits_then_runs_each_configured_pane_in_order() {
         let mock = MockHerdrProvider::default();
@@ -1285,6 +1544,7 @@ mod tests {
             focus: Some("editor".into()),
             tabs: vec![
                 OnOpenTabConfig {
+                    id: None,
                     name: Some("code".into()),
                     command: Some("hx .".into()),
                     panes: vec![
@@ -1303,6 +1563,7 @@ mod tests {
                     ],
                 },
                 OnOpenTabConfig {
+                    id: None,
                     name: Some("server".into()),
                     command: Some("npm run dev".into()),
                     panes: vec![OnOpenPaneConfig {
@@ -1326,6 +1587,7 @@ mod tests {
             .push_back(Ok(TabCreateResponse {
                 root_pane_id: "p_4".into(),
             }));
+        mock.tab_rename_results.lock().unwrap().push_back(Ok(()));
         mock.pane_split_results
             .lock()
             .unwrap()
@@ -1345,6 +1607,10 @@ mod tests {
         assert_eq!(
             *mock.calls.lock().unwrap(),
             [
+                HerdrCall::TabRename {
+                    pane_id: "p_root".into(),
+                    label: "code".into(),
+                },
                 HerdrCall::PaneRun {
                     pane_id: "p_root".into(),
                     command: "hx .".into(),
@@ -1415,6 +1681,10 @@ mod tests {
             on: OnOpenWhen::EveryOpen,
             ..created
         };
+        mock.workspace_layout_results
+            .lock()
+            .unwrap()
+            .push_back(Ok(existing_layout(&[("t_1", "", &["p_root"])])));
         mock.pane_run_results
             .lock()
             .unwrap()
@@ -1422,10 +1692,15 @@ mod tests {
         assert!(apply_on_open(&mock, &every_open, "repo", false, &opened_worktree()).is_none());
         assert_eq!(
             *mock.calls.lock().unwrap(),
-            [HerdrCall::PaneRun {
-                pane_id: "p_root".into(),
-                command: "hx .".into(),
-            }]
+            [
+                HerdrCall::WorkspaceLayout {
+                    workspace_id: "w_1".into(),
+                },
+                HerdrCall::PaneRun {
+                    pane_id: "p_root".into(),
+                    command: "hx .".into(),
+                }
+            ]
         );
     }
 
@@ -1462,6 +1737,319 @@ mod tests {
                 pane_id: "p_root".into(),
                 command: "override".into(),
             }]
+        );
+    }
+
+    #[test]
+    fn every_open_reuses_existing_tabs_and_panes_and_reruns_commands() {
+        let mut config = tab_layout_config();
+        config.on = OnOpenWhen::EveryOpen;
+        let mock = MockHerdrProvider::default();
+        mock.workspace_layout_results
+            .lock()
+            .unwrap()
+            .push_back(Ok(existing_layout(&[
+                ("t_1", "code", &["p_root", "p_2", "p_3"]),
+                ("t_2", "server", &["p_4", "p_5"]),
+            ])));
+        mock.pane_run_results
+            .lock()
+            .unwrap()
+            .extend((0..5).map(|_| Ok(PaneRunResponse)));
+        mock.pane_focus_results.lock().unwrap().push_back(Ok(()));
+
+        assert!(apply_on_open(&mock, &config, "repo", false, &opened_worktree()).is_none());
+        let calls = mock.calls.lock().unwrap();
+        assert!(!calls.iter().any(|call| matches!(
+            call,
+            HerdrCall::TabCreate(_) | HerdrCall::TabRename { .. } | HerdrCall::PaneSplit(_)
+        )));
+        assert_eq!(
+            *calls,
+            [
+                HerdrCall::WorkspaceLayout {
+                    workspace_id: "w_1".into(),
+                },
+                HerdrCall::PaneRun {
+                    pane_id: "p_root".into(),
+                    command: "hx .".into(),
+                },
+                HerdrCall::PaneRun {
+                    pane_id: "p_2".into(),
+                    command: "lazygit".into(),
+                },
+                HerdrCall::PaneRun {
+                    pane_id: "p_3".into(),
+                    command: "cargo test".into(),
+                },
+                HerdrCall::PaneRun {
+                    pane_id: "p_4".into(),
+                    command: "npm run dev".into(),
+                },
+                HerdrCall::PaneRun {
+                    pane_id: "p_5".into(),
+                    command: "tail -f service.log".into(),
+                },
+                HerdrCall::PaneFocus {
+                    pane_id: "p_2".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn every_open_warns_and_skips_an_unresolved_existing_pane() {
+        let mut config = tab_layout_config();
+        config.on = OnOpenWhen::EveryOpen;
+        config.focus = None;
+        let mock = MockHerdrProvider::default();
+        mock.workspace_layout_results
+            .lock()
+            .unwrap()
+            .push_back(Ok(existing_layout(&[
+                ("t_1", "code", &["p_root", "p_2"]),
+                ("t_2", "server", &["p_4", "p_5"]),
+            ])));
+        mock.pane_run_results
+            .lock()
+            .unwrap()
+            .extend((0..4).map(|_| Ok(PaneRunResponse)));
+
+        let warning = apply_on_open(&mock, &config, "repo", false, &opened_worktree()).unwrap();
+        assert!(warning.contains("tab 1 pane 2 could not be resolved"));
+        assert!(
+            !mock
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|call| matches!(call, HerdrCall::TabCreate(_) | HerdrCall::PaneSplit(_)))
+        );
+    }
+
+    #[test]
+    fn legacy_on_open_panes_can_focus_a_configured_id() {
+        let config = OnOpenConfig {
+            focus: Some("tests".into()),
+            panes: vec![
+                OnOpenPaneConfig {
+                    id: Some("editor".into()),
+                    command: "hx".into(),
+                    direction: OnOpenPaneDirection::Right,
+                    ratio: None,
+                },
+                OnOpenPaneConfig {
+                    id: Some("tests".into()),
+                    command: "cargo test".into(),
+                    direction: OnOpenPaneDirection::Down,
+                    ratio: None,
+                },
+            ],
+            ..OnOpenConfig::default()
+        };
+        let mock = MockHerdrProvider::default();
+        mock.pane_split_results
+            .lock()
+            .unwrap()
+            .extend(["p_2", "p_3"].map(|pane_id| {
+                Ok(PaneSplitResponse {
+                    pane_id: pane_id.into(),
+                })
+            }));
+        mock.pane_run_results
+            .lock()
+            .unwrap()
+            .extend([Ok(PaneRunResponse), Ok(PaneRunResponse)]);
+        mock.pane_focus_results.lock().unwrap().push_back(Ok(()));
+
+        assert!(apply_on_open(&mock, &config, "repo", true, &opened_worktree()).is_none());
+        assert_eq!(
+            mock.calls.lock().unwrap().last(),
+            Some(&HerdrCall::PaneFocus {
+                pane_id: "p_3".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn on_open_focus_failure_is_aggregated_as_a_warning() {
+        let config = OnOpenConfig {
+            focus: Some("root".into()),
+            tabs: vec![OnOpenTabConfig {
+                id: Some("root".into()),
+                ..OnOpenTabConfig::default()
+            }],
+            ..OnOpenConfig::default()
+        };
+        let mock = MockHerdrProvider::default();
+        mock.pane_focus_results
+            .lock()
+            .unwrap()
+            .push_back(Err(HerdrError::Invocation("focus unavailable".into())));
+
+        let warning = apply_on_open(&mock, &config, "repo", true, &opened_worktree()).unwrap();
+        assert!(warning.contains("focus pane root failed"));
+        assert_eq!(
+            *mock.calls.lock().unwrap(),
+            [HerdrCall::PaneFocus {
+                pane_id: "p_root".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn on_open_can_focus_an_additional_tabs_root_pane() {
+        let config = OnOpenConfig {
+            focus: Some("server".into()),
+            tabs: vec![
+                OnOpenTabConfig::default(),
+                OnOpenTabConfig {
+                    id: Some("server".into()),
+                    name: Some("server".into()),
+                    ..OnOpenTabConfig::default()
+                },
+            ],
+            ..OnOpenConfig::default()
+        };
+        let mock = MockHerdrProvider::default();
+        mock.tab_create_results
+            .lock()
+            .unwrap()
+            .push_back(Ok(TabCreateResponse {
+                root_pane_id: "p_server".into(),
+            }));
+        mock.pane_focus_results.lock().unwrap().push_back(Ok(()));
+
+        assert!(apply_on_open(&mock, &config, "repo", true, &opened_worktree()).is_none());
+        assert_eq!(
+            mock.calls.lock().unwrap().last(),
+            Some(&HerdrCall::PaneFocus {
+                pane_id: "p_server".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn on_open_mid_chain_split_failure_warns_and_continues_from_last_pane() {
+        let pane = |command: &str| OnOpenPaneConfig {
+            id: None,
+            command: command.into(),
+            direction: OnOpenPaneDirection::Right,
+            ratio: None,
+        };
+        let config = OnOpenConfig {
+            tabs: vec![OnOpenTabConfig {
+                panes: vec![pane("one"), pane("two"), pane("three")],
+                ..OnOpenTabConfig::default()
+            }],
+            ..OnOpenConfig::default()
+        };
+        let mock = MockHerdrProvider::default();
+        mock.pane_split_results.lock().unwrap().extend([
+            Ok(PaneSplitResponse {
+                pane_id: "p_2".into(),
+            }),
+            Err(HerdrError::Invocation("split unavailable".into())),
+            Ok(PaneSplitResponse {
+                pane_id: "p_3".into(),
+            }),
+        ]);
+        mock.pane_run_results
+            .lock()
+            .unwrap()
+            .extend([Ok(PaneRunResponse), Ok(PaneRunResponse)]);
+
+        let warning = apply_on_open(&mock, &config, "repo", true, &opened_worktree()).unwrap();
+        assert!(warning.contains("tab 1 pane 2 split failed"));
+        assert!(
+            mock.calls
+                .lock()
+                .unwrap()
+                .contains(&HerdrCall::PaneSplit(PaneSplitRequest {
+                    pane_id: "p_2".into(),
+                    direction: OnOpenPaneDirection::Right,
+                    ratio: None,
+                    cwd: "/repo".into(),
+                    focus: false,
+                }))
+        );
+        assert!(mock.calls.lock().unwrap().contains(&HerdrCall::PaneRun {
+            pane_id: "p_3".into(),
+            command: "three".into(),
+        }));
+    }
+
+    #[test]
+    fn repo_override_miss_uses_the_global_layout() {
+        let config = OnOpenConfig {
+            tabs: vec![OnOpenTabConfig {
+                command: Some("global".into()),
+                ..OnOpenTabConfig::default()
+            }],
+            repos: [("other".into(), OnOpenRepoConfig::default())].into(),
+            ..OnOpenConfig::default()
+        };
+        let mock = MockHerdrProvider::default();
+        mock.pane_run_results
+            .lock()
+            .unwrap()
+            .push_back(Ok(PaneRunResponse));
+
+        assert!(apply_on_open(&mock, &config, "repo", true, &opened_worktree()).is_none());
+        assert_eq!(
+            *mock.calls.lock().unwrap(),
+            [HerdrCall::PaneRun {
+                pane_id: "p_root".into(),
+                command: "global".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn repo_override_inherits_global_trigger_and_focus() {
+        let config = OnOpenConfig {
+            on: OnOpenWhen::EveryOpen,
+            focus: Some("service".into()),
+            repos: [(
+                "repo".into(),
+                OnOpenRepoConfig {
+                    tabs: vec![OnOpenTabConfig {
+                        id: Some("service".into()),
+                        command: Some("restart".into()),
+                        ..OnOpenTabConfig::default()
+                    }],
+                    ..OnOpenRepoConfig::default()
+                },
+            )]
+            .into(),
+            ..OnOpenConfig::default()
+        };
+        let mock = MockHerdrProvider::default();
+        mock.workspace_layout_results
+            .lock()
+            .unwrap()
+            .push_back(Ok(existing_layout(&[("t_1", "", &["p_root"])])));
+        mock.pane_run_results
+            .lock()
+            .unwrap()
+            .push_back(Ok(PaneRunResponse));
+        mock.pane_focus_results.lock().unwrap().push_back(Ok(()));
+
+        assert!(apply_on_open(&mock, &config, "repo", false, &opened_worktree()).is_none());
+        assert_eq!(
+            *mock.calls.lock().unwrap(),
+            [
+                HerdrCall::WorkspaceLayout {
+                    workspace_id: "w_1".into(),
+                },
+                HerdrCall::PaneRun {
+                    pane_id: "p_root".into(),
+                    command: "restart".into(),
+                },
+                HerdrCall::PaneFocus {
+                    pane_id: "p_root".into(),
+                },
+            ]
         );
     }
 

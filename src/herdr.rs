@@ -96,6 +96,18 @@ pub struct TabCreateResponse {
     pub root_pane_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExistingWorkspaceLayout {
+    pub tabs: Vec<ExistingTabLayout>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExistingTabLayout {
+    pub tab_id: String,
+    pub label: String,
+    pub pane_ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PaneRunResponse;
 
@@ -204,6 +216,8 @@ pub trait HerdrProvider: Send + Sync {
     ) -> Result<WorkspaceCreateResponse, HerdrError>;
     fn workspace_focus(&self, workspace_id: &str) -> Result<(), HerdrError>;
     fn tab_create(&self, request: &TabCreateRequest) -> Result<TabCreateResponse, HerdrError>;
+    fn tab_rename(&self, pane_id: &str, label: &str) -> Result<(), HerdrError>;
+    fn workspace_layout(&self, workspace_id: &str) -> Result<ExistingWorkspaceLayout, HerdrError>;
     fn pane_split(&self, request: &PaneSplitRequest) -> Result<PaneSplitResponse, HerdrError>;
     fn pane_run(&self, pane_id: &str, command: &str) -> Result<PaneRunResponse, HerdrError>;
     fn pane_focus(&self, pane_id: &str) -> Result<(), HerdrError>;
@@ -276,16 +290,54 @@ impl CliHerdrProvider {
     }
 
     fn pane_focus_directional(&self, pane_id: &str) -> Result<(), HerdrError> {
-        let args = vec![
+        let PaneLayoutResult::PaneLayout { layout: original } =
+            self.invoke(&["pane".into(), "layout".into(), "--current".into()])?;
+        let original_tab_id = original.tab_id;
+        let original_pane_id = original.focused_pane_id;
+        if original_pane_id == pane_id {
+            return Ok(());
+        }
+        let result = self.focus_pane_directional_once(pane_id);
+        if let Err(error) = result {
+            return match self.restore_pane_focus(&original_tab_id, &original_pane_id) {
+                Ok(()) => Err(error),
+                Err(restore_error) => Err(HerdrError::InvalidResponse(format!(
+                    "{error}; restoring the original pane failed: {restore_error}"
+                ))),
+            };
+        }
+        Ok(())
+    }
+
+    fn focus_pane_directional_once(&self, pane_id: &str) -> Result<(), HerdrError> {
+        let PaneLayoutResult::PaneLayout { layout } = self.invoke(&[
             "pane".into(),
             "layout".into(),
             "--pane".into(),
             pane_id.into(),
-        ];
-        let PaneLayoutResult::PaneLayout { layout } = self.invoke(&args)?;
+        ])?;
+        if !layout.panes.iter().any(|pane| pane.pane_id == pane_id) {
+            return Err(HerdrError::InvalidResponse(format!(
+                "pane layout did not contain focus target {pane_id}"
+            )));
+        }
         self.invoke_output(&["tab".into(), "focus".into(), layout.tab_id.clone()])?;
+        self.walk_pane_focus(&layout, pane_id)
+    }
 
-        let mut focused_pane_id = layout.focused_pane_id;
+    fn restore_pane_focus(&self, tab_id: &str, pane_id: &str) -> Result<(), HerdrError> {
+        self.invoke_output(&["tab".into(), "focus".into(), tab_id.into()])?;
+        let PaneLayoutResult::PaneLayout { layout } = self.invoke(&[
+            "pane".into(),
+            "layout".into(),
+            "--pane".into(),
+            pane_id.into(),
+        ])?;
+        self.walk_pane_focus(&layout, pane_id)
+    }
+
+    fn walk_pane_focus(&self, layout: &PaneLayoutInfo, pane_id: &str) -> Result<(), HerdrError> {
+        let mut focused_pane_id = layout.focused_pane_id.clone();
         let target = layout
             .panes
             .iter()
@@ -308,7 +360,11 @@ impl CliHerdrProvider {
                         "pane layout did not contain focused pane {focused_pane_id}"
                     ))
                 })?;
-            let direction = direction_toward(focused.rect, target.rect);
+            let direction = direction_toward(focused.rect, target.rect).ok_or_else(|| {
+                HerdrError::InvalidResponse(format!(
+                    "directional pane focus from {focused_pane_id} toward {pane_id} has no valid direction"
+                ))
+            })?;
             let args = vec![
                 "pane".into(),
                 "focus".into(),
@@ -527,6 +583,51 @@ impl HerdrProvider for CliHerdrProvider {
         }
     }
 
+    fn tab_rename(&self, pane_id: &str, label: &str) -> Result<(), HerdrError> {
+        require_nonempty("pane id", pane_id)?;
+        require_nonempty("tab label", label)?;
+        let args = vec![
+            "pane".into(),
+            "layout".into(),
+            "--pane".into(),
+            pane_id.into(),
+        ];
+        let PaneLayoutResult::PaneLayout { layout } = self.invoke(&args)?;
+        self.invoke_output(&["tab".into(), "rename".into(), layout.tab_id, label.into()])?;
+        Ok(())
+    }
+
+    fn workspace_layout(&self, workspace_id: &str) -> Result<ExistingWorkspaceLayout, HerdrError> {
+        require_nonempty("workspace id", workspace_id)?;
+        let TabListResult::TabList { mut tabs } = self.invoke(&[
+            "tab".into(),
+            "list".into(),
+            "--workspace".into(),
+            workspace_id.into(),
+        ])?;
+        let WorkspacePaneListResult::PaneList { panes } = self.invoke(&[
+            "pane".into(),
+            "list".into(),
+            "--workspace".into(),
+            workspace_id.into(),
+        ])?;
+        tabs.sort_by_key(|tab| tab.number);
+        Ok(ExistingWorkspaceLayout {
+            tabs: tabs
+                .into_iter()
+                .map(|tab| ExistingTabLayout {
+                    pane_ids: panes
+                        .iter()
+                        .filter(|pane| pane.tab_id == tab.tab_id)
+                        .map(|pane| pane.pane_id.clone())
+                        .collect(),
+                    tab_id: tab.tab_id,
+                    label: tab.label,
+                })
+                .collect(),
+        })
+    }
+
     fn pane_split(&self, request: &PaneSplitRequest) -> Result<PaneSplitResponse, HerdrError> {
         require_nonempty("pane id", &request.pane_id)?;
         require_absolute("cwd", &request.cwd)?;
@@ -575,15 +676,7 @@ impl HerdrProvider for CliHerdrProvider {
 
     fn pane_focus(&self, pane_id: &str) -> Result<(), HerdrError> {
         require_nonempty("pane id", pane_id)?;
-        match self.invoke_output(&["pane".into(), "focus".into(), pane_id.into()]) {
-            Ok(_) => Ok(()),
-            Err(HerdrError::Invocation(message))
-                if message.contains("pane focus") && message.contains("--direction") =>
-            {
-                self.pane_focus_directional(pane_id)
-            }
-            Err(error) => Err(error),
-        }
+        self.pane_focus_directional(pane_id)
     }
 
     fn notification_show(&self, title: &str, body: &str) -> Result<(), HerdrError> {
@@ -626,6 +719,31 @@ enum WorkspaceListResult {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum PaneListResult {
     PaneList { panes: Vec<PaneInfo> },
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum WorkspacePaneListResult {
+    PaneList { panes: Vec<WorkspaceLayoutPaneInfo> },
+}
+
+#[derive(Deserialize)]
+struct WorkspaceLayoutPaneInfo {
+    pane_id: String,
+    tab_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum TabListResult {
+    TabList { tabs: Vec<WorkspaceLayoutTabInfo> },
+}
+
+#[derive(Deserialize)]
+struct WorkspaceLayoutTabInfo {
+    tab_id: String,
+    number: usize,
+    label: String,
 }
 
 #[derive(Deserialize)]
@@ -761,15 +879,17 @@ fn path_arg(name: &str, path: &Path) -> Result<String, HerdrError> {
     })
 }
 
-fn direction_toward(source: PaneLayoutRect, target: PaneLayoutRect) -> &'static str {
+fn direction_toward(source: PaneLayoutRect, target: PaneLayoutRect) -> Option<&'static str> {
     if target.x >= source.x.saturating_add(source.width) {
-        "right"
+        Some("right")
     } else if source.x >= target.x.saturating_add(target.width) {
-        "left"
+        Some("left")
     } else if target.y >= source.y.saturating_add(source.height) {
-        "down"
+        Some("down")
+    } else if source.y >= target.y.saturating_add(target.height) {
+        Some("up")
     } else {
-        "up"
+        None
     }
 }
 
@@ -963,6 +1083,19 @@ mod tests {
             args_file.display(),
             stdout,
             stderr
+        );
+        fs::write(&binary, script).unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+        (binary, args_file)
+    }
+
+    #[cfg(unix)]
+    fn fake_routed_herdr(temp: &TempDir, body: &str) -> (PathBuf, PathBuf) {
+        let binary = temp.path().join("fake-herdr");
+        let args_file = temp.path().join("args");
+        let script = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n{body}\n",
+            args_file.display()
         );
         fs::write(&binary, script).unwrap();
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
@@ -1174,6 +1307,76 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn cli_resolves_existing_workspace_tabs_and_panes_in_creation_order() {
+        let temp = TempDir::new().unwrap();
+        let (binary, args_file) = fake_routed_herdr(
+            &temp,
+            r#"case "$*" in
+"tab list --workspace w_1")
+  printf '%s' '{"result":{"type":"tab_list","tabs":[{"tab_id":"t_2","number":2,"label":"server"},{"tab_id":"t_1","number":1,"label":"code"}]}}'
+  ;;
+"pane list --workspace w_1")
+  printf '%s' '{"result":{"type":"pane_list","panes":[{"pane_id":"p_1","tab_id":"t_1"},{"pane_id":"p_2","tab_id":"t_1"},{"pane_id":"p_3","tab_id":"t_2"}]}}'
+  ;;
+*)
+  exit 2
+  ;;
+esac"#,
+        );
+        let provider = CliHerdrProvider::new(binary);
+
+        let layout = retry_fake_herdr(|| provider.workspace_layout("w_1"));
+        assert_eq!(
+            layout,
+            ExistingWorkspaceLayout {
+                tabs: vec![
+                    ExistingTabLayout {
+                        tab_id: "t_1".into(),
+                        label: "code".into(),
+                        pane_ids: vec!["p_1".into(), "p_2".into()],
+                    },
+                    ExistingTabLayout {
+                        tab_id: "t_2".into(),
+                        label: "server".into(),
+                        pane_ids: vec!["p_3".into()],
+                    },
+                ],
+            }
+        );
+        assert_eq!(
+            fs::read_to_string(args_file).unwrap().trim(),
+            "tab list --workspace w_1\npane list --workspace w_1"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_renames_the_tab_containing_a_pane() {
+        let temp = TempDir::new().unwrap();
+        let (binary, args_file) = fake_routed_herdr(
+            &temp,
+            r#"case "$*" in
+"pane layout --pane p_root")
+  printf '%s' '{"result":{"type":"pane_layout","layout":{"tab_id":"t_1","focused_pane_id":"p_root","panes":[{"pane_id":"p_root","rect":{"x":0,"y":0,"width":10,"height":10}}]}}}'
+  ;;
+"tab rename t_1 code")
+  ;;
+*)
+  exit 2
+  ;;
+esac"#,
+        );
+        let provider = CliHerdrProvider::new(binary);
+
+        retry_fake_herdr(|| provider.tab_rename("p_root", "code"));
+        assert_eq!(
+            fs::read_to_string(args_file).unwrap().trim(),
+            "pane layout --pane p_root\ntab rename t_1 code"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn side_effect_responses_ignore_unused_and_future_fields() {
         let temp = TempDir::new().unwrap();
         let response = r#"{"result":{"type":"worktree_opened","workspace":{"workspace_id":"w_1","future_workspace_field":1},"root_pane":{"pane_id":"p_root","future_pane_field":1},"worktree":{"path":"/repo","renamed_label":"repo"},"already_open":false,"future_result_field":true}}"#;
@@ -1320,16 +1523,81 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn cli_pane_focus_accepts_empty_stdout() {
+    fn cli_pane_focus_uses_the_directional_path() {
         let temp = TempDir::new().unwrap();
-        let (binary, args_file) = fake_herdr_with_output(&temp, "", "", 0);
+        let (binary, args_file) = fake_routed_herdr(
+            &temp,
+            r#"case "$*" in
+"pane layout --current")
+  printf '%s' '{"result":{"type":"pane_layout","layout":{"tab_id":"t_1","focused_pane_id":"p_1","panes":[{"pane_id":"p_1","rect":{"x":0,"y":0,"width":10,"height":10}},{"pane_id":"p_2","rect":{"x":10,"y":0,"width":10,"height":10}}]}}}'
+  ;;
+"pane layout --pane p_2")
+  printf '%s' '{"result":{"type":"pane_layout","layout":{"tab_id":"t_1","focused_pane_id":"p_1","panes":[{"pane_id":"p_1","rect":{"x":0,"y":0,"width":10,"height":10}},{"pane_id":"p_2","rect":{"x":10,"y":0,"width":10,"height":10}}]}}}'
+  ;;
+"tab focus t_1")
+  ;;
+"pane focus --direction right --pane p_1")
+  printf '%s' '{"result":{"type":"pane_focus_direction","focus":{"focused_pane_id":"p_2"}}}'
+  ;;
+*)
+  exit 2
+  ;;
+esac"#,
+        );
         let provider = CliHerdrProvider::new(binary);
 
         retry_fake_herdr(|| provider.pane_focus("p_2"));
         assert_eq!(
             fs::read_to_string(args_file).unwrap().trim(),
-            "pane focus p_2"
+            "pane layout --current\npane layout --pane p_2\ntab focus t_1\npane focus --direction right --pane p_1"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_directional_pane_focus_restores_the_original_tab_and_pane() {
+        let temp = TempDir::new().unwrap();
+        let (binary, args_file) = fake_routed_herdr(
+            &temp,
+            r#"case "$*" in
+"pane layout --current")
+  printf '%s' '{"result":{"type":"pane_layout","layout":{"tab_id":"t_original","focused_pane_id":"p_original","panes":[{"pane_id":"p_original","rect":{"x":0,"y":0,"width":10,"height":10}}]}}}'
+  ;;
+"pane layout --pane p_target")
+  printf '%s' '{"result":{"type":"pane_layout","layout":{"tab_id":"t_target","focused_pane_id":"p_start","panes":[{"pane_id":"p_start","rect":{"x":0,"y":0,"width":10,"height":10}},{"pane_id":"p_target","rect":{"x":10,"y":0,"width":10,"height":10}}]}}}'
+  ;;
+"tab focus t_target"|"tab focus t_original")
+  ;;
+"pane focus --direction right --pane p_start")
+  printf '%s' '{"result":{"type":"pane_focus_direction","focus":{"focused_pane_id":"p_start"}}}'
+  ;;
+"pane layout --pane p_original")
+  printf '%s' '{"result":{"type":"pane_layout","layout":{"tab_id":"t_original","focused_pane_id":"p_original","panes":[{"pane_id":"p_original","rect":{"x":0,"y":0,"width":10,"height":10}}]}}}'
+  ;;
+*)
+  exit 2
+  ;;
+esac"#,
+        );
+        let provider = CliHerdrProvider::new(binary);
+
+        let error = provider.pane_focus("p_target").unwrap_err();
+        assert!(error.to_string().contains("could not reach p_target"));
+        assert_eq!(
+            fs::read_to_string(args_file).unwrap().trim(),
+            "pane layout --current\npane layout --pane p_target\ntab focus t_target\npane focus --direction right --pane p_start\ntab focus t_original\npane layout --pane p_original"
+        );
+    }
+
+    #[test]
+    fn overlapping_pane_rectangles_have_no_direction() {
+        let rect = PaneLayoutRect {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 10,
+        };
+        assert_eq!(direction_toward(rect, rect), None);
     }
 
     #[test]

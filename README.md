@@ -120,23 +120,35 @@ The section is optional and contains no layout by default.
 Example:
 
 ```toml
+[on_open]
+focus = "editor"
+
 # after a workspace opens, set up its tabs and panes
 [[on_open.tabs]]
-command = "hx ." # runs in the tab's main pane
+id = "main" # identifies this tab's root pane
+name = "code" # also renames the workspace's first tab
+command = "hx ." # sent to the tab's root pane followed by Enter
 
 [[on_open.tabs.panes]]
-command = "lazygit" # opens in a split beside it
+id = "editor"
+command = "lazygit" # sent to a new split followed by Enter
 direction = "right" # "right" or "down"
-ratio = 0.3 # split size, from 0 to 1
+ratio = 0.3 # between 0 and 1, exclusive
+
+# this repository uses the legacy panes form; omitted on/focus inherit globally
+[on_open.repos."api"]
+panes = [{ id = "editor", command = "cargo test", direction = "down" }]
 ```
 
-Add more `[[on_open.tabs]]` for extra tabs (each takes an optional `name`). Under an `[on_open]` header you can set `on = "every_open"` to also run when focusing an existing workspace, or `focus = "<pane id>"` to focus a pane (give a pane an `id` to target it); `[on_open.repos."repo-name"]` overrides the layout for one repo. The older `panes = [ ... ]` form still works.
+Add more `[[on_open.tabs]]` for extra tabs. Herdr clamps effective pane sizes to 0.1–0.9. Set `on = "every_open"` under `[on_open]` to send the commands again when focusing an existing workspace; commands are keystrokes, so a program already running in a target pane receives them. Existing tabs and panes are resolved and reused, not rebuilt. A repository override may contain `panes` or `tabs`, but not both, and inherits global `on` and `focus` when they are omitted. The older global `panes = [ ... ]` form remains supported.
 
 #### `on`
 
-When to apply the global layout. The default, `created`, preserves the
-existing behavior; `every_open` also applies when focusing an existing
-workspace.
+When to apply the global layout. The default, `created`, applies it only
+to a new workspace. With `every_open`, commands are also sent as
+keystrokes when an existing workspace is focused, so anything already
+running in a target pane receives them; existing tabs and panes are
+resolved and reused rather than rebuilt.
 
 Default: `"created"`
 
@@ -147,15 +159,15 @@ Optional pane identifier to focus after the layout is built.
 #### `panes`
 
 Pane definitions, created in order without moving focus from the primary
-pane. Commands run from the opened repository or worktree according to
-`on`. This legacy form cannot be combined with `tabs`.
+pane. Commands are sent from the opened repository or worktree according
+to `on`. This legacy form cannot be combined with `tabs`.
 
 A command pane created while an on-open layout is applied.
 
 Each entry is an inline table with:
 
 - `id` — Optional identifier used by the layout's `focus` target.
-- `command` — Shell command Herdr runs in the opened checkout. The command must not be empty.
+- `command` — Command sent as keystrokes followed by Enter in the opened checkout. The command must not be empty.
 - `direction` — Split direction: `right` or `down`.
 - `ratio` — Fraction of the resulting split occupied by the new command pane. The value must be greater than 0 and less than 1, and defaults to 0.5 when omitted.
 
@@ -169,15 +181,17 @@ A tab in a declarative on-open layout.
 
 Each entry is an inline table with:
 
-- `name` — Optional label passed when an additional tab is created.
-- `command` — Optional shell command for the tab's root pane. When omitted, the root pane remains a shell.
+- `id` — Optional identifier for the tab's root pane, used by the layout's `focus` target.
+- `name` — Optional tab label. The workspace's existing first tab is renamed; the label for each additional tab is applied when that tab is created.
+- `command` — Optional command sent as keystrokes followed by Enter to the tab's root pane. When omitted, the root pane remains a shell.
 - `panes` — Panes split in order from the previously created pane in this tab.
 
 #### `repos`
 
-Per-repository declarative layouts keyed by exact repository name. An
-override replaces the global layout and applies to every repository
-sharing that name. These overrides live only in this central config.
+Per-repository layouts keyed by exact repository name. An override
+replaces the global `panes` or `tabs` layout and applies to every
+repository sharing that name. Its omitted `on` and `focus` values inherit
+the global settings. These overrides live only in this central config.
 
 ### `[keys]`
 

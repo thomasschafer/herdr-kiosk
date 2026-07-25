@@ -138,8 +138,11 @@ pub enum OnOpenWhen {
     /// Apply only when Herdr opens a new workspace.
     #[default]
     Created,
-    /// Apply whenever the repository is opened, including when an existing
-    /// workspace is focused.
+    /// Send configured commands whenever the repository is opened, including
+    /// when an existing workspace is focused. Commands are sent as keystrokes
+    /// into their panes, so anything already running there receives them. The
+    /// existing workspace's tabs and panes are resolved and reused; its layout
+    /// is not rebuilt.
     EveryOpen,
 }
 
@@ -149,7 +152,8 @@ pub struct OnOpenPaneConfig {
     /// Optional identifier used by the layout's `focus` target.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    /// Shell command Herdr runs in the opened checkout. The command must not be empty.
+    /// Command sent as keystrokes followed by Enter in the opened checkout. The
+    /// command must not be empty.
     pub command: String,
     /// Split direction: `right` or `down`.
     pub direction: OnOpenPaneDirection,
@@ -163,43 +167,86 @@ pub struct OnOpenPaneConfig {
 #[serde(default)]
 /// A tab in a declarative on-open layout.
 pub struct OnOpenTabConfig {
-    /// Optional label passed when an additional tab is created.
+    /// Optional identifier for the tab's root pane, used by the layout's
+    /// `focus` target.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Optional tab label. The workspace's existing first tab is renamed; the
+    /// label for each additional tab is applied when that tab is created.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// Optional shell command for the tab's root pane. When omitted, the root
-    /// pane remains a shell.
+    /// Optional command sent as keystrokes followed by Enter to the tab's root
+    /// pane. When omitted, the root pane remains a shell.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
     /// Panes split in order from the previously created pane in this tab.
     pub panes: Vec<OnOpenPaneConfig>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-/// A repository-specific declarative layout.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+/// A repository-specific on-open layout.
 pub struct OnOpenRepoConfig {
-    /// When to apply this repository-specific layout.
-    pub on: OnOpenWhen,
-    /// Optional pane identifier to focus after the layout is built.
+    /// Optional trigger override. When omitted, the global `on_open.on` value is
+    /// inherited.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on: Option<OnOpenWhen>,
+    /// Optional pane identifier to focus after the layout is built. When
+    /// omitted, the global `on_open.focus` value is inherited.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub focus: Option<String>,
+    /// Legacy pane definitions for this repository. This form cannot be
+    /// combined with `tabs`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub panes: Vec<OnOpenPaneConfig>,
     /// Named or unnamed tabs created in order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tabs: Vec<OnOpenTabConfig>,
+}
+
+impl<'de> Deserialize<'de> for OnOpenRepoConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Default, Deserialize)]
+        #[serde(default)]
+        struct RawOnOpenRepoConfig {
+            on: Option<OnOpenWhen>,
+            focus: Option<String>,
+            panes: Option<Vec<OnOpenPaneConfig>>,
+            tabs: Option<Vec<OnOpenTabConfig>>,
+        }
+
+        let raw = RawOnOpenRepoConfig::deserialize(deserializer)?;
+        if raw.panes.is_some() && raw.tabs.is_some() {
+            return Err(de::Error::custom(
+                "repository on_open panes and tabs cannot both be set",
+            ));
+        }
+        Ok(Self {
+            on: raw.on,
+            focus: raw.focus,
+            panes: raw.panes.unwrap_or_default(),
+            tabs: raw.tabs.unwrap_or_default(),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 /// The section is optional and contains no layout by default.
 pub struct OnOpenConfig {
-    /// When to apply the global layout. The default, `created`, preserves the
-    /// existing behavior; `every_open` also applies when focusing an existing
-    /// workspace.
+    /// When to apply the global layout. The default, `created`, applies it only
+    /// to a new workspace. With `every_open`, commands are also sent as
+    /// keystrokes when an existing workspace is focused, so anything already
+    /// running in a target pane receives them; existing tabs and panes are
+    /// resolved and reused rather than rebuilt.
     pub on: OnOpenWhen,
     /// Optional pane identifier to focus after the layout is built.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub focus: Option<String>,
     /// Pane definitions, created in order without moving focus from the primary
-    /// pane. Commands run from the opened repository or worktree according to
-    /// `on`. This legacy form cannot be combined with `tabs`.
+    /// pane. Commands are sent from the opened repository or worktree according
+    /// to `on`. This legacy form cannot be combined with `tabs`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub panes: Vec<OnOpenPaneConfig>,
     /// Declarative tabs created in order. The first entry uses the workspace's
@@ -207,9 +254,10 @@ pub struct OnOpenConfig {
     /// chained from that tab's root pane.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tabs: Vec<OnOpenTabConfig>,
-    /// Per-repository declarative layouts keyed by exact repository name. An
-    /// override replaces the global layout and applies to every repository
-    /// sharing that name. These overrides live only in this central config.
+    /// Per-repository layouts keyed by exact repository name. An override
+    /// replaces the global `panes` or `tabs` layout and applies to every
+    /// repository sharing that name. Its omitted `on` and `focus` values inherit
+    /// the global settings. These overrides live only in this central config.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub repos: BTreeMap<String, OnOpenRepoConfig>,
 }
@@ -478,8 +526,8 @@ fn validate_config(config: &Config) -> Result<()> {
         }
         validate_on_open_layout(
             &format!("on_open.repos.{repo_name}"),
-            layout.focus.as_deref(),
-            &[],
+            layout.focus.as_deref().or(config.on_open.focus.as_deref()),
+            &layout.panes,
             &layout.tabs,
         )?;
     }
@@ -501,6 +549,24 @@ fn validate_on_open_layout(
         validate_on_open_pane(field, "pane", index, pane, &mut pane_ids)?;
     }
     for (tab_index, tab) in tabs.iter().enumerate() {
+        if let Some(id) = &tab.id {
+            if id.trim().is_empty() {
+                bail!("{field}.tabs[{}].id must not be empty", tab_index + 1);
+            }
+            if !pane_ids.insert(id.clone()) {
+                bail!(
+                    "{field}.tabs[{}].id must be unique across the layout",
+                    tab_index + 1
+                );
+            }
+        }
+        if tab
+            .name
+            .as_deref()
+            .is_some_and(|name| name.trim().is_empty())
+        {
+            bail!("{field}.tabs[{}].name must not be empty", tab_index + 1);
+        }
         if tab
             .command
             .as_deref()
@@ -724,6 +790,7 @@ on = "every_open"
 focus = "editor"
 
 [[on_open.tabs]]
+id = "root"
 name = "code"
 command = "hx ."
 
@@ -757,6 +824,7 @@ direction = "down"
         assert_eq!(config.on_open.focus.as_deref(), Some("editor"));
         assert!(config.on_open.panes.is_empty());
         assert_eq!(config.on_open.tabs.len(), 2);
+        assert_eq!(config.on_open.tabs[0].id.as_deref(), Some("root"));
         assert_eq!(config.on_open.tabs[0].name.as_deref(), Some("code"));
         assert_eq!(config.on_open.tabs[0].command.as_deref(), Some("hx ."));
         assert_eq!(
@@ -769,7 +837,7 @@ direction = "down"
             }]
         );
         let override_layout = &config.on_open.repos["my-service"];
-        assert_eq!(override_layout.on, OnOpenWhen::Created);
+        assert_eq!(override_layout.on, Some(OnOpenWhen::Created));
         assert_eq!(override_layout.focus.as_deref(), Some("logs"));
         assert_eq!(override_layout.tabs[0].name.as_deref(), Some("service"));
         assert_eq!(override_layout.tabs[0].panes[0].id.as_deref(), Some("logs"));
@@ -796,6 +864,7 @@ tabs = []
                 "[[on_open.tabs]]\ncommand = \"  \"",
                 "on_open.tabs[1].command",
             ),
+            ("[[on_open.tabs]]\nname = \"  \"", "on_open.tabs[1].name"),
             (
                 "[on_open]\nfocus = \"missing\"\n[[on_open.tabs]]\ncommand = \"hx\"",
                 "on_open.focus",
@@ -816,6 +885,32 @@ tabs = []
                 "expected {field} in error: {error:#}"
             );
         }
+    }
+
+    #[test]
+    fn repo_override_supports_legacy_panes_and_rejects_mixed_layouts() {
+        let (config, warnings) = parse_config(
+            r#"
+[on_open.repos.service]
+panes = [{ id = "editor", command = "hx", direction = "right" }]
+focus = "editor"
+"#,
+        )
+        .unwrap();
+        assert!(warnings.is_empty());
+        assert_eq!(config.on_open.repos["service"].panes.len(), 1);
+
+        let error = parse_config(
+            r#"
+[on_open.repos.service]
+panes = [{ command = "hx", direction = "right" }]
+tabs = []
+"#,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("repository on_open panes and tabs cannot both be set")
+        );
     }
 
     #[test]
