@@ -5,10 +5,10 @@ use std::{
 };
 
 use super::{
-    ExistingWorkspaceLayout, HerdrError, HerdrProvider, PaneInfo, PaneRunResponse,
-    PaneSplitRequest, PaneSplitResponse, TabCreateRequest, TabCreateResponse,
-    WorkspaceCreateResponse, WorkspaceInfo, WorktreeCreateRequest, WorktreeCreateResponse,
-    WorktreeListResponse, WorktreeOpenResponse, WorktreeOpenTarget, WorktreeRemoveResponse,
+    HerdrError, HerdrProvider, PaneInfo, PaneRunResponse, PaneSplitRequest, PaneSplitResponse,
+    TabCreateRequest, TabCreateResponse, WorkspaceCreateResponse, WorkspaceInfo,
+    WorktreeCreateRequest, WorktreeCreateResponse, WorktreeListResponse, WorktreeOpenResponse,
+    WorktreeOpenTarget, WorktreeRemoveResponse,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -40,9 +40,6 @@ pub enum HerdrCall {
         pane_id: String,
         label: String,
     },
-    WorkspaceLayout {
-        workspace_id: String,
-    },
     PaneSplit(PaneSplitRequest),
     PaneRun {
         pane_id: String,
@@ -70,7 +67,6 @@ pub struct MockHerdrProvider {
     pub workspace_focus_results: Mutex<VecDeque<Result<(), HerdrError>>>,
     pub tab_create_results: Mutex<VecDeque<Result<TabCreateResponse, HerdrError>>>,
     pub tab_rename_results: Mutex<VecDeque<Result<(), HerdrError>>>,
-    pub workspace_layout_results: Mutex<VecDeque<Result<ExistingWorkspaceLayout, HerdrError>>>,
     pub pane_split_results: Mutex<VecDeque<Result<PaneSplitResponse, HerdrError>>>,
     pub pane_run_results: Mutex<VecDeque<Result<PaneRunResponse, HerdrError>>>,
     pub pane_focus_results: Mutex<VecDeque<Result<(), HerdrError>>>,
@@ -173,13 +169,6 @@ impl HerdrProvider for MockHerdrProvider {
             label: label.into(),
         });
         next(&self.tab_rename_results, "tab_rename")
-    }
-
-    fn workspace_layout(&self, workspace_id: &str) -> Result<ExistingWorkspaceLayout, HerdrError> {
-        self.calls.lock().unwrap().push(HerdrCall::WorkspaceLayout {
-            workspace_id: workspace_id.into(),
-        });
-        next(&self.workspace_layout_results, "workspace_layout")
     }
 
     fn pane_split(&self, request: &PaneSplitRequest) -> Result<PaneSplitResponse, HerdrError> {

@@ -289,7 +289,6 @@ write_picker_config
 cat >>"$PLUGIN_CONFIG_DIR/config.toml" <<EOF
 
 [on_open]
-on = "every_open"
 focus = "editor"
 
 [[on_open.tabs]]
@@ -374,37 +373,6 @@ if os.path.realpath(actual_cwd) != expected_cwd:
     raise SystemExit(f"focus did not land on editor pane: cwd was {actual_cwd!r}")
 ' "$LAYOUT_FIRST_TAB_ID" "$LAYOUT_EDITOR_CWD" \
     || fail "on_open layout pane count or final focus was incorrect"
-rm -- "$LAYOUT_ROOT_SENTINEL" "$LAYOUT_EDITOR_SENTINEL" \
-    "$LAYOUT_SERVER_SENTINEL" "$LAYOUT_LOGS_SENTINEL"
-h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
-wait_screen_contains "herdr-kiosk — select repo"
-t send-keys -t "$SESSION" nested
-wait_screen_contains "1 of 4 repos"
-t send-keys -t "$SESSION" Enter
-wait_screen_absent "herdr-kiosk — select repo" 120
-wait_path_exists "$LAYOUT_ROOT_SENTINEL"
-wait_path_exists "$LAYOUT_EDITOR_SENTINEL"
-wait_path_exists "$LAYOUT_SERVER_SENTINEL"
-wait_path_exists "$LAYOUT_LOGS_SENTINEL"
-h tab list --workspace "$LAYOUT_WORKSPACE_ID" | /usr/bin/python3 -c '
-import json
-import sys
-
-tabs = json.load(sys.stdin)["result"]["tabs"]
-if len(tabs) != 2:
-    raise SystemExit(f"expected 2 tabs after reopen, got {len(tabs)}")
-if [tab.get("pane_count") for tab in tabs] != [2, 2]:
-    raise SystemExit("on_open panes were duplicated after reopen")
-' || fail "every_open duplicated declarative tabs or panes"
-h pane list --workspace "$LAYOUT_WORKSPACE_ID" | /usr/bin/python3 -c '
-import json
-import sys
-
-panes = json.load(sys.stdin)["result"]["panes"]
-if len(panes) != 4:
-    raise SystemExit(f"expected 4 panes after reopen, got {len(panes)}")
-' || fail "every_open duplicated declarative panes"
-printf 'on_open every_open reruns commands without rebuilding tabs or panes: ok\n'
 h workspace focus "$OPEN_WORKSPACE_ID" >/dev/null
 assert_focused_workspace "$OPEN_WORKSPACE_ID"
 write_picker_config

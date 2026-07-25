@@ -96,18 +96,6 @@ pub struct TabCreateResponse {
     pub root_pane_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExistingWorkspaceLayout {
-    pub tabs: Vec<ExistingTabLayout>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExistingTabLayout {
-    pub tab_id: String,
-    pub label: String,
-    pub pane_ids: Vec<String>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PaneRunResponse;
 
@@ -217,7 +205,6 @@ pub trait HerdrProvider: Send + Sync {
     fn workspace_focus(&self, workspace_id: &str) -> Result<(), HerdrError>;
     fn tab_create(&self, request: &TabCreateRequest) -> Result<TabCreateResponse, HerdrError>;
     fn tab_rename(&self, pane_id: &str, label: &str) -> Result<(), HerdrError>;
-    fn workspace_layout(&self, workspace_id: &str) -> Result<ExistingWorkspaceLayout, HerdrError>;
     fn pane_split(&self, request: &PaneSplitRequest) -> Result<PaneSplitResponse, HerdrError>;
     fn pane_run(&self, pane_id: &str, command: &str) -> Result<PaneRunResponse, HerdrError>;
     fn pane_focus(&self, pane_id: &str) -> Result<(), HerdrError>;
@@ -597,37 +584,6 @@ impl HerdrProvider for CliHerdrProvider {
         Ok(())
     }
 
-    fn workspace_layout(&self, workspace_id: &str) -> Result<ExistingWorkspaceLayout, HerdrError> {
-        require_nonempty("workspace id", workspace_id)?;
-        let TabListResult::TabList { mut tabs } = self.invoke(&[
-            "tab".into(),
-            "list".into(),
-            "--workspace".into(),
-            workspace_id.into(),
-        ])?;
-        let WorkspacePaneListResult::PaneList { panes } = self.invoke(&[
-            "pane".into(),
-            "list".into(),
-            "--workspace".into(),
-            workspace_id.into(),
-        ])?;
-        tabs.sort_by_key(|tab| tab.number);
-        Ok(ExistingWorkspaceLayout {
-            tabs: tabs
-                .into_iter()
-                .map(|tab| ExistingTabLayout {
-                    pane_ids: panes
-                        .iter()
-                        .filter(|pane| pane.tab_id == tab.tab_id)
-                        .map(|pane| pane.pane_id.clone())
-                        .collect(),
-                    tab_id: tab.tab_id,
-                    label: tab.label,
-                })
-                .collect(),
-        })
-    }
-
     fn pane_split(&self, request: &PaneSplitRequest) -> Result<PaneSplitResponse, HerdrError> {
         require_nonempty("pane id", &request.pane_id)?;
         require_absolute("cwd", &request.cwd)?;
@@ -719,31 +675,6 @@ enum WorkspaceListResult {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum PaneListResult {
     PaneList { panes: Vec<PaneInfo> },
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum WorkspacePaneListResult {
-    PaneList { panes: Vec<WorkspaceLayoutPaneInfo> },
-}
-
-#[derive(Deserialize)]
-struct WorkspaceLayoutPaneInfo {
-    pane_id: String,
-    tab_id: String,
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum TabListResult {
-    TabList { tabs: Vec<WorkspaceLayoutTabInfo> },
-}
-
-#[derive(Deserialize)]
-struct WorkspaceLayoutTabInfo {
-    tab_id: String,
-    number: usize,
-    label: String,
 }
 
 #[derive(Deserialize)]
@@ -1302,50 +1233,6 @@ mod tests {
         assert_eq!(
             fs::read_to_string(args_file).unwrap().trim(),
             "tab create --workspace w_1 --cwd /repo --no-focus"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn cli_resolves_existing_workspace_tabs_and_panes_in_creation_order() {
-        let temp = TempDir::new().unwrap();
-        let (binary, args_file) = fake_routed_herdr(
-            &temp,
-            r#"case "$*" in
-"tab list --workspace w_1")
-  printf '%s' '{"result":{"type":"tab_list","tabs":[{"tab_id":"t_2","number":2,"label":"server"},{"tab_id":"t_1","number":1,"label":"code"}]}}'
-  ;;
-"pane list --workspace w_1")
-  printf '%s' '{"result":{"type":"pane_list","panes":[{"pane_id":"p_1","tab_id":"t_1"},{"pane_id":"p_2","tab_id":"t_1"},{"pane_id":"p_3","tab_id":"t_2"}]}}'
-  ;;
-*)
-  exit 2
-  ;;
-esac"#,
-        );
-        let provider = CliHerdrProvider::new(binary);
-
-        let layout = retry_fake_herdr(|| provider.workspace_layout("w_1"));
-        assert_eq!(
-            layout,
-            ExistingWorkspaceLayout {
-                tabs: vec![
-                    ExistingTabLayout {
-                        tab_id: "t_1".into(),
-                        label: "code".into(),
-                        pane_ids: vec!["p_1".into(), "p_2".into()],
-                    },
-                    ExistingTabLayout {
-                        tab_id: "t_2".into(),
-                        label: "server".into(),
-                        pane_ids: vec!["p_3".into()],
-                    },
-                ],
-            }
-        );
-        assert_eq!(
-            fs::read_to_string(args_file).unwrap().trim(),
-            "tab list --workspace w_1\npane list --workspace w_1"
         );
     }
 

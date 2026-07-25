@@ -135,22 +135,12 @@ command = "lazygit" # sent to a new split followed by Enter
 direction = "right" # "right" or "down"
 ratio = 0.3 # between 0 and 1, exclusive
 
-# this repository uses the legacy panes form; omitted on/focus inherit globally
+# this repository uses the legacy panes form; omitted focus inherits globally
 [on_open.repos."api"]
 panes = [{ id = "editor", command = "cargo test", direction = "down" }]
 ```
 
-Add more `[[on_open.tabs]]` for extra tabs. Herdr clamps effective pane sizes to 0.1–0.9. Set `on = "every_open"` under `[on_open]` to send the commands again when focusing an existing workspace; commands are keystrokes, so a program already running in a target pane receives them. Existing tabs and panes are resolved and reused, not rebuilt. A repository override may contain `panes` or `tabs`, but not both, and inherits global `on` and `focus` when they are omitted. The older global `panes = [ ... ]` form remains supported.
-
-#### `on`
-
-When to apply the global layout. The default, `created`, applies it only
-to a new workspace. With `every_open`, commands are also sent as
-keystrokes when an existing workspace is focused, so anything already
-running in a target pane receives them; existing tabs and panes are
-resolved and reused rather than rebuilt.
-
-Default: `"created"`
+Add more `[[on_open.tabs]]` for extra tabs. Herdr clamps effective pane sizes to 0.1–0.9. A repository override may contain `panes` or `tabs`, but not both, and inherits global `focus` when it is omitted. The older global `panes = [ ... ]` form remains supported.
 
 #### `focus`
 
@@ -159,8 +149,8 @@ Optional pane identifier to focus after the layout is built.
 #### `panes`
 
 Pane definitions, created in order without moving focus from the primary
-pane. Commands are sent from the opened repository or worktree according
-to `on`. This legacy form cannot be combined with `tabs`.
+pane. Commands are sent from the opened repository or worktree. This
+legacy form cannot be combined with `tabs`.
 
 A command pane created while an on-open layout is applied.
 
@@ -190,8 +180,8 @@ Each entry is an inline table with:
 
 Per-repository layouts keyed by exact repository name. An override
 replaces the global `panes` or `tabs` layout and applies to every
-repository sharing that name. Its omitted `on` and `focus` values inherit
-the global settings. These overrides live only in this central config.
+repository sharing that name. Its omitted `focus` value inherits the
+global setting. These overrides live only in this central config.
 
 ### `[keys]`
 

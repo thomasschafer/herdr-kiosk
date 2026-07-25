@@ -131,21 +131,6 @@ impl OnOpenPaneDirection {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-/// When an on-open layout is applied.
-pub enum OnOpenWhen {
-    /// Apply only when Herdr opens a new workspace.
-    #[default]
-    Created,
-    /// Send configured commands whenever the repository is opened, including
-    /// when an existing workspace is focused. Commands are sent as keystrokes
-    /// into their panes, so anything already running there receives them. The
-    /// existing workspace's tabs and panes are resolved and reused; its layout
-    /// is not rebuilt.
-    EveryOpen,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 /// A command pane created while an on-open layout is applied.
 pub struct OnOpenPaneConfig {
@@ -186,10 +171,6 @@ pub struct OnOpenTabConfig {
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 /// A repository-specific on-open layout.
 pub struct OnOpenRepoConfig {
-    /// Optional trigger override. When omitted, the global `on_open.on` value is
-    /// inherited.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub on: Option<OnOpenWhen>,
     /// Optional pane identifier to focus after the layout is built. When
     /// omitted, the global `on_open.focus` value is inherited.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -211,7 +192,6 @@ impl<'de> Deserialize<'de> for OnOpenRepoConfig {
         #[derive(Default, Deserialize)]
         #[serde(default)]
         struct RawOnOpenRepoConfig {
-            on: Option<OnOpenWhen>,
             focus: Option<String>,
             panes: Option<Vec<OnOpenPaneConfig>>,
             tabs: Option<Vec<OnOpenTabConfig>>,
@@ -224,7 +204,6 @@ impl<'de> Deserialize<'de> for OnOpenRepoConfig {
             ));
         }
         Ok(Self {
-            on: raw.on,
             focus: raw.focus,
             panes: raw.panes.unwrap_or_default(),
             tabs: raw.tabs.unwrap_or_default(),
@@ -235,18 +214,12 @@ impl<'de> Deserialize<'de> for OnOpenRepoConfig {
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 /// The section is optional and contains no layout by default.
 pub struct OnOpenConfig {
-    /// When to apply the global layout. The default, `created`, applies it only
-    /// to a new workspace. With `every_open`, commands are also sent as
-    /// keystrokes when an existing workspace is focused, so anything already
-    /// running in a target pane receives them; existing tabs and panes are
-    /// resolved and reused rather than rebuilt.
-    pub on: OnOpenWhen,
     /// Optional pane identifier to focus after the layout is built.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub focus: Option<String>,
     /// Pane definitions, created in order without moving focus from the primary
-    /// pane. Commands are sent from the opened repository or worktree according
-    /// to `on`. This legacy form cannot be combined with `tabs`.
+    /// pane. Commands are sent from the opened repository or worktree. This
+    /// legacy form cannot be combined with `tabs`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub panes: Vec<OnOpenPaneConfig>,
     /// Declarative tabs created in order. The first entry uses the workspace's
@@ -256,8 +229,8 @@ pub struct OnOpenConfig {
     pub tabs: Vec<OnOpenTabConfig>,
     /// Per-repository layouts keyed by exact repository name. An override
     /// replaces the global `panes` or `tabs` layout and applies to every
-    /// repository sharing that name. Its omitted `on` and `focus` values inherit
-    /// the global settings. These overrides live only in this central config.
+    /// repository sharing that name. Its omitted `focus` value inherits the
+    /// global setting. These overrides live only in this central config.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub repos: BTreeMap<String, OnOpenRepoConfig>,
 }
@@ -270,7 +243,6 @@ impl<'de> Deserialize<'de> for OnOpenConfig {
         #[derive(Default, Deserialize)]
         #[serde(default)]
         struct RawOnOpenConfig {
-            on: OnOpenWhen,
             focus: Option<String>,
             panes: Option<Vec<OnOpenPaneConfig>>,
             tabs: Option<Vec<OnOpenTabConfig>>,
@@ -284,7 +256,6 @@ impl<'de> Deserialize<'de> for OnOpenConfig {
             ));
         }
         Ok(Self {
-            on: raw.on,
             focus: raw.focus,
             panes: raw.panes.unwrap_or_default(),
             tabs: raw.tabs.unwrap_or_default(),
@@ -786,7 +757,6 @@ panes = [
         let (config, warnings) = parse_config(
             r#"
 [on_open]
-on = "every_open"
 focus = "editor"
 
 [[on_open.tabs]]
@@ -805,7 +775,6 @@ name = "server"
 command = "npm run dev"
 
 [on_open.repos."my-service"]
-on = "created"
 focus = "logs"
 
 [[on_open.repos."my-service".tabs]]
@@ -820,7 +789,6 @@ direction = "down"
         .unwrap();
 
         assert!(warnings.is_empty());
-        assert_eq!(config.on_open.on, OnOpenWhen::EveryOpen);
         assert_eq!(config.on_open.focus.as_deref(), Some("editor"));
         assert!(config.on_open.panes.is_empty());
         assert_eq!(config.on_open.tabs.len(), 2);
@@ -837,7 +805,6 @@ direction = "down"
             }]
         );
         let override_layout = &config.on_open.repos["my-service"];
-        assert_eq!(override_layout.on, Some(OnOpenWhen::Created));
         assert_eq!(override_layout.focus.as_deref(), Some("logs"));
         assert_eq!(override_layout.tabs[0].name.as_deref(), Some("service"));
         assert_eq!(override_layout.tabs[0].panes[0].id.as_deref(), Some("logs"));
@@ -859,7 +826,6 @@ tabs = []
     #[test]
     fn on_open_validation_names_the_offending_field() {
         let cases = [
-            ("[on_open]\non = \"sometimes\"", "on"),
             (
                 "[[on_open.tabs]]\ncommand = \"  \"",
                 "on_open.tabs[1].command",
@@ -1065,11 +1031,17 @@ future_root_key = true
 
 [theme]
 future_theme_key = "blue"
+
+[on_open]
+on = "created"
+
+[on_open.repos.service]
+on = "created"
 "#,
         )
         .unwrap();
         assert!(config.search_dirs.is_empty());
-        assert_eq!(warnings.len(), 2);
+        assert_eq!(warnings.len(), 4);
         assert!(
             warnings
                 .iter()
@@ -1079,6 +1051,16 @@ future_theme_key = "blue"
             warnings
                 .iter()
                 .any(|warning| warning.message.contains("future_theme_key"))
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.message.contains("on_open.on"))
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.message.contains("on_open.repos.service.on"))
         );
     }
 
