@@ -25,6 +25,18 @@ issues on herdr for now; raise upstream when we decide to.
   leaves `auto_switch` and `[theme.custom]` evaluation to every plugin. Until then, do NOT
   mirror herdr's config/palette locally (it drifts and can't resolve auto-switch); exact
   parity is only feasible today when herdr itself uses its built-in `terminal` theme.
+- **Expose a stable workspace identity.** herdr workspace ids are ephemeral, recycled
+  handles, not durable identifiers: `NEXT_WORKSPACE_ID` is a per-process counter starting
+  at 1, and on restore `reserve_workspace_ids` resets it to `max(surviving) + 1`, so ids of
+  closed workspaces are re-minted. Meanwhile `HERDR_PLUGIN_STATE_DIR` is global — shared
+  across every session and restart. A plugin therefore cannot persist "this folder belongs
+  to that workspace": after a restart the id can silently belong to an unrelated project,
+  and "my workspace moved" is indistinguishable from "someone else owns my id". This is why
+  the plain-folder → workspace binding was dropped (PR #9); plain folders fall back to
+  pane-cwd matching, which fails visibly (a duplicate workspace) rather than silently. A
+  stable per-workspace identity (a UUID on `WorkspaceInfo`, or a persisted non-recycling
+  counter) would make that feature — and durable project↔workspace mapping generally —
+  possible.
 - **(Only if we pursue scripted-focus MRU)** a monotonic event sequence/timestamp on focus
   events, so a focus recorder can order rapid programmatic focus changes deterministically.
   See the MRU plan's risks. Not needed for human-frequency use.
