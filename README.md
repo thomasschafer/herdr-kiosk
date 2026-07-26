@@ -117,30 +117,31 @@ Configure tabs and panes applied when a repository is opened.
 
 The section is optional and contains no layout by default.
 
-Example:
+Example — two tabs:
+
+- `code`: `lazygit` on the left, an editor on the right, with the editor focused.
+- `server`: a single pane running the dev server.
 
 ```toml
 [on_open]
 focus = "editor"
 
-# after a workspace opens, set up its tabs and panes
 [[on_open.tabs]]
-id = "main" # identifies this tab's root pane
-name = "code" # also renames the workspace's first tab
-command = "hx ." # sent to the tab's root pane followed by Enter
+name = "code"
+command = "lazygit"
 
 [[on_open.tabs.panes]]
 id = "editor"
-command = "lazygit" # sent to a new split followed by Enter
-direction = "right" # "right" or "down"
-ratio = 0.3 # between 0 and 1, exclusive
+command = "hx ."
+direction = "right"
+ratio = 0.7
 
-# this repository uses the legacy panes form; omitted focus inherits globally
-[on_open.repos."api"]
-panes = [{ id = "editor", command = "cargo test", direction = "down" }]
+[[on_open.tabs]]
+name = "server"
+command = "npm run dev"
 ```
 
-Add more `[[on_open.tabs]]` for extra tabs. Herdr clamps effective pane sizes to 0.1–0.9. A repository override may contain `panes` or `tabs`, but not both, and inherits global `focus` when it is omitted. The older global `panes = [ ... ]` form remains supported.
+Each `[[on_open.tabs.panes]]` splits the tab declared above it, so panes belong to the most recent `[[on_open.tabs]]`. Commands are sent to their pane followed by Enter. `id` is only needed to name a pane as the `focus` target, and a tab can take one to target its own first pane. Herdr clamps effective pane sizes to 0.1–0.9. Add `[on_open.repos."name"]` to replace this layout for one repository; an override inherits the global `focus` when it omits one. The older global `panes = [ ... ]` form remains supported.
 
 #### `focus`
 
