@@ -27,6 +27,18 @@ pub(crate) fn resolve_state_path(
         get_env("HOME")
             .filter(|value| !value.is_empty())
             .map(|value| ("HOME", PathBuf::from(value).join(".local/state"), true)),
+        get_env("LOCALAPPDATA")
+            .filter(|value| !value.is_empty())
+            .map(|value| ("LOCALAPPDATA", PathBuf::from(value), true)),
+        get_env("USERPROFILE")
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                (
+                    "USERPROFILE",
+                    PathBuf::from(value).join(".local/state"),
+                    true,
+                )
+            }),
     ];
     let (path, warnings) =
         resolve_trusted_file_path(candidates.into_iter().flatten(), file_name, "state");
@@ -207,7 +219,61 @@ fn replace_file_atomic(from: &Path, to: &Path) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
+
+    fn path_string(path: &Path) -> String {
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn state_path_resolution_uses_each_supported_fallback_in_order() {
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("state-resolution-test");
+        let plugin = root.join("plugin");
+        let xdg = root.join("xdg");
+        let home = root.join("home");
+        let local_app_data = root.join("local-app-data");
+        let user_profile = root.join("user-profile");
+        let mut values = HashMap::from([
+            ("HERDR_PLUGIN_STATE_DIR", path_string(&plugin)),
+            ("XDG_STATE_HOME", path_string(&xdg)),
+            ("HOME", path_string(&home)),
+            ("LOCALAPPDATA", path_string(&local_app_data)),
+            ("USERPROFILE", path_string(&user_profile)),
+        ]);
+
+        let resolve = |values: &HashMap<&str, String>| {
+            resolve_state_path("state.json", |name| values.get(name).cloned()).path
+        };
+        assert_eq!(resolve(&values), Some(plugin.join("state.json")));
+
+        values.remove("HERDR_PLUGIN_STATE_DIR");
+        assert_eq!(resolve(&values), Some(xdg.join("herdr-kiosk/state.json")));
+
+        values.remove("XDG_STATE_HOME");
+        assert_eq!(
+            resolve(&values),
+            Some(home.join(".local/state/herdr-kiosk/state.json"))
+        );
+
+        values.remove("HOME");
+        assert_eq!(
+            resolve(&values),
+            Some(local_app_data.join("herdr-kiosk/state.json"))
+        );
+
+        values.remove("LOCALAPPDATA");
+        assert_eq!(
+            resolve(&values),
+            Some(user_profile.join(".local/state/herdr-kiosk/state.json"))
+        );
+
+        values.remove("USERPROFILE");
+        assert_eq!(resolve(&values), None);
+    }
 
     #[test]
     fn atomic_write_keeps_the_old_file_visible_until_replacement() {

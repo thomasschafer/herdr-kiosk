@@ -11,7 +11,7 @@ use crate::{
     config::{OnOpenConfig, SortOrder},
     git::Repo,
     herdr::WorktreeInfo,
-    recency::RecencyStore,
+    recency::{RecencyLoad, RecencyPersistence, RecencyStore},
     screens::{
         branch::BranchViewState, delete::DeleteState, new_branch::NewBranchState,
         repo::RepoViewState,
@@ -252,6 +252,7 @@ pub struct AppState {
     pub on_open: OnOpenConfig,
     pub sort_order: SortOrder,
     pub recency: RecencyStore,
+    pub(crate) recency_persistence: RecencyPersistence,
 }
 
 impl AppState {
@@ -272,12 +273,14 @@ impl AppState {
             on_open: OnOpenConfig::default(),
             sort_order: SortOrder::Alphabetical,
             recency: RecencyStore::default(),
+            recency_persistence: RecencyPersistence::default(),
         }
     }
 
-    pub fn configure_sort(&mut self, sort_order: SortOrder, recency: RecencyStore) {
+    pub fn configure_sort(&mut self, sort_order: SortOrder, recency: RecencyLoad) {
         self.sort_order = sort_order;
-        self.recency = recency;
+        self.recency = recency.store;
+        self.recency_persistence = recency.persistence;
     }
 
     pub fn selected_repo(&self) -> Option<&RepoEntry> {

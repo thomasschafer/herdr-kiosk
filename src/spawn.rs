@@ -22,7 +22,7 @@ use crate::{
         HerdrError, HerdrProvider, OpenedWorktree, PaneSplitRequest, WorktreeCreateRequest,
         WorktreeOpenTarget,
     },
-    recency::{RecencyKey, record_success},
+    recency::{RecencyKey, RecencyPersistence, record_success},
     state::{BranchEntry, BranchId},
 };
 
@@ -65,11 +65,21 @@ impl Drop for FetchClaim {
 pub struct EventSender {
     tx: mpsc::Sender<AppEvent>,
     cancel: Arc<AtomicBool>,
+    recency: RecencyPersistence,
 }
 
 impl EventSender {
     pub fn new(tx: mpsc::Sender<AppEvent>, cancel: Arc<AtomicBool>) -> Self {
-        Self { tx, cancel }
+        Self {
+            tx,
+            cancel,
+            recency: RecencyPersistence::default(),
+        }
+    }
+
+    pub(crate) fn with_recency(mut self, recency: RecencyPersistence) -> Self {
+        self.recency = recency;
+        self
     }
 
     pub fn send(&self, event: AppEvent) -> bool {
@@ -82,6 +92,10 @@ impl EventSender {
 
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
+    }
+
+    fn record_open(&self, key: RecencyKey) {
+        record_success(&self.recency, key);
     }
 }
 
@@ -230,8 +244,7 @@ pub fn spawn_open_repo(
                         )
                     });
                 let warning = combine_warnings(response.warning, on_open_warning);
-                let warning =
-                    combine_warnings(warning, record_success(RecencyKey::repo(&repo_path)));
+                sender.record_open(RecencyKey::repo(&repo_path));
                 sender.send(AppEvent::RepoOpened { warning });
             }
             Err(error) => {
@@ -268,7 +281,7 @@ pub fn spawn_open_folder(
         })();
         match result {
             Ok(warning) => {
-                let warning = combine_warnings(warning, record_success(RecencyKey::repo(&target)));
+                sender.record_open(RecencyKey::repo(&target));
                 sender.send(AppEvent::RepoOpened { warning });
             }
             Err(error) => {
@@ -536,13 +549,10 @@ pub fn spawn_open_branch(
                     None
                 };
                 let warning = combine_warnings(response_warning, on_open_warning);
-                let warning = combine_warnings(
-                    warning,
-                    record_success(RecencyKey::branch(
-                        &repo_path,
-                        BranchId::Local(branch_name.clone()),
-                    )),
-                );
+                sender.record_open(RecencyKey::branch(
+                    &repo_path,
+                    BranchId::Local(branch_name.clone()),
+                ));
                 sender.send(AppEvent::RepoOpened { warning });
             }
             Err(error) => {
@@ -613,10 +623,7 @@ pub fn spawn_create_new_branch(
                     )
                 });
                 let warning = combine_warnings(response.warning, on_open_warning);
-                let warning = combine_warnings(
-                    warning,
-                    record_success(RecencyKey::branch(&repo_path, BranchId::Local(branch_name))),
-                );
+                sender.record_open(RecencyKey::branch(&repo_path, BranchId::Local(branch_name)));
                 sender.send(AppEvent::RepoOpened { warning });
             }
             Err(error) => {
@@ -764,13 +771,10 @@ pub fn spawn_open_remote_branch(
                     })
                     .flatten();
                 let warning = combine_warnings(response_warning, on_open_warning);
-                let warning = combine_warnings(
-                    warning,
-                    record_success(RecencyKey::branch(
-                        &repo_path,
-                        BranchId::Local(branch_name.clone()),
-                    )),
-                );
+                sender.record_open(RecencyKey::branch(
+                    &repo_path,
+                    BranchId::Local(branch_name.clone()),
+                ));
                 sender.send(AppEvent::RepoOpened { warning });
             }
             Err(error) => {
