@@ -86,7 +86,9 @@ fn help_command_to_action(command: Command) -> Option<Action> {
         | Command::Back
         | Command::NewBranch
         | Command::Delete
-        | Command::ToggleSort => None,
+        | Command::ToggleSort
+        | Command::TogglePin
+        | Command::ToggleOpenFilter => None,
     }
 }
 
@@ -141,6 +143,10 @@ fn command_to_action(command: Command, state: &AppState) -> Option<Action> {
         }
         Command::ToggleSort => matches!(state.mode, Mode::RepoSelect | Mode::BranchSelect(_))
             .then_some(Action::ToggleSort),
+        Command::TogglePin => matches!(state.mode, Mode::RepoSelect | Mode::BranchSelect(_))
+            .then_some(Action::TogglePin),
+        Command::ToggleOpenFilter => matches!(state.mode, Mode::RepoSelect | Mode::BranchSelect(_))
+            .then_some(Action::ToggleOpenFilter),
         Command::Clear => {
             if !active_query(state).is_empty() {
                 Some(Action::ClearQuery)
@@ -208,10 +214,7 @@ mod tests {
             resolve_action(key(KeyCode::Char('é'), KeyModifiers::NONE), &state, &keys),
             Some(Action::Insert('é'))
         );
-        state.mode = Mode::BranchSelect(BranchContext {
-            repo_path: "/repo".into(),
-            repo_name: "repo".into(),
-        });
+        state.mode = Mode::BranchSelect(BranchContext::new("/repo".into(), "repo".into()));
         assert_eq!(
             resolve_action(key(KeyCode::Char('界'), KeyModifiers::NONE), &state, &keys),
             Some(Action::Insert('界'))
@@ -250,10 +253,7 @@ mod tests {
     #[test]
     fn toast_dismiss_has_precedence_over_branch_delete() {
         let mut state = AppState::new(None);
-        state.mode = Mode::BranchSelect(BranchContext {
-            repo_path: "/repo".into(),
-            repo_name: "repo".into(),
-        });
+        state.mode = Mode::BranchSelect(BranchContext::new("/repo".into(), "repo".into()));
         let chord = key(KeyCode::Char('x'), KeyModifiers::CONTROL);
         assert_eq!(
             resolve_action(chord, &state, &KeysConfig::default()),
@@ -269,10 +269,7 @@ mod tests {
     #[test]
     fn new_branch_routes_are_blocked_until_local_branches_finish_loading() {
         let mut state = AppState::new(None);
-        state.mode = Mode::BranchSelect(BranchContext {
-            repo_path: "/repo".into(),
-            repo_name: "repo".into(),
-        });
+        state.mode = Mode::BranchSelect(BranchContext::new("/repo".into(), "repo".into()));
         state.branch_view.list.input.text = "feat/new".into();
         state.branch_view.list.filtered.clear();
         state.branch_view.loading = true;
@@ -308,10 +305,7 @@ mod tests {
 
     #[test]
     fn existing_modal_defaults_are_preserved() {
-        let context = BranchContext {
-            repo_path: "/repo".into(),
-            repo_name: "repo".into(),
-        };
+        let context = BranchContext::new("/repo".into(), "repo".into());
         let keys = KeysConfig::default();
         let mut state = AppState::new(None);
         state.mode = Mode::SelectBaseBranch {
@@ -350,10 +344,7 @@ mod tests {
     fn base_picker_resolves_all_search_and_navigation_actions() {
         let mut state = AppState::new(None);
         state.mode = Mode::SelectBaseBranch {
-            context: BranchContext {
-                repo_path: "/repo".into(),
-                repo_name: "repo".into(),
-            },
+            context: BranchContext::new("/repo".into(), "repo".into()),
             flow: BaseBranchSelection {
                 new_name: "feat".into(),
                 bases: vec!["main".into(), "next".into()],

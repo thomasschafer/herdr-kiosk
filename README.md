@@ -192,14 +192,18 @@ Defaults:
 "esc" = "back"
 
 [keys.repo_select]
+"ctrl+f" = "toggle_open_filter"
 "ctrl+r" = "toggle_sort"
+"ctrl+t" = "toggle_pin"
 "enter" = "open"
 "q" = "quit"
 "tab" = "branches_view"
 
 [keys.branch_select]
+"ctrl+f" = "toggle_open_filter"
 "ctrl+o" = "new_branch"
 "ctrl+r" = "toggle_sort"
+"ctrl+t" = "toggle_pin"
 "ctrl+x" = "delete"
 "enter" = "open"
 "esc" = "back"

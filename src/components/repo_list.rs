@@ -61,14 +61,20 @@ pub fn draw(
                     Span::styled("  dir", Style::default().fg(theme.muted)),
                 ]
             };
-            let spans = if entry.is_open {
-                right_align_suffix(
-                    &left,
-                    &[Span::styled("● open", Style::default().fg(theme.open))],
-                    row_width,
-                )
-            } else {
+            let mut suffix = Vec::new();
+            if state.pins.repo_is_pinned_canonical(&entry.canonical_path) {
+                suffix.push(Span::styled("◆ pin", Style::default().fg(theme.open)));
+            }
+            if entry.is_open {
+                if !suffix.is_empty() {
+                    suffix.push(Span::raw("  "));
+                }
+                suffix.push(Span::styled("● open", Style::default().fg(theme.open)));
+            }
+            let spans = if suffix.is_empty() {
                 truncate_spans(&left, row_width)
+            } else {
+                right_align_suffix(&left, &suffix, row_width)
             };
             ListItem::new(Line::from(spans))
         })
@@ -91,9 +97,14 @@ pub fn draw(
             Block::default()
                 .borders(Borders::ALL)
                 .title(format!(
-                    " {} of {} repos{scan_suffix} ",
+                    " {} of {} repos{}{scan_suffix} ",
                     state.repo_view.list.filtered.len(),
-                    state.repo_view.entries.len()
+                    state.repo_view.entries.len(),
+                    if state.repo_view.open_filter.is_active() {
+                        " · open only"
+                    } else {
+                        ""
+                    }
                 ))
                 .border_style(Style::default().fg(theme.border)),
         )
@@ -189,5 +200,67 @@ mod tests {
             .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
         assert!(rendered.contains("folder  dir"));
+    }
+
+    #[test]
+    fn pinned_repo_uses_the_significant_marker_style_and_filter_title_is_visible() {
+        let mut state = AppState::new(None);
+        state.repo_view.loading = false;
+        state.repo_view.entries = vec![RepoEntry::new(Repo {
+            name: "repo".into(),
+            path: "/repo".into(),
+            is_git: true,
+            worktrees: Vec::new(),
+        })];
+        state.repo_view.list = SearchableList::new(1);
+        state.repo_view.list.selected = None;
+        state
+            .pins
+            .toggle(crate::recency::RecencyKey::repo(std::path::Path::new(
+                "/repo",
+            )));
+        state.repo_view.open_filter = crate::state::OpenFilter::OpenOnly;
+        state.repo_view.list.filtered.clear();
+        let theme = Theme::from_config(&crate::config::ThemeConfig::default());
+        let backend = TestBackend::new(80, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw(frame, area, &mut state, &theme, Instant::now());
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered = buffer
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(rendered.contains("0 of 1 repos · open only"));
+        state.repo_view.open_filter = crate::state::OpenFilter::All;
+        state.repo_view.list = SearchableList::new(1);
+        state.repo_view.list.selected = None;
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw(frame, area, &mut state, &theme, Instant::now());
+            })
+            .unwrap();
+        let marker = ["◆", " ", "p", "i", "n"];
+        let cells = terminal
+            .backend()
+            .buffer()
+            .content()
+            .windows(marker.len())
+            .find(|cells| {
+                cells
+                    .iter()
+                    .zip(marker)
+                    .all(|(cell, symbol)| cell.symbol() == symbol)
+            })
+            .expect("pin marker cells");
+        assert!(cells.iter().all(|cell| cell.fg == theme.open));
     }
 }

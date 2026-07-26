@@ -5,15 +5,17 @@ use std::{
 };
 
 use crate::{
-    app::{TickChanges, process_app_event},
-    config::SortOrder,
+    app::{FilterWorker, TickChanges, process_app_event},
+    config::{SortOrder, keys::KeysConfig},
     event::{AppEvent, FilterKey, FilterTarget},
     git::Repo,
+    git::{GitProvider, mock::MockGitProvider},
     herdr::{
         HerdrError, HerdrProvider, PaneInfo, WorkspaceCreateResponse, WorkspaceInfo,
         WorkspaceWorktreeInfo,
         mock::{HerdrCall, MockHerdrProvider},
     },
+    keyboard::Action,
     recency::RecencyKey,
     spawn::EventSender,
     state::{AppState, Mode, SearchableList},
@@ -195,6 +197,207 @@ fn recency_resting_sort_uses_rank_then_alphabetical_fallback() {
             .map(|entry| entry.repo.name.as_str())
             .collect::<Vec<_>>(),
         ["delta", "alpha", "bravo", "charlie"]
+    );
+}
+
+#[test]
+fn alphabetical_pins_ignore_contradictory_recency_at_rest_and_with_a_query() {
+    let (sender, rx) = sender();
+    let worker = FilterWorker::spawn(sender);
+    let mut state = AppState::new(None);
+    state.repo_view.entries = [
+        "/repos/repo-delta",
+        "/repos/repo-alpha",
+        "/repos/repo-charlie",
+        "/repos/repo-bravo",
+    ]
+    .into_iter()
+    .map(repo)
+    .map(RepoEntry::new)
+    .collect();
+    state.repo_view.list = SearchableList::new(4);
+    for path in [
+        "/repos/repo-alpha",
+        "/repos/repo-charlie",
+        "/repos/repo-bravo",
+        "/repos/repo-delta",
+    ] {
+        state.recency.record(RecencyKey::repo(Path::new(path)));
+    }
+    for path in ["/repos/repo-charlie", "/repos/repo-alpha"] {
+        state.pins.toggle(RecencyKey::repo(Path::new(path)));
+    }
+
+    sort_entries(&mut state);
+    assert_eq!(
+        state
+            .repo_view
+            .entries
+            .iter()
+            .map(|entry| entry.repo.name.as_str())
+            .collect::<Vec<_>>(),
+        ["repo-alpha", "repo-charlie", "repo-bravo", "repo-delta"]
+    );
+
+    state.repo_view.list.input.text = "repo".into();
+    state.repo_view.list.input.cursor = 4;
+    queue_filter(&mut state, &worker, true);
+    process_app_event(
+        rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        &mut state,
+        &mut TickChanges::default(),
+    );
+    assert_eq!(
+        state
+            .repo_view
+            .list
+            .filtered
+            .iter()
+            .map(|(index, _)| state.repo_view.entries[*index].repo.name.as_str())
+            .collect::<Vec<_>>(),
+        ["repo-alpha", "repo-charlie", "repo-bravo", "repo-delta"]
+    );
+}
+
+#[test]
+fn open_filter_composes_with_pins_and_recency_with_and_without_a_query() {
+    let (sender, rx) = sender();
+    let worker = FilterWorker::spawn(sender);
+    let mut state = AppState::new(None);
+    state.sort_order = SortOrder::Recency;
+    state.repo_view.entries = [
+        "/repos/repo-alpha",
+        "/repos/repo-bravo",
+        "/repos/repo-charlie",
+    ]
+    .into_iter()
+    .map(repo)
+    .map(RepoEntry::new)
+    .collect();
+    state.repo_view.entries[0].is_open = true;
+    state.repo_view.entries[2].is_open = true;
+    state.repo_view.list = SearchableList::new(3);
+    state
+        .recency
+        .record(RecencyKey::repo(Path::new("/repos/repo-alpha")));
+    state
+        .pins
+        .toggle(RecencyKey::repo(Path::new("/repos/repo-charlie")));
+
+    toggle_open_filter(&mut state, &worker);
+    let visible = |state: &AppState| {
+        state
+            .repo_view
+            .list
+            .filtered
+            .iter()
+            .map(|(index, _)| state.repo_view.entries[*index].repo.name.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(visible(&state), ["repo-charlie", "repo-alpha"]);
+
+    state.repo_view.list.input.text = "repo".into();
+    state.repo_view.list.input.cursor = 4;
+    queue_filter(&mut state, &worker, true);
+    process_app_event(
+        rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        &mut state,
+        &mut TickChanges::default(),
+    );
+    assert_eq!(visible(&state), ["repo-charlie", "repo-alpha"]);
+
+    toggle_open_filter(&mut state, &worker);
+    process_app_event(
+        rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        &mut state,
+        &mut TickChanges::default(),
+    );
+    assert_eq!(visible(&state).len(), 3);
+}
+
+#[test]
+fn pin_filter_and_sort_toggles_preserve_selection_and_allow_pinning_while_filtered() {
+    let (sender, _rx) = sender();
+    let worker = FilterWorker::spawn(sender.clone());
+    let git = Arc::new(MockGitProvider::default()) as Arc<dyn GitProvider>;
+    let mut state = AppState::new(None);
+    state.repo_view.entries = ["/repos/alpha", "/repos/beta", "/repos/gamma"]
+        .into_iter()
+        .map(repo)
+        .map(RepoEntry::new)
+        .collect();
+    state.repo_view.entries[0].is_open = true;
+    state.repo_view.entries[1].is_open = true;
+    state.repo_view.list = SearchableList::new(3);
+    state.repo_view.list.selected = Some(1);
+
+    toggle_open_filter(&mut state, &worker);
+    assert_eq!(state.selected_repo().unwrap().repo.name, "beta");
+    toggle_pin(&mut state, &worker);
+    assert_eq!(state.selected_repo().unwrap().repo.name, "beta");
+    assert!(
+        state
+            .pins
+            .repo_is_pinned_canonical(&state.selected_repo().unwrap().canonical_path)
+    );
+    crate::app::process_action(
+        Action::ToggleSort,
+        &mut state,
+        &git,
+        None,
+        &sender,
+        &worker,
+        &KeysConfig::default(),
+    );
+    assert_eq!(state.selected_repo().unwrap().repo.name, "beta");
+    toggle_open_filter(&mut state, &worker);
+    assert_eq!(state.selected_repo().unwrap().repo.name, "beta");
+}
+
+#[test]
+fn stale_pin_for_a_missing_repo_does_not_change_visible_order() {
+    let mut state = AppState::new(None);
+    state.repo_view.entries = ["/repos/bravo", "/repos/alpha"]
+        .into_iter()
+        .map(repo)
+        .map(RepoEntry::new)
+        .collect();
+    state.repo_view.list = SearchableList::new(2);
+    state
+        .pins
+        .toggle(RecencyKey::repo(Path::new("/repos/missing")));
+
+    sort_entries(&mut state);
+
+    assert_eq!(
+        state
+            .repo_view
+            .entries
+            .iter()
+            .map(|entry| entry.repo.name.as_str())
+            .collect::<Vec<_>>(),
+        ["alpha", "bravo"]
+    );
+}
+
+#[test]
+fn pin_capacity_is_surfaced_as_a_toast() {
+    let (sender, _rx) = sender();
+    let worker = FilterWorker::spawn(sender);
+    let mut state = state_with_repo();
+    for index in 0..200 {
+        state
+            .pins
+            .toggle(RecencyKey::repo(Path::new(&format!("/pinned/{index}"))));
+    }
+
+    toggle_pin(&mut state, &worker);
+
+    assert!(
+        state
+            .toasts
+            .front()
+            .is_some_and(|toast| { toast.message.contains("Pin limit reached") })
     );
 }
 

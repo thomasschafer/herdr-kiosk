@@ -1,5 +1,6 @@
 use std::{
-    collections::HashMap,
+    cmp::Reverse,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     sync::{
         Arc, Condvar, Mutex,
@@ -20,6 +21,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::Paragraph,
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::{
     components,
@@ -85,24 +87,50 @@ pub(crate) struct FilterRequest {
     pub(crate) ordering: FilterOrdering,
 }
 
-pub(crate) enum FilterOrdering {
-    Alphabetical,
-    Recency(HashMap<FilterKey, usize>),
+pub(crate) struct FilterOrdering {
+    pinned: HashSet<FilterKey>,
+    recency_ranks: Option<HashMap<FilterKey, usize>>,
 }
 
 impl FilterOrdering {
+    pub(crate) fn alphabetical() -> Self {
+        Self {
+            pinned: HashSet::new(),
+            recency_ranks: None,
+        }
+    }
+
+    pub(crate) fn pinned(pinned: HashSet<FilterKey>) -> Self {
+        Self {
+            pinned,
+            recency_ranks: None,
+        }
+    }
+
+    pub(crate) fn pinned_by_recency(
+        pinned: HashSet<FilterKey>,
+        recency_ranks: HashMap<FilterKey, usize>,
+    ) -> Self {
+        Self {
+            pinned,
+            recency_ranks: Some(recency_ranks),
+        }
+    }
+
     fn apply(&self, matches: &mut [(FilterKey, i64)]) {
-        let Self::Recency(ranks) = self else {
+        if self.pinned.is_empty() && self.recency_ranks.is_none() {
             return;
-        };
-        matches.sort_by(|(left_key, left_score), (right_key, right_score)| {
-            right_score.cmp(left_score).then_with(|| {
-                ranks
-                    .get(left_key)
+        }
+        matches.sort_by_cached_key(|(key, score)| {
+            (
+                Reverse(*score),
+                !self.pinned.contains(key),
+                self.recency_ranks
+                    .as_ref()
+                    .and_then(|ranks| ranks.get(key))
                     .copied()
-                    .unwrap_or(usize::MAX)
-                    .cmp(&ranks.get(right_key).copied().unwrap_or(usize::MAX))
-            })
+                    .unwrap_or(usize::MAX),
+            )
         });
     }
 }
@@ -416,10 +444,25 @@ pub(crate) fn process_action(
         Action::ToggleSort => {
             state.sort_order = state.sort_order.toggled();
             if matches!(state.mode, Mode::RepoSelect) {
+                state.repo_view.selection_touched = true;
                 crate::screens::repo::queue_filter(state, filter_worker, true);
             } else if matches!(state.mode, Mode::BranchSelect(_)) {
                 let selected = state.selected_branch().map(BranchEntry::id);
                 crate::screens::branch::queue_filter(state, filter_worker, selected);
+            }
+        }
+        Action::TogglePin => {
+            if matches!(state.mode, Mode::RepoSelect) {
+                crate::screens::repo::toggle_pin(state, filter_worker);
+            } else if matches!(state.mode, Mode::BranchSelect(_)) {
+                crate::screens::branch::toggle_pin(state, filter_worker);
+            }
+        }
+        Action::ToggleOpenFilter => {
+            if matches!(state.mode, Mode::RepoSelect) {
+                crate::screens::repo::toggle_open_filter(state, filter_worker);
+            } else if matches!(state.mode, Mode::BranchSelect(_)) {
+                crate::screens::branch::toggle_open_filter(state, filter_worker);
             }
         }
         Action::ConfirmDeleteWorktree => {
@@ -509,7 +552,7 @@ fn queue_help_filter(state: &mut AppState, worker: &FilterWorker, selected_index
             })
             .collect(),
         selected: selected_index.map(FilterKey::Help),
-        ordering: FilterOrdering::Alphabetical,
+        ordering: FilterOrdering::alphabetical(),
     });
 }
 
@@ -623,7 +666,23 @@ pub(crate) fn draw(
         }
     }
     let binding_mode = KeysConfig::mode_for(&state.mode);
-    let footer = footer_spans(keys, binding_mode, &state.mode, state.sort_order, theme);
+    let open_only = match state.mode {
+        Mode::RepoSelect => state.repo_view.open_filter.is_active(),
+        Mode::BranchSelect(_) => state.branch_view.open_filter.is_active(),
+        Mode::ValidatingNewBranch { .. }
+        | Mode::SelectBaseBranch { .. }
+        | Mode::ConfirmWorktreeDelete(_)
+        | Mode::Loading { .. } => false,
+    };
+    let footer = footer_spans(
+        keys,
+        binding_mode,
+        &state.mode,
+        state.sort_order,
+        open_only,
+        usize::from(footer_area.width),
+        theme,
+    );
     frame.render_widget(
         Paragraph::new(Line::from(footer)).alignment(Alignment::Center),
         footer_area,
@@ -656,32 +715,38 @@ fn footer_spans<'a>(
     binding_mode: BindingMode,
     mode: &Mode,
     sort_order: crate::config::SortOrder,
+    open_only: bool,
+    max_width: usize,
     theme: &Theme,
 ) -> Vec<Span<'a>> {
     let mut hints = Vec::new();
-    let mut add = |command, label: &'static str| {
-        if let Some(key) = keys.first_key(binding_mode, command) {
-            if !hints.is_empty() {
-                hints.push(Span::raw("  "));
+    let mut used_width = 0;
+    macro_rules! add {
+        ($command:expr, $label:expr) => {
+            if let Some(key) = keys.first_key(binding_mode, $command) {
+                let key = key.to_string();
+                let width = UnicodeWidthStr::width(key.as_str()) + 1 + $label.len();
+                push_footer_group(
+                    &mut hints,
+                    &mut used_width,
+                    max_width,
+                    width,
+                    [
+                        Span::styled(key, Style::default().fg(theme.hint)),
+                        Span::raw(format!(" {}", $label)),
+                    ],
+                );
             }
-            hints.push(Span::styled(
-                key.to_string(),
-                Style::default().fg(theme.hint),
-            ));
-            hints.push(Span::raw(format!(" {label}")));
-        }
-    };
+        };
+    }
     if matches!(
         mode,
         Mode::ValidatingNewBranch { .. } | Mode::Loading { .. }
     ) {
-        add(Command::Quit, "quit");
+        add!(Command::Quit, "quit");
         return hints;
     }
-    if !matches!(binding_mode, BindingMode::Modal) {
-        add(Command::MoveUp, "move");
-    }
-    add(
+    add!(
         Command::Open,
         if matches!(
             mode,
@@ -690,36 +755,68 @@ fn footer_spans<'a>(
             "confirm"
         } else {
             "open"
-        },
+        }
     );
     if matches!(mode, Mode::RepoSelect) {
-        add(Command::BranchesView, "branches");
+        add!(Command::BranchesView, "branches");
     }
     if matches!(mode, Mode::BranchSelect(_)) {
-        add(Command::NewBranch, "new");
-        add(Command::Delete, "delete");
+        add!(Command::NewBranch, "new");
+        add!(Command::Delete, "delete");
     }
     if matches!(mode, Mode::RepoSelect | Mode::BranchSelect(_)) {
-        add(Command::ToggleSort, "sort");
+        add!(Command::ToggleSort, "sort");
+        add!(Command::TogglePin, "pin");
+        add!(Command::ToggleOpenFilter, "open");
+        let mut status = format!("sort: {}", sort_order.label());
+        if open_only {
+            status.push_str(" | open only");
+        }
+        let width = UnicodeWidthStr::width(status.as_str());
+        push_footer_group(
+            &mut hints,
+            &mut used_width,
+            max_width,
+            width,
+            [Span::styled(status, Style::default().fg(theme.muted))],
+        );
     }
     if matches!(
         mode,
         Mode::BranchSelect(_) | Mode::SelectBaseBranch { .. } | Mode::ConfirmWorktreeDelete(_)
     ) {
-        add(Command::Back, "back");
+        add!(Command::Back, "back");
     } else {
-        add(Command::Clear, "clear/quit");
+        add!(Command::Clear, "clear/quit");
     }
-    add(Command::Help, "help");
-    add(Command::Quit, "quit");
-    if matches!(mode, Mode::RepoSelect | Mode::BranchSelect(_)) {
-        hints.push(Span::raw("  "));
-        hints.push(Span::styled(
-            format!("sort: {}", sort_order.label()),
-            Style::default().fg(theme.muted),
-        ));
+    if !matches!(binding_mode, BindingMode::Modal) {
+        add!(Command::MoveUp, "move");
     }
+    add!(Command::Help, "help");
+    add!(Command::Quit, "quit");
     hints
+}
+
+fn push_footer_group<'a, const N: usize>(
+    hints: &mut Vec<Span<'a>>,
+    used_width: &mut usize,
+    max_width: usize,
+    group_width: usize,
+    group: [Span<'a>; N],
+) {
+    let spacing = usize::from(!hints.is_empty()) * 2;
+    if used_width
+        .saturating_add(spacing)
+        .saturating_add(group_width)
+        > max_width
+    {
+        return;
+    }
+    if spacing > 0 {
+        hints.push(Span::raw("  "));
+    }
+    hints.extend(group);
+    *used_width += spacing + group_width;
 }
 
 #[cfg(test)]
@@ -838,11 +935,43 @@ mod tests {
         let ranks = HashMap::from([(beta.clone(), 0), (gamma.clone(), 1)]);
 
         let mut alphabetical = baseline.clone();
-        FilterOrdering::Alphabetical.apply(&mut alphabetical);
+        FilterOrdering::alphabetical().apply(&mut alphabetical);
         assert_eq!(alphabetical, baseline);
 
         let mut recency = baseline;
-        FilterOrdering::Recency(ranks).apply(&mut recency);
+        FilterOrdering::pinned_by_recency(HashSet::new(), ranks).apply(&mut recency);
+        assert_eq!(recency, [(beta, 100), (alpha, 100), (gamma, 90)]);
+    }
+
+    #[test]
+    fn pins_reorder_only_equal_fuzzy_scores_before_mode_tiebreaks() {
+        let alpha = FilterKey::Branch("alpha".into());
+        let beta = FilterKey::Branch("beta".into());
+        let gamma = FilterKey::Branch("gamma".into());
+        let baseline = vec![
+            (alpha.clone(), 100),
+            (beta.clone(), 100),
+            (gamma.clone(), 90),
+        ];
+        let pinned = HashSet::from([beta.clone(), gamma.clone()]);
+
+        let mut alphabetical = baseline.clone();
+        FilterOrdering::pinned(pinned.clone()).apply(&mut alphabetical);
+        assert_eq!(
+            alphabetical,
+            [
+                (beta.clone(), 100),
+                (alpha.clone(), 100),
+                (gamma.clone(), 90)
+            ]
+        );
+
+        let mut recency = baseline;
+        FilterOrdering::pinned_by_recency(
+            pinned,
+            HashMap::from([(alpha.clone(), 0), (beta.clone(), 1)]),
+        )
+        .apply(&mut recency);
         assert_eq!(recency, [(beta, 100), (alpha, 100), (gamma, 90)]);
     }
 
@@ -870,19 +999,47 @@ mod tests {
         );
 
         assert_eq!(state.sort_order, crate::config::SortOrder::Recency);
-        assert!(!state.repo_view.selection_touched);
+        assert!(state.repo_view.selection_touched);
         let footer = footer_spans(
             &keys,
             BindingMode::Repo,
             &state.mode,
             state.sort_order,
+            false,
+            200,
             &theme,
         )
         .into_iter()
         .map(|span| span.content.into_owned())
         .collect::<String>();
         assert!(footer.contains("ctrl+r sort"));
+        assert!(footer.contains("ctrl+t pin"));
+        assert!(footer.contains("ctrl+f open"));
         assert!(footer.contains("sort: recency"));
+    }
+
+    #[test]
+    fn narrow_footer_keeps_picker_toggles_without_exceeding_the_terminal_width() {
+        let keys = KeysConfig::default();
+        let theme = Theme::from_config(&crate::config::ThemeConfig::default());
+        let state = state_with_repo();
+        let footer = footer_spans(
+            &keys,
+            BindingMode::Repo,
+            &state.mode,
+            state.sort_order,
+            true,
+            80,
+            &theme,
+        )
+        .into_iter()
+        .map(|span| span.content.into_owned())
+        .collect::<String>();
+
+        assert!(footer.contains("ctrl+r sort"));
+        assert!(footer.contains("ctrl+t pin"));
+        assert!(footer.contains("ctrl+f open"));
+        assert!(UnicodeWidthStr::width(footer.as_str()) <= 80);
     }
 
     #[test]
@@ -1031,10 +1188,7 @@ mod tests {
         );
         assert_eq!(state.repo_view.list.input.text, "é");
 
-        state.mode = Mode::BranchSelect(BranchContext {
-            repo_path: "/repo".into(),
-            repo_name: "repo".into(),
-        });
+        state.mode = Mode::BranchSelect(BranchContext::new("/repo".into(), "repo".into()));
         process_action(
             Action::Insert('界'),
             &mut state,
@@ -1061,10 +1215,7 @@ mod tests {
 
     fn state_with_branch(has_worktree: bool) -> AppState {
         let mut state = state_with_repo();
-        state.mode = Mode::BranchSelect(BranchContext {
-            repo_path: "/repo".into(),
-            repo_name: "repo".into(),
-        });
+        state.mode = Mode::BranchSelect(BranchContext::new("/repo".into(), "repo".into()));
         state.branch_view.entries = vec![BranchEntry {
             name: "feature".into(),
             worktree_path: has_worktree.then(|| PathBuf::from("/repo-feature")),

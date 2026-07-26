@@ -11,6 +11,7 @@ use crate::{
     config::{OnOpenConfig, SortOrder},
     git::Repo,
     herdr::WorktreeInfo,
+    pins::{PinOutcome, PinStore, PinToggle},
     recency::{RecencyLoad, RecencyPersistence, RecencyStore},
     screens::{
         branch::BranchViewState, delete::DeleteState, new_branch::NewBranchState,
@@ -22,6 +23,30 @@ pub use crate::screens::branch::{BranchContext, BranchId, OpenWorktreeLoadState}
 pub use crate::screens::delete::DeleteFlowState;
 pub use crate::screens::new_branch::BaseBranchSelection;
 pub use crate::screens::repo::RepoEntry;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OpenFilter {
+    #[default]
+    All,
+    OpenOnly,
+}
+
+impl OpenFilter {
+    pub const fn includes(self, is_open: bool) -> bool {
+        matches!(self, Self::All) || is_open
+    }
+
+    pub const fn is_active(self) -> bool {
+        matches!(self, Self::OpenOnly)
+    }
+
+    pub fn toggle(&mut self) {
+        *self = match self {
+            Self::All => Self::OpenOnly,
+            Self::OpenOnly => Self::All,
+        };
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TextInput {
@@ -253,6 +278,7 @@ pub struct AppState {
     pub sort_order: SortOrder,
     pub recency: RecencyStore,
     pub(crate) recency_persistence: RecencyPersistence,
+    pub pins: PinStore,
 }
 
 impl AppState {
@@ -274,13 +300,15 @@ impl AppState {
             sort_order: SortOrder::Alphabetical,
             recency: RecencyStore::default(),
             recency_persistence: RecencyPersistence::default(),
+            pins: PinStore::default(),
         }
     }
 
-    pub fn configure_sort(&mut self, sort_order: SortOrder, recency: RecencyLoad) {
+    pub fn configure_sort(&mut self, sort_order: SortOrder, recency: RecencyLoad, pins: PinStore) {
         self.sort_order = sort_order;
         self.recency = recency.store;
         self.recency_persistence = recency.persistence;
+        self.pins = pins;
     }
 
     pub fn selected_repo(&self) -> Option<&RepoEntry> {
@@ -307,6 +335,22 @@ impl AppState {
 
     pub fn push_toast(&mut self, kind: ToastKind, message: impl Into<String>) {
         self.push_toast_with_category(kind, &message.into(), ToastCategory::General);
+    }
+
+    pub(crate) fn surface_pin_toggle(&mut self, toggle: PinToggle) {
+        let (outcome, warnings) = match toggle {
+            PinToggle::Applied { outcome, warnings } => (Some(outcome), warnings),
+            PinToggle::Failed { warnings } => (None, warnings),
+        };
+        if outcome == Some(PinOutcome::AtCapacity) {
+            self.push_toast(
+                ToastKind::Warning,
+                "Pin limit reached; unpin an entry before adding another",
+            );
+        }
+        for warning in warnings {
+            self.push_toast(ToastKind::Warning, warning.message);
+        }
     }
 
     pub fn push_scan_warning(&mut self) {
