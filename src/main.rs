@@ -47,6 +47,8 @@ fn start() -> Result<()> {
         .transpose()
         .map_err(|error| anyhow::anyhow!("invalid HERDR_PLUGIN_CONTEXT_JSON: {error}"))?
         .unwrap_or_default();
+    let mut recency = herdr_kiosk::recency::RecencyStore::load(loaded.config.sort);
+    loaded.warnings.append(&mut recency.warnings);
 
     let theme = Theme::from_config(&loaded.config.theme);
     let _restore_guard = TerminalRestoreGuard;
@@ -74,6 +76,7 @@ fn start() -> Result<()> {
         .current_cwd()
         .map(|path| std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path)));
     let mut state = AppState::new(current_cwd);
+    state.configure_sort(loaded.config.sort, recency);
     state.on_open = loaded.config.on_open.clone();
     warnings.extend(herdr_kiosk::screens::delete::load_pending(&mut state));
     for ConfigWarning { message } in warnings {

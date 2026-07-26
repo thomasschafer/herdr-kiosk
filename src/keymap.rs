@@ -85,7 +85,8 @@ fn help_command_to_action(command: Command) -> Option<Action> {
         | Command::BranchesView
         | Command::Back
         | Command::NewBranch
-        | Command::Delete => None,
+        | Command::Delete
+        | Command::ToggleSort => None,
     }
 }
 
@@ -138,6 +139,8 @@ fn command_to_action(command: Command, state: &AppState) -> Option<Action> {
         Command::Delete => {
             matches!(state.mode, Mode::BranchSelect(_)).then_some(Action::DeleteWorktree)
         }
+        Command::ToggleSort => matches!(state.mode, Mode::RepoSelect | Mode::BranchSelect(_))
+            .then_some(Action::ToggleSort),
         Command::Clear => {
             if !active_query(state).is_empty() {
                 Some(Action::ClearQuery)

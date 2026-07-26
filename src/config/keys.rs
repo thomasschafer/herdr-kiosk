@@ -172,6 +172,7 @@ pub enum Command {
     Back,
     NewBranch,
     Delete,
+    ToggleSort,
     Clear,
     Backspace,
     DeleteWord,
@@ -193,6 +194,7 @@ impl Command {
             Self::Back => "back",
             Self::NewBranch => "new_branch",
             Self::Delete => "delete",
+            Self::ToggleSort => "toggle_sort",
             Self::Clear => "clear",
             Self::Backspace => "backspace",
             Self::DeleteWord => "delete_word",
@@ -214,6 +216,7 @@ impl Command {
             Self::Back => "Go back or cancel",
             Self::NewBranch => "Create a new branch",
             Self::Delete => "Delete the selected checkout",
+            Self::ToggleSort => "Toggle alphabetical and recency sorting",
             Self::Clear => "Clear the search query",
             Self::Backspace => "Delete the previous character",
             Self::DeleteWord => "Delete the previous word",
@@ -239,6 +242,7 @@ impl FromStr for Command {
             "back" | "go_back" => Ok(Self::Back),
             "new_branch" => Ok(Self::NewBranch),
             "delete" | "delete_worktree" => Ok(Self::Delete),
+            "toggle_sort" => Ok(Self::ToggleSort),
             "clear" | "clear_query" => Ok(Self::Clear),
             "backspace" => Ok(Self::Backspace),
             "delete_word" => Ok(Self::DeleteWord),
@@ -269,10 +273,10 @@ pub struct KeysConfig {
     /// actions are `open`, `back`, and `noop`.
     modal: HashMap<KeyChord, Command>,
     /// Bindings specific to the repository picker. Accepted actions are `open`,
-    /// `branches_view`, `quit`, and `noop`.
+    /// `branches_view`, `toggle_sort`, `quit`, and `noop`.
     repo_select: HashMap<KeyChord, Command>,
     /// Bindings specific to the branch picker. Accepted actions are `open`, `back`,
-    /// `new_branch`, `delete`, and `noop`.
+    /// `new_branch`, `delete`, `toggle_sort`, and `noop`.
     branch_select: HashMap<KeyChord, Command>,
 }
 
@@ -327,6 +331,7 @@ impl Default for KeysConfig {
             repo_select: map(&[
                 ("enter", Command::Open),
                 ("tab", Command::BranchesView),
+                ("C-r", Command::ToggleSort),
                 ("q", Command::Quit),
             ]),
             branch_select: map(&[
@@ -334,6 +339,7 @@ impl Default for KeysConfig {
                 ("esc", Command::Back),
                 ("C-o", Command::NewBranch),
                 ("C-x", Command::Delete),
+                ("C-r", Command::ToggleSort),
             ]),
         }
     }
@@ -541,6 +547,7 @@ const REPO_SELECT: &[Command] = &[
     Command::Noop,
     Command::Open,
     Command::BranchesView,
+    Command::ToggleSort,
     Command::Quit,
 ];
 const BRANCH_SELECT: &[Command] = &[
@@ -549,6 +556,7 @@ const BRANCH_SELECT: &[Command] = &[
     Command::Back,
     Command::NewBranch,
     Command::Delete,
+    Command::ToggleSort,
 ];
 
 fn extend_layer(
@@ -577,18 +585,19 @@ const fn command_rank(command: Command) -> u8 {
         Command::BranchesView => 1,
         Command::NewBranch => 2,
         Command::Delete => 3,
-        Command::Back => 4,
-        Command::MoveUp => 5,
-        Command::MoveDown => 6,
-        Command::Clear => 7,
-        Command::Backspace => 8,
-        Command::DeleteWord => 9,
-        Command::CursorLeft => 10,
-        Command::CursorRight => 11,
-        Command::Help => 12,
-        Command::DismissToast => 13,
-        Command::Quit => 14,
-        Command::Noop => 15,
+        Command::ToggleSort => 4,
+        Command::Back => 5,
+        Command::MoveUp => 6,
+        Command::MoveDown => 7,
+        Command::Clear => 8,
+        Command::Backspace => 9,
+        Command::DeleteWord => 10,
+        Command::CursorLeft => 11,
+        Command::CursorRight => 12,
+        Command::Help => 13,
+        Command::DismissToast => 14,
+        Command::Quit => 15,
+        Command::Noop => 16,
     }
 }
 

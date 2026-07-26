@@ -6,10 +6,12 @@ use std::{
 };
 
 use crate::{
-    app::{FilterItem, FilterRequest, FilterWorker, TickChanges},
+    app::{FilterItem, FilterOrdering, FilterRequest, FilterWorker, TickChanges},
+    config::SortOrder,
     event::{AppEvent, FilterKey, FilterTarget},
     git::Repo,
     herdr::HerdrProvider,
+    recency::RecencyStore,
     spawn::{EventSender, spawn_open_folder, spawn_open_repo},
     state::{AppState, Mode, SearchableList, ToastKind},
 };
@@ -17,14 +19,17 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoEntry {
     pub repo: Repo,
+    pub(crate) canonical_path: PathBuf,
     pub disambiguator: Option<String>,
     pub is_open: bool,
 }
 
 impl RepoEntry {
     pub fn new(repo: Repo) -> Self {
+        let canonical_path = crate::path::canonical_or_original(&repo.path);
         Self {
             repo,
+            canonical_path,
             disambiguator: None,
             is_open: false,
         }
@@ -125,6 +130,50 @@ impl RepoViewState {
         }
     }
 
+    fn recency_sort(&mut self, recency: &RecencyStore) {
+        self.canonical_sort();
+        let selected_path = self.selected().map(|entry| entry.repo.path.clone());
+        let filtered_paths = self
+            .list
+            .filtered
+            .iter()
+            .filter_map(|(index, score)| {
+                self.entries
+                    .get(*index)
+                    .map(|entry| (entry.repo.path.clone(), *score))
+            })
+            .collect::<Vec<_>>();
+        self.entries.sort_by_cached_key(|entry| {
+            recency
+                .repo_rank_canonical(&entry.canonical_path)
+                .unwrap_or(usize::MAX)
+        });
+        if self.list.input.text.is_empty() {
+            self.list.filtered = (0..self.entries.len()).map(|index| (index, 0)).collect();
+        } else {
+            let indices: HashMap<_, _> = self
+                .entries
+                .iter()
+                .enumerate()
+                .map(|(index, entry)| (entry.repo.path.as_path(), index))
+                .collect();
+            self.list.filtered = filtered_paths
+                .iter()
+                .filter_map(|(path, score)| {
+                    indices.get(path.as_path()).map(|index| (*index, *score))
+                })
+                .collect();
+        }
+        self.list.selected = selected_path
+            .and_then(|path| {
+                self.list
+                    .filtered
+                    .iter()
+                    .position(|(index, _)| self.entries[*index].repo.path == path)
+            })
+            .or_else(|| (!self.list.filtered.is_empty()).then_some(0));
+    }
+
     pub(crate) fn apply_current_selection(&mut self) {
         if self.selection_touched {
             return;
@@ -145,6 +194,28 @@ impl RepoViewState {
         if best.is_some() {
             self.list.selected = best;
         }
+    }
+
+    fn apply_previous_selection(&mut self) {
+        if self.selection_touched {
+            return;
+        }
+        let Some(cwd) = self.current_cwd.as_deref() else {
+            return;
+        };
+        if let Some(previous) =
+            self.list.filtered.iter().position(|(index, _)| {
+                !crate::path::starts_with(cwd, &self.entries[*index].repo.path)
+            })
+        {
+            self.list.selected = Some(previous);
+        }
+    }
+
+    fn has_ranked_entry(&self, recency: &RecencyStore) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| recency.repo_rank_canonical(&entry.canonical_path).is_some())
     }
 }
 
@@ -213,13 +284,13 @@ pub(crate) fn apply_changes(
     worker: &FilterWorker,
 ) {
     if changes.repos_changed {
-        state.repo_view.canonical_sort();
-        state.repo_view.apply_current_selection();
+        sort_entries(state);
+        apply_default_selection(state);
     }
     if changes.collision_pass {
         apply_collisions(state);
-        state.repo_view.canonical_sort();
-        state.repo_view.apply_current_selection();
+        sort_entries(state);
+        apply_default_selection(state);
         changes.repos_changed = true;
     }
     if changes.repos_changed && matches!(state.mode, Mode::RepoSelect) {
@@ -245,12 +316,12 @@ pub(crate) fn edit(
 pub(crate) fn queue_filter(state: &mut AppState, worker: &FilterWorker, preserve_selection: bool) {
     state.repo_view.filter_generation = state.repo_view.filter_generation.wrapping_add(1);
     if state.repo_view.list.input.text.is_empty() {
-        state.repo_view.canonical_sort();
+        sort_entries(state);
         if !preserve_selection {
             state.repo_view.list.selected = (!state.repo_view.entries.is_empty()).then_some(0);
         }
         if preserve_selection {
-            state.repo_view.apply_current_selection();
+            apply_default_selection(state);
         }
         return;
     }
@@ -272,7 +343,41 @@ pub(crate) fn queue_filter(state: &mut AppState, worker: &FilterWorker, preserve
             })
             .collect(),
         selected,
+        ordering: match state.sort_order {
+            SortOrder::Alphabetical => FilterOrdering::Alphabetical,
+            SortOrder::Recency => FilterOrdering::Recency(
+                state
+                    .repo_view
+                    .entries
+                    .iter()
+                    .filter_map(|entry| {
+                        state
+                            .recency
+                            .repo_rank_canonical(&entry.canonical_path)
+                            .map(|rank| (FilterKey::Repo(entry.repo.path.clone()), rank))
+                    })
+                    .collect(),
+            ),
+        },
     });
+}
+
+fn sort_entries(state: &mut AppState) {
+    match state.sort_order {
+        SortOrder::Alphabetical => state.repo_view.canonical_sort(),
+        SortOrder::Recency => state.repo_view.recency_sort(&state.recency),
+    }
+}
+
+fn apply_default_selection(state: &mut AppState) {
+    match state.sort_order {
+        SortOrder::Recency if state.repo_view.has_ranked_entry(&state.recency) => {
+            state.repo_view.apply_previous_selection();
+        }
+        SortOrder::Alphabetical | SortOrder::Recency => {
+            state.repo_view.apply_current_selection();
+        }
+    }
 }
 
 pub(crate) fn open_selected(
@@ -306,11 +411,13 @@ fn add(state: &mut AppState, repo: Repo) -> bool {
         return false;
     }
     let mut entry = RepoEntry::new(repo);
-    let canonical = crate::path::canonical_or_original(&entry.repo.path);
     entry.is_open = if entry.repo.is_git {
-        state.repo_view.open_roots.contains(&canonical)
+        state.repo_view.open_roots.contains(&entry.canonical_path)
     } else {
-        state.repo_view.open_folder_roots.contains(&canonical)
+        state
+            .repo_view
+            .open_folder_roots
+            .contains(&entry.canonical_path)
     };
     state.repo_view.entries.push(entry);
     true
@@ -331,7 +438,6 @@ fn apply_collisions(state: &mut AppState) {
 
 fn apply_open_indicators(state: &mut AppState) {
     for entry in &mut state.repo_view.entries {
-        let repo_path = crate::path::canonical_or_original(&entry.repo.path);
         let open_paths = if entry.repo.is_git {
             &state.repo_view.open_roots
         } else {
@@ -339,7 +445,7 @@ fn apply_open_indicators(state: &mut AppState) {
         };
         entry.is_open = open_paths
             .iter()
-            .any(|open_path| crate::path::equivalent(open_path, &repo_path));
+            .any(|open_path| crate::path::equivalent(open_path, &entry.canonical_path));
     }
 }
 

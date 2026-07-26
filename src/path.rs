@@ -8,6 +8,17 @@ pub fn canonical_or_original(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
+pub fn normalized_key(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        PathBuf::from(windows_path_key(&path.to_string_lossy()))
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_path_buf()
+    }
+}
+
 /// Compare filesystem paths using the host platform's path semantics.
 pub fn equivalent(left: &Path, right: &Path) -> bool {
     #[cfg(windows)]

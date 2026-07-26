@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{
-    app::{FilterItem, FilterRequest, FilterWorker, TickChanges},
+    app::{FilterItem, FilterOrdering, FilterRequest, FilterWorker, TickChanges},
     event::{AppEvent, FilterKey, FilterTarget},
     git::GitProvider,
     herdr::HerdrProvider,
@@ -254,6 +254,7 @@ fn queue_filter(state: &mut AppState, worker: &FilterWorker, selected_name: Opti
             })
             .collect(),
         selected: selected_name.map(FilterKey::Base),
+        ordering: FilterOrdering::Alphabetical,
     });
 }
 

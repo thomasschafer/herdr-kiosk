@@ -46,6 +46,15 @@ Type to fuzzy-search repositories and branches (and plain folders, if you enable
 repository's branch view (for Git repositories), and `ctrl+h` shows all active bindings
 for the current view.
 
+Results are ordered alphabetically by default. Set `sort = "recency"` in your config to
+put the most recently opened entries first. In recency mode, the cursor deliberately starts
+on the previous entry so `enter` jumps back to it. Pressing `ctrl+r` toggles the ordering
+for the current picker session only; it does not update your config.
+
+Recency history is stored in `recency.json` under Herdr's plugin state directory, falling
+back to `$XDG_STATE_HOME/herdr-kiosk` or `~/.local/state/herdr-kiosk` outside Herdr. Delete
+that file to reset the history.
+
 ## Configuration
 
 <!-- CONFIG:START -->
@@ -87,6 +96,14 @@ Include plain folders in search results globally. Rich search-directory
 entries can override this value with their own `include_non_git` setting.
 
 Default: `false`
+
+#### `sort`
+
+Order repository and branch results. `alphabetical` is the default and
+ignores recency state entirely; `recency` puts the most recently opened
+entries first while retaining alphabetical fallback ordering.
+
+Default: `"alphabetical"`
 
 ### `[theme]`
 
@@ -175,12 +192,14 @@ Defaults:
 "esc" = "back"
 
 [keys.repo_select]
+"ctrl+r" = "toggle_sort"
 "enter" = "open"
 "q" = "quit"
 "tab" = "branches_view"
 
 [keys.branch_select]
 "ctrl+o" = "new_branch"
+"ctrl+r" = "toggle_sort"
 "ctrl+x" = "delete"
 "enter" = "open"
 "esc" = "back"

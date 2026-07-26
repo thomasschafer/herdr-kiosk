@@ -14,6 +14,7 @@ pub enum Action {
     StartNewBranch,
     CreateNewBranch,
     DeleteWorktree,
+    ToggleSort,
     ConfirmDeleteWorktree,
     CancelOverlay,
     BackToRepos,
