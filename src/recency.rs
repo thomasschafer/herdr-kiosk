@@ -7,7 +7,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    config::ConfigWarning,
+    config::{ConfigWarning, SortOrder},
     path::{canonical_or_original, normalized_key},
     state::BranchId,
     state_store,
@@ -71,15 +71,21 @@ pub struct RecencyStore {
     ranks: HashMap<RecencyKey, usize>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RecencyPersistence {
+    path: Option<PathBuf>,
+}
+
 #[derive(Debug, Default)]
 pub struct RecencyLoad {
     pub store: RecencyStore,
+    pub(crate) persistence: RecencyPersistence,
     pub warnings: Vec<ConfigWarning>,
 }
 
 impl RecencyStore {
-    pub fn load() -> RecencyLoad {
-        Self::load_with(|name| std::env::var(name).ok())
+    pub fn load(sort_order: SortOrder) -> RecencyLoad {
+        Self::load_with(sort_order, |name| std::env::var(name).ok())
     }
 
     pub fn repo_rank(&self, path: &Path) -> Option<usize> {
@@ -123,23 +129,35 @@ impl RecencyStore {
             .collect();
     }
 
-    fn load_with(get_env: impl Fn(&str) -> Option<String>) -> RecencyLoad {
+    fn load_with(sort_order: SortOrder, get_env: impl Fn(&str) -> Option<String>) -> RecencyLoad {
         let resolution = state_store::resolve_state_path(FILE_NAME, get_env);
+        let persistence = RecencyPersistence {
+            path: resolution.path.clone(),
+        };
+        if matches!(sort_order, SortOrder::Alphabetical) {
+            return RecencyLoad {
+                persistence,
+                ..RecencyLoad::default()
+            };
+        }
         let Some(path) = resolution.path else {
-            let mut warnings = resolution.warnings;
-            warnings.push(ConfigWarning {
+            return RecencyLoad {
+                persistence,
+                warnings: vec![ConfigWarning {
                 message: "Recency state is unavailable because no trusted state directory could be resolved"
                     .into(),
-            });
-            return RecencyLoad {
-                warnings,
+                }],
                 ..RecencyLoad::default()
             };
         };
         let (store, mut load_warnings) = Self::load_from(&path);
         let mut warnings = resolution.warnings;
         warnings.append(&mut load_warnings);
-        RecencyLoad { store, warnings }
+        RecencyLoad {
+            store,
+            persistence,
+            warnings,
+        }
     }
 
     fn load_from(path: &Path) -> (Self, Vec<ConfigWarning>) {
@@ -191,38 +209,36 @@ impl RecencyStore {
     }
 }
 
-pub fn record_success(key: RecencyKey) -> Option<String> {
-    let warnings = record_success_with(key, |name| std::env::var(name).ok());
-    (!warnings.is_empty()).then(|| {
-        warnings
-            .into_iter()
-            .map(|warning| warning.message)
-            .collect::<Vec<_>>()
-            .join("; ")
-    })
+pub(crate) fn record_success(persistence: &RecencyPersistence, key: RecencyKey) {
+    let Some(path) = persistence.path.as_deref() else {
+        return;
+    };
+    let _ = record_success_at(key, path);
 }
 
+#[cfg(test)]
 fn record_success_with(
     key: RecencyKey,
     get_env: impl Fn(&str) -> Option<String>,
 ) -> Vec<ConfigWarning> {
     let resolution = state_store::resolve_state_path(FILE_NAME, get_env);
     let Some(path) = resolution.path else {
-        let mut warnings = resolution.warnings;
-        warnings.push(ConfigWarning {
-            message: "Could not persist recency state because no trusted state directory could be resolved"
-                .into(),
-        });
-        return warnings;
+        return Vec::new();
     };
     let mut warnings = resolution.warnings;
-    match state_store::with_lock(&path, || {
-        let (mut store, load_warnings) = RecencyStore::load_from(&path);
+    warnings.append(&mut record_success_at(key, &path));
+    warnings
+}
+
+fn record_success_at(key: RecencyKey, path: &Path) -> Vec<ConfigWarning> {
+    let mut warnings = Vec::new();
+    match state_store::with_lock(path, || {
+        let (mut store, load_warnings) = RecencyStore::load_from(path);
         if let RecencyKey::Branch { repo_path, .. } = &key {
             store.record(RecencyKey::repo_canonical(repo_path));
         }
         store.record(key);
-        store.save_to(&path)?;
+        store.save_to(path)?;
         Ok(load_warnings)
     }) {
         Ok(mut persist_warnings) => warnings.append(&mut persist_warnings),
@@ -336,6 +352,29 @@ mod tests {
             Some(0)
         );
         assert_eq!(loaded.repo_rank(Path::new("/repos/alpha")), Some(1));
+    }
+
+    #[test]
+    fn unavailable_state_warns_only_when_recency_is_configured() {
+        let alphabetical = RecencyStore::load_with(SortOrder::Alphabetical, |_| None);
+        assert!(alphabetical.warnings.is_empty());
+        assert!(alphabetical.persistence.path.is_none());
+
+        let recency = RecencyStore::load_with(SortOrder::Recency, |_| None);
+        assert_eq!(recency.warnings.len(), 1);
+        assert!(
+            recency.warnings[0]
+                .message
+                .contains("Recency state is unavailable")
+        );
+        assert!(recency.persistence.path.is_none());
+    }
+
+    #[test]
+    fn recording_without_a_state_path_is_silent() {
+        let warnings = record_success_with(RecencyKey::repo(Path::new("/repo")), |_| None);
+
+        assert!(warnings.is_empty());
     }
 
     #[test]

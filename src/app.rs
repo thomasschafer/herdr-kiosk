@@ -226,7 +226,8 @@ pub fn run(
 ) -> Result<RunOutcome> {
     let (tx, rx) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
-    let sender = EventSender::new(tx, Arc::clone(&cancel));
+    let sender =
+        EventSender::new(tx, Arc::clone(&cancel)).with_recency(state.recency_persistence.clone());
     let filter_worker = FilterWorker::spawn(sender.clone());
     let fetch_deduplicator = FetchDeduplicator::default();
     let spinner_start = Instant::now();

@@ -12,7 +12,7 @@ use crate::{
     git::Repo,
     herdr::WorktreeInfo,
     pins::{PinOutcome, PinStore, PinToggle},
-    recency::RecencyStore,
+    recency::{RecencyLoad, RecencyPersistence, RecencyStore},
     screens::{
         branch::BranchViewState, delete::DeleteState, new_branch::NewBranchState,
         repo::RepoViewState,
@@ -277,6 +277,7 @@ pub struct AppState {
     pub on_open: OnOpenConfig,
     pub sort_order: SortOrder,
     pub recency: RecencyStore,
+    pub(crate) recency_persistence: RecencyPersistence,
     pub pins: PinStore,
 }
 
@@ -298,13 +299,15 @@ impl AppState {
             on_open: OnOpenConfig::default(),
             sort_order: SortOrder::Alphabetical,
             recency: RecencyStore::default(),
+            recency_persistence: RecencyPersistence::default(),
             pins: PinStore::default(),
         }
     }
 
-    pub fn configure_sort(&mut self, sort_order: SortOrder, recency: RecencyStore, pins: PinStore) {
+    pub fn configure_sort(&mut self, sort_order: SortOrder, recency: RecencyLoad, pins: PinStore) {
         self.sort_order = sort_order;
-        self.recency = recency;
+        self.recency = recency.store;
+        self.recency_persistence = recency.persistence;
         self.pins = pins;
     }
 

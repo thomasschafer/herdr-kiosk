@@ -47,13 +47,8 @@ fn start() -> Result<()> {
         .transpose()
         .map_err(|error| anyhow::anyhow!("invalid HERDR_PLUGIN_CONTEXT_JSON: {error}"))?
         .unwrap_or_default();
-    let recency = if matches!(loaded.config.sort, config::SortOrder::Recency) {
-        let recency = herdr_kiosk::recency::RecencyStore::load();
-        loaded.warnings.extend(recency.warnings);
-        recency.store
-    } else {
-        herdr_kiosk::recency::RecencyStore::default()
-    };
+    let mut recency = herdr_kiosk::recency::RecencyStore::load(loaded.config.sort);
+    loaded.warnings.append(&mut recency.warnings);
     let pins = herdr_kiosk::pins::PinStore::load();
     loaded.warnings.extend(pins.warnings);
 
