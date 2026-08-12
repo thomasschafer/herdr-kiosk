@@ -13,7 +13,8 @@ Install from GitHub:
 herdr plugin install thomasschafer/herdr-kiosk
 ```
 
-Add a keybinding to open the picker (here, `prefix+f`):
+Add keybindings to open the repo picker and the workspace picker (here,
+`prefix+f` and `prefix+w`):
 
 ```toml
 [[keys.command]]
@@ -21,6 +22,12 @@ key = "prefix+f"
 type = "plugin_action"
 command = "thomasschafer.herdr-kiosk.open-picker"
 description = "open repo picker"
+
+[[keys.command]]
+key = "prefix+w"
+type = "plugin_action"
+command = "thomasschafer.herdr-kiosk.open-workspace-picker"
+description = "open workspace picker"
 ```
 
 Then reload Herdr's configuration:
@@ -45,6 +52,21 @@ Type to fuzzy-search repositories and branches (and plain folders, if you enable
 `include_non_git`). `enter` opens the selected checkout or folder, `tab` opens a
 repository's branch view (for Git repositories), and `ctrl+h` shows all active bindings
 for the current view.
+
+### Workspace picker
+
+The workspace picker lists the workspaces already open in the current Herdr
+session — repo name, branch, and agent status, like the sidebar — and switches
+to the selected one with `enter`. Search matches the repo name, branch, and
+workspace label. It uses the repo picker's key bindings and needs no
+configuration.
+
+Workspaces are ordered by focus recency: the current workspace first, then the
+most recently focused. The cursor starts on the previous workspace, so opening
+the picker and pressing `enter` toggles back to where you just were. Recency
+ordering needs a Herdr build that reports `last_focused_unix_ms` in
+`workspace list`; on builds without it, the picker falls back to the current
+workspace first and then Herdr's sidebar order.
 
 ## Configuration
 

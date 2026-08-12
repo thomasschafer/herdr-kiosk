@@ -294,8 +294,15 @@ fn open_indicators_use_workspaces_for_git_and_pane_cwds_for_folders() {
     process_app_event(
         AppEvent::OpenWorkspacesLoaded {
             workspaces: vec![WorkspaceInfo {
+                workspace_id: "w_repo".into(),
+                label: "repo".into(),
+                focused: false,
+                agent_status: None,
+                branch: None,
+                last_focused_unix_ms: None,
                 worktree: Some(WorkspaceWorktreeInfo {
                     repo_root: "/repo".into(),
+                    repo_name: "repo".into(),
                 }),
             }],
         },

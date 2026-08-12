@@ -23,12 +23,44 @@ height = "90%"
 platforms = ["windows"]
 command = ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "scripts/run-picker.ps1"]
 
+[[panes]]
+id = "workspace-picker"
+title = "Workspaces"
+placement = "popup"
+width = "90%"
+height = "90%"
+platforms = ["linux", "macos"]
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-kiosk\" workspaces"]
+
+[[panes]]
+id = "workspace-picker-windows"
+title = "Workspaces"
+placement = "popup"
+width = "90%"
+height = "90%"
+platforms = ["windows"]
+command = ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "scripts/run-workspace-picker.ps1"]
+
 [[actions]]
 id = "open-picker"
 title = "Open repo picker"
 contexts = ["workspace", "global"]
 platforms = ["linux", "macos"]
 command = ["sh", "scripts/open-picker.sh"]
+
+[[actions]]
+id = "open-workspace-picker"
+title = "Open workspace picker"
+contexts = ["workspace", "global"]
+platforms = ["linux", "macos"]
+command = ["sh", "scripts/open-workspace-picker.sh"]
+
+[[actions]]
+id = "open-workspace-picker-windows"
+title = "Open workspace picker"
+contexts = ["workspace", "global"]
+platforms = ["windows"]
+command = ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "scripts/open-workspace-picker.ps1"]
 
 [[actions]]
 id = "open-picker-windows"

@@ -9,6 +9,7 @@ pub mod new_branch;
 pub mod repo_list;
 pub mod search_bar;
 pub mod setup;
+pub mod workspace_list;
 
 pub(crate) fn wrapped_content_height(lines: &[Line<'_>], text_width: u16) -> u16 {
     lines.iter().fold(0, |height, line| {

@@ -31,10 +31,36 @@ impl Drop for TerminalRestoreGuard {
 }
 
 fn main() {
-    if let Err(error) = start() {
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    let result = match arguments.first().map(String::as_str) {
+        None => start(),
+        Some("workspaces") if arguments.len() == 1 => start_workspace_picker(),
+        Some(_) => {
+            eprintln!("usage: herdr-kiosk [workspaces]");
+            std::process::exit(2);
+        }
+    };
+    if let Err(error) = result {
         eprintln!("herdr-kiosk: {error:#}");
         std::process::exit(1);
     }
+}
+
+fn start_workspace_picker() -> Result<()> {
+    let loaded = config::load_config()?;
+    let herdr_binary = std::env::var_os("HERDR_BIN_PATH")
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "HERDR_BIN_PATH is not set; the workspace picker must be launched from herdr"
+            )
+        })?;
+    let herdr: Arc<dyn HerdrProvider> = Arc::new(CliHerdrProvider::new(herdr_binary));
+    let theme = Theme::from_config(&loaded.config.theme);
+    let _restore_guard = TerminalRestoreGuard;
+    let mut terminal = ratatui::try_init()?;
+    herdr_kiosk::screens::workspace::run(&mut terminal, &herdr, &theme, &loaded.config.keys)?;
+    Ok(())
 }
 
 fn start() -> Result<()> {

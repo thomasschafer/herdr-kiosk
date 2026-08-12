@@ -13,10 +13,25 @@ pub mod mock;
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct WorkspaceWorktreeInfo {
     pub repo_root: String,
+    pub repo_name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct WorkspaceInfo {
+    pub workspace_id: String,
+    pub label: String,
+    #[serde(default)]
+    pub focused: bool,
+    /// Agent status as reported by herdr, kept as a raw string so unknown
+    /// future statuses pass through instead of failing deserialization.
+    #[serde(default)]
+    pub agent_status: Option<String>,
+    /// Present on herdr builds that expose the workspace's git branch.
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// Present on herdr builds that track focus recency; stock herdr omits it.
+    #[serde(default)]
+    pub last_focused_unix_ms: Option<u64>,
     #[serde(default)]
     pub worktree: Option<WorkspaceWorktreeInfo>,
 }
@@ -679,13 +694,29 @@ mod tests {
         );
         let WorkspaceListResult::WorkspaceList { workspaces } = parse_success(&json);
         assert!(workspaces[0].worktree.is_none());
-        assert_eq!(
-            workspaces[1]
-                .worktree
-                .as_ref()
-                .map(|worktree| worktree.repo_root.as_str()),
-            Some("/repo")
-        );
+        assert_eq!(workspaces[0].workspace_id, "w_1");
+        assert_eq!(workspaces[0].label, "repo");
+        assert!(workspaces[0].focused);
+        assert_eq!(workspaces[0].agent_status.as_deref(), Some("unknown"));
+        assert!(workspaces[0].branch.is_none());
+        assert!(workspaces[0].last_focused_unix_ms.is_none());
+        let worktree = workspaces[1].worktree.as_ref().unwrap();
+        assert_eq!(worktree.repo_root, "/repo");
+        assert_eq!(worktree.repo_name, "repo");
+    }
+
+    #[test]
+    fn parses_fork_only_branch_and_recency_fields_when_present() {
+        let json = r#"{"id":"cli:workspace:list","result":{"type":"workspace_list","workspaces":[{
+            "workspace_id":"w_3","number":3,"label":"repo feature","focused":false,
+            "pane_count":1,"tab_count":1,"active_tab_id":"w_3:1",
+            "agent_status":"working","tokens":{},
+            "branch":"feature","last_focused_unix_ms":1784840000000
+        }]}}"#;
+        let WorkspaceListResult::WorkspaceList { workspaces } = parse_success(json);
+        assert_eq!(workspaces[0].branch.as_deref(), Some("feature"));
+        assert_eq!(workspaces[0].last_focused_unix_ms, Some(1_784_840_000_000));
+        assert_eq!(workspaces[0].agent_status.as_deref(), Some("working"));
     }
 
     #[test]

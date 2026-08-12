@@ -135,31 +135,39 @@ impl Drop for FilterWorker {
     }
 }
 
+/// Rank `texts` against `query`: score descending, then shorter text, then
+/// alphabetical. An empty query keeps the input order with zero scores.
+pub(crate) fn fuzzy_rank(
+    query: &str,
+    texts: &[&str],
+    matcher: &SkimMatcherV2,
+) -> Vec<(usize, i64)> {
+    if query.is_empty() {
+        return (0..texts.len()).map(|index| (index, 0)).collect();
+    }
+    let mut scored: Vec<_> = texts
+        .iter()
+        .enumerate()
+        .filter_map(|(index, text)| matcher.fuzzy_match(text, query).map(|score| (index, score)))
+        .collect();
+    scored.sort_by(|(left, left_score), (right, right_score)| {
+        right_score
+            .cmp(left_score)
+            .then(texts[*left].len().cmp(&texts[*right].len()))
+            .then(texts[*left].cmp(texts[*right]))
+    });
+    scored
+}
+
 fn fuzzy_filter(
     query: &str,
     items: &[FilterItem],
     matcher: &SkimMatcherV2,
 ) -> Vec<(FilterKey, i64)> {
-    if query.is_empty() {
-        return items.iter().map(|item| (item.key.clone(), 0)).collect();
-    }
-    let mut scored: Vec<_> = items
-        .iter()
-        .filter_map(|item| {
-            matcher
-                .fuzzy_match(&item.text, query)
-                .map(|score| (item, score))
-        })
-        .collect();
-    scored.sort_by(|(left, left_score), (right, right_score)| {
-        right_score
-            .cmp(left_score)
-            .then(left.text.len().cmp(&right.text.len()))
-            .then(left.text.cmp(&right.text))
-    });
-    scored
+    let texts: Vec<&str> = items.iter().map(|item| item.text.as_str()).collect();
+    fuzzy_rank(query, &texts, matcher)
         .into_iter()
-        .map(|(item, score)| (item.key.clone(), score))
+        .map(|(index, score)| (items[index].key.clone(), score))
         .collect()
 }
 

@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# When the e2e runs inside a herdr pane, the inherited socket overrides would
+# make every `h` call — including the cleanup `h server stop` — target the
+# developer's live server instead of the isolated fixture server.
+unset HERDR_SOCKET_PATH HERDR_CLIENT_SOCKET_PATH HERDR_ENV
+
 PROJECT_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 HK_ROOT=${HK_E2E_HOME:-/tmp/hk-m7}
 HERDR_BIN=${HERDR:-"$PROJECT_ROOT/../herdr/target/release/herdr"}
@@ -521,6 +526,44 @@ wait_screen_contains "open-me — select branch"
 t send-keys -t "$SESSION" C-c
 wait_screen_absent "open-me — select branch"
 printf 'dirty herdr checkout force confirmation and deletion: ok\n'
+
+# The workspace picker orders by focus recency when herdr reports it and
+# falls back to sidebar order otherwise; either way the cursor starts on the
+# previous workspace, so a plain enter toggles back to it.
+EXPECTED_TOGGLE=$(h workspace list | /usr/bin/python3 -c '
+import json
+import sys
+
+workspaces = json.load(sys.stdin)["result"]["workspaces"]
+ordered = sorted(
+    enumerate(workspaces),
+    key=lambda pair: (
+        not pair[1].get("focused", False),
+        pair[1].get("last_focused_unix_ms") is None,
+        -(pair[1].get("last_focused_unix_ms") or 0),
+        pair[0],
+    ),
+)
+print(ordered[1][1]["workspace_id"])
+')
+[ -n "$EXPECTED_TOGGLE" ] || fail "could not compute expected toggle workspace"
+h plugin action invoke open-workspace-picker --plugin thomasschafer.herdr-kiosk >/dev/null
+wait_screen_contains "herdr-kiosk — switch workspace"
+wait_screen_contains "open-me"
+t send-keys -t "$SESSION" Enter
+wait_screen_absent "herdr-kiosk — switch workspace"
+assert_focused_workspace "$EXPECTED_TOGGLE"
+printf 'workspace picker toggles to the previous workspace: ok\n'
+
+h plugin action invoke open-workspace-picker --plugin thomasschafer.herdr-kiosk >/dev/null
+wait_screen_contains "herdr-kiosk — switch workspace"
+wait_screen_contains "notes-folder"
+t send-keys -t "$SESSION" -l "notes-folder"
+wait_screen_contains "1 of "
+t send-keys -t "$SESSION" Enter
+wait_screen_absent "herdr-kiosk — switch workspace"
+assert_focused_workspace "$FOLDER_WORKSPACE_ID"
+printf 'workspace picker fuzzy switch: ok\n'
 
 h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
 wait_screen_contains "herdr-kiosk — select repo"
