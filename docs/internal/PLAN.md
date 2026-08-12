@@ -2,7 +2,8 @@
 
 This is the durable design and decisions reference for the shipped plugin. Future work
 and deferred items live in [the backlog](internal/backlog.md); the real-MRU design lives
-in [the herdr-driven MRU plan](internal/herdr-driven-mru-plan.md).
+in the herdr-driven MRU plan (`internal/herdr-driven-mru-plan.md`, which lands with the
+unmerged `feature/recency-sort` branch).
 
 ## 1. Goal
 
@@ -36,6 +37,7 @@ These decisions shaped v1:
 | D17 | Performance | Users may have very large repo/branch counts. Correctness first, but weigh allocation, process-spawn, and traversal costs in reviews as a standing concern; pragmatic, not premature |
 | D18 | Help esc | `esc` always closes the help overlay, even with a non-empty help query; the overlay owns and discards its own query, leaving the underlying picker query untouched |
 | D19 | Editor-on-open | After opening or creating a workspace, optionally split a pane and run a command (e.g. `hx`), configured via `[on_open]`. Uses herdr `pane split --direction` + `pane run` |
+| D20 | Workspace picker | Separate `workspaces` subcommand/pane/action listing the session's workspaces like the sidebar (repo name, branch, agent status). Ordered focused-first, then fork-only `last_focused_unix_ms` descending, then sidebar order; cursor starts on the previous workspace so `enter` toggles back. Degrades to focused-first + sidebar order on stock herdr. Reuses the repo picker's key bindings; no config of its own |
 
 ## 3. Source-verified herdr facts (0.7.4)
 

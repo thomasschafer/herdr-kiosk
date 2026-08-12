@@ -40,12 +40,15 @@ trap cleanup EXIT
 
 cleanup
 rm -rf -- "$HK_ROOT"
-mkdir -p "$HK_HOME_DIR/.config/herdr" "$HK_ROOT/worktrees"
+mkdir -p "$HK_HOME_DIR/.config/herdr" "$HK_HOME_DIR/.config/herdr-dev" "$HK_ROOT/worktrees"
 
 cat >"$HK_HOME_DIR/.config/herdr/config.toml" <<EOF
 [worktrees]
 directory = "$HK_ROOT/worktrees"
 EOF
+# Debug herdr builds read herdr-dev directories; mirror the fixture config so
+# the suite can also run against a debug herdr binary.
+cp "$HK_HOME_DIR/.config/herdr/config.toml" "$HK_HOME_DIR/.config/herdr-dev/config.toml"
 
 make_repo "$HK_ROOT/repos/alpha/repo-same"
 make_repo "$HK_ROOT/repos/beta/repo-same"

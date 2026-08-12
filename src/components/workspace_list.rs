@@ -111,8 +111,12 @@ fn entry_spans<'a>(entry: &WorkspaceEntry, theme: &Theme, row_width: usize) -> V
 fn agent_badge<'a>(entry: &WorkspaceEntry, theme: &Theme) -> Option<Span<'a>> {
     let status = entry.agent_status.as_deref()?;
     let color = match status {
-        "working" => theme.accent,
-        "idle" => theme.open,
+        // Hue-for-hue with herdr's own status colors: blocked red, done blue
+        // (closest ANSI-16 slot here is cyan), working yellow. Idle and any
+        // future status render muted.
+        "blocked" => theme.error,
+        "done" => theme.secondary,
+        "working" => theme.warning,
         "unknown" => return None,
         _ => theme.muted,
     };
@@ -235,6 +239,15 @@ mod tests {
                 last_focused_unix_ms: Some(100),
                 worktree: None,
             },
+            WorkspaceInfo {
+                workspace_id: "w_3".into(),
+                label: "needs-input".into(),
+                focused: false,
+                agent_status: Some("blocked".into()),
+                branch: None,
+                last_focused_unix_ms: Some(50),
+                worktree: None,
+            },
         ]);
 
         let rendered = render(&mut state);
@@ -242,7 +255,8 @@ mod tests {
         assert!(rendered.contains("photodrop  fix-modals  current"));
         assert!(rendered.contains("● working"));
         assert!(rendered.contains("● idle"));
-        assert!(rendered.contains("2 of 2 workspaces"));
+        assert!(rendered.contains("● blocked"));
+        assert!(rendered.contains("3 of 3 workspaces"));
         assert!(!rendered.chars().any(char::is_control));
     }
 

@@ -40,6 +40,11 @@ issues on herdr for now; raise upstream when we decide to.
 - **(Only if we pursue scripted-focus MRU)** a monotonic event sequence/timestamp on focus
   events, so a focus recorder can order rapid programmatic focus changes deterministically.
   See the MRU plan's risks. Not needed for human-frequency use.
+- **Workspace focus recency + branch in `workspace list` — delivered on the fork.** The
+  workspace picker consumes the optional `last_focused_unix_ms` and top-level `branch`
+  fields added on the herdr fork branch `feat/workspace-recency`; stock herdr omits them
+  and the picker degrades to focused-first + sidebar order. Keep those fields intact when
+  rebasing the fork onto upstream herdr releases.
 
 ## Parked features
 
@@ -48,12 +53,17 @@ Discussed and worth considering; not scheduled.
 - **Real focus-driven MRU.** Upgrade recency from "kiosk's own opens" to the user's actual
   herdr focus history (one-shot `workspace.focused`/`workspace.closed` hooks → a bounded
   focus-history file → layered over own-opens recency). Full feasibility verdict and phased
-  plan: `docs/internal/herdr-driven-mru-plan.md` (lands with the recency PR). Verdict:
-  feasible, medium effort.
+  plan: `docs/internal/herdr-driven-mru-plan.md` (lands with the recency PR; both live on
+  the unmerged `feature/recency-sort` branch). Verdict: feasible, medium effort. Note: the
+  workspace picker now gets real focus recency more cheaply from the fork-only
+  `last_focused_unix_ms` field in `workspace list` (herdr fork branch
+  `feat/workspace-recency`); if that field ships wherever kiosk runs, the hooks design may
+  only be worth it for mapping focus history onto the repo/branch pickers' path-based keys.
 - **Headless "jump to previous workspace" action.** A manifest action + `record`-style
   subcommand that focuses the previous workspace with one keystroke, no picker. The
-  in-picker previous-selection (recency mode) covers the core need; this is the faster
-  power-user version. Deferred from the recency PR.
+  workspace picker's default selection (current on top, cursor on the previous workspace,
+  `enter` toggles back) now covers the core need; this remains the faster power-user
+  version. Also note herdr has its own `last_workspace` toggle keybinding.
 - **`herdr api snapshot` for open-state.** Replace the separate `workspace list` +
   `pane list` calls that compute open indicators with a single `session.snapshot` call
   (one round-trip, race-free point-in-time view). Marginal perf/consistency win; verify the
