@@ -675,7 +675,10 @@ pub(crate) fn open(
             git,
             provider,
             sender,
-            context.repo_path,
+            crate::spawn::RepoOpenTarget {
+                path: context.repo_path,
+                name: context.repo_name,
+            },
             branch_name,
             remote,
             state.on_open.clone(),
@@ -684,7 +687,10 @@ pub(crate) fn open(
         spawn_open_branch(
             provider,
             sender,
-            context.repo_path,
+            crate::spawn::RepoOpenTarget {
+                path: context.repo_path,
+                name: context.repo_name,
+            },
             branch_name,
             has_worktree,
             state.on_open.clone(),

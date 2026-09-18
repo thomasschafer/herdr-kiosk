@@ -81,6 +81,7 @@ fn worktree() -> WorktreeInfo {
 
 fn opened_worktree() -> OpenedWorktree {
     OpenedWorktree {
+        workspace_id: "w_1".into(),
         root_pane_id: "p_root".into(),
         path: "/repo-feature".into(),
     }

@@ -277,8 +277,106 @@ panes = json.load(sys.stdin)["result"]["panes"]
 if len(panes) != 2:
     raise SystemExit(f"expected 2 panes after reopen, got {len(panes)}")
 ' || fail "on_open split was duplicated when refocusing the repository"
-write_picker_config
 printf 'on_open split, command, popup teardown, focus, and reopen idempotence: ok\n'
+
+LAYOUT_ROOT_SENTINEL="$HK_ROOT/layout-root-sentinel"
+LAYOUT_EDITOR_SENTINEL="$HK_ROOT/layout-editor-sentinel"
+LAYOUT_SERVER_SENTINEL="$HK_ROOT/layout-server-sentinel"
+LAYOUT_LOGS_SENTINEL="$HK_ROOT/layout-logs-sentinel"
+LAYOUT_EDITOR_CWD="$HK_ROOT/layout-editor-cwd"
+mkdir -p "$LAYOUT_EDITOR_CWD"
+write_picker_config
+cat >>"$PLUGIN_CONFIG_DIR/config.toml" <<EOF
+
+[on_open]
+focus = "editor"
+
+[[on_open.tabs]]
+command = "printf LAYOUT_ROOT_OK > $LAYOUT_ROOT_SENTINEL"
+
+[[on_open.tabs.panes]]
+id = "editor"
+command = "cd $LAYOUT_EDITOR_CWD && printf LAYOUT_EDITOR_OK > $LAYOUT_EDITOR_SENTINEL"
+direction = "right"
+
+[[on_open.tabs]]
+name = "server"
+command = "printf LAYOUT_SERVER_OK > $LAYOUT_SERVER_SENTINEL"
+
+[[on_open.tabs.panes]]
+id = "logs"
+command = "printf LAYOUT_LOGS_OK > $LAYOUT_LOGS_SENTINEL"
+direction = "down"
+ratio = 0.4
+EOF
+
+h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
+wait_screen_contains "herdr-kiosk — select repo"
+t send-keys -t "$SESSION" nested
+wait_screen_contains "1 of 4 repos"
+assert_screen_contains "nested-repo"
+t send-keys -t "$SESSION" Enter
+wait_screen_absent "herdr-kiosk — select repo" 120
+wait_path_exists "$LAYOUT_ROOT_SENTINEL"
+wait_path_exists "$LAYOUT_EDITOR_SENTINEL"
+wait_path_exists "$LAYOUT_SERVER_SENTINEL"
+wait_path_exists "$LAYOUT_LOGS_SENTINEL"
+wait_pane_cwd "$LAYOUT_EDITOR_CWD"
+[ "$(cat "$LAYOUT_ROOT_SENTINEL")" = "LAYOUT_ROOT_OK" ] \
+    || fail "on_open layout root pane did not write the expected sentinel"
+[ "$(cat "$LAYOUT_EDITOR_SENTINEL")" = "LAYOUT_EDITOR_OK" ] \
+    || fail "on_open layout editor pane did not write the expected sentinel"
+[ "$(cat "$LAYOUT_SERVER_SENTINEL")" = "LAYOUT_SERVER_OK" ] \
+    || fail "on_open layout second tab root did not write the expected sentinel"
+[ "$(cat "$LAYOUT_LOGS_SENTINEL")" = "LAYOUT_LOGS_OK" ] \
+    || fail "on_open layout second tab pane did not write the expected sentinel"
+
+LAYOUT_WORKSPACE_ID=$(workspace_id_for_cwd "$HK_ROOT/repos/deep/level-one/level-two/nested-repo")
+[ -n "$LAYOUT_WORKSPACE_ID" ] || fail "could not find on_open layout workspace id"
+LAYOUT_FIRST_TAB_ID=$(h tab list --workspace "$LAYOUT_WORKSPACE_ID" \
+    | /usr/bin/python3 -c '
+import json
+import sys
+
+tabs = json.load(sys.stdin)["result"]["tabs"]
+if len(tabs) != 2:
+    raise SystemExit(f"expected 2 tabs, got {len(tabs)}")
+label = tabs[1].get("label")
+if label != "server":
+    raise SystemExit(f"expected second tab label server, got {label!r}")
+pane_counts = [tab.get("pane_count") for tab in tabs]
+if pane_counts != [2, 2]:
+    raise SystemExit(f"expected 2 panes per tab, got {pane_counts}")
+if not tabs[0].get("focused") or tabs[1].get("focused"):
+    raise SystemExit("expected the focus target to activate the first tab")
+print(tabs[0]["tab_id"])
+')
+[ -n "$LAYOUT_FIRST_TAB_ID" ] || fail "on_open layout tabs were incorrect"
+h pane list --workspace "$LAYOUT_WORKSPACE_ID" | /usr/bin/python3 -c '
+import json
+import os
+import sys
+
+first_tab_id = sys.argv[1]
+expected_cwd = os.path.realpath(sys.argv[2])
+panes = json.load(sys.stdin)["result"]["panes"]
+if len(panes) != 4:
+    raise SystemExit(f"expected 4 layout panes, got {len(panes)}")
+focused = [pane for pane in panes if pane.get("focused")]
+if len(focused) != 1:
+    raise SystemExit(f"expected exactly one focused pane, got {len(focused)}")
+pane = focused[0]
+if pane.get("tab_id") != first_tab_id:
+    raise SystemExit("focused pane was not in the first configured tab")
+actual_cwd = pane.get("foreground_cwd") or pane.get("cwd") or ""
+if os.path.realpath(actual_cwd) != expected_cwd:
+    raise SystemExit(f"focus did not land on editor pane: cwd was {actual_cwd!r}")
+' "$LAYOUT_FIRST_TAB_ID" "$LAYOUT_EDITOR_CWD" \
+    || fail "on_open layout pane count or final focus was incorrect"
+h workspace focus "$OPEN_WORKSPACE_ID" >/dev/null
+assert_focused_workspace "$OPEN_WORKSPACE_ID"
+write_picker_config
+printf 'on_open declarative tabs, chained panes, commands, and focus target: ok\n'
 
 h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
 wait_screen_contains "herdr-kiosk — select repo"
