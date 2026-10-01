@@ -102,7 +102,7 @@ fn render_curated_example(docs: &mut String, name: &str) {
             "Example:\n\n```toml\ninclude_non_git = false\nsearch_dirs = [\n  \"~/Code\",\n  { path = \"~/Work\", depth = 2, include_non_git = true },\n]\n```\n\n",
         ),
         "on_open" => docs.push_str(
-            "Example:\n\n```toml\n[on_open]\npanes = [\n  { command = \"hx\", direction = \"right\" },\n]\n```\n\n",
+            "Example — two tabs:\n\n- `code`: `lazygit` on the left, an editor on the right, with the editor focused.\n- `server`: a single pane running the dev server.\n\n```toml\n[on_open]\nfocus = \"editor\"\n\n[[on_open.tabs]]\nname = \"code\"\ncommand = \"lazygit\"\n\n[[on_open.tabs.panes]]\nid = \"editor\"\ncommand = \"hx .\"\ndirection = \"right\"\nratio = 0.7\n\n[[on_open.tabs]]\nname = \"server\"\ncommand = \"npm run dev\"\n```\n\nEach `[[on_open.tabs.panes]]` splits the tab declared above it, so panes belong to the most recent `[[on_open.tabs]]`. Commands are sent to their pane followed by Enter. `id` is only needed to name a pane as the `focus` target, and a tab can take one to target its own first pane. Herdr clamps effective pane sizes to 0.1–0.9. Add `[on_open.repos.\"name\"]` to replace this layout for one repository; an override inherits the global `focus` when it omits one. The older global `panes = [ ... ]` form remains supported.\n\n",
         ),
         _ => {}
     }

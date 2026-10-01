@@ -132,7 +132,10 @@ pub(crate) fn create(
     spawn_create_new_branch(
         provider,
         sender,
-        context.repo_path,
+        crate::spawn::RepoOpenTarget {
+            path: context.repo_path,
+            name: context.repo_name,
+        },
         branch_name,
         base,
         state.on_open.clone(),

@@ -1,10 +1,11 @@
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fs, io,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, bail};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 
 pub mod keys;
 pub use keys::KeysConfig;
@@ -131,26 +132,136 @@ impl OnOpenPaneDirection {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-/// A command pane created after a new workspace is opened.
+/// A command pane created while an on-open layout is applied.
 pub struct OnOpenPaneConfig {
-    /// Shell command Herdr runs in the opened checkout. The command must not be empty.
+    /// Optional identifier used by the layout's `focus` target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Command sent as keystrokes followed by Enter in the opened checkout. The
+    /// command must not be empty.
     pub command: String,
     /// Split direction: `right` or `down`.
     pub direction: OnOpenPaneDirection,
     /// Fraction of the resulting split occupied by the new command pane. The value
     /// must be greater than 0 and less than 1, and defaults to 0.5 when omitted.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ratio: Option<f32>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-/// The section is optional and contains no pane definitions by default.
-pub struct OnOpenConfig {
-    /// Pane definitions, created in order without moving focus from the primary
-    /// pane. Commands run from the opened repository or worktree. They run only
-    /// when a workspace is newly opened, not when an existing workspace is focused.
+/// A tab in a declarative on-open layout.
+pub struct OnOpenTabConfig {
+    /// Optional identifier for the tab's root pane, used by the layout's
+    /// `focus` target.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Optional tab label. The workspace's existing first tab is renamed; the
+    /// label for each additional tab is applied when that tab is created.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Optional command sent as keystrokes followed by Enter to the tab's root
+    /// pane. When omitted, the root pane remains a shell.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// Panes split in order from the previously created pane in this tab.
     pub panes: Vec<OnOpenPaneConfig>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+/// A repository-specific on-open layout.
+pub struct OnOpenRepoConfig {
+    /// Optional pane identifier to focus after the layout is built. When
+    /// omitted, the global `on_open.focus` value is inherited.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub focus: Option<String>,
+    /// Legacy pane definitions for this repository. This form cannot be
+    /// combined with `tabs`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub panes: Vec<OnOpenPaneConfig>,
+    /// Named or unnamed tabs created in order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tabs: Vec<OnOpenTabConfig>,
+}
+
+impl<'de> Deserialize<'de> for OnOpenRepoConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Default, Deserialize)]
+        #[serde(default)]
+        struct RawOnOpenRepoConfig {
+            focus: Option<String>,
+            panes: Option<Vec<OnOpenPaneConfig>>,
+            tabs: Option<Vec<OnOpenTabConfig>>,
+        }
+
+        let raw = RawOnOpenRepoConfig::deserialize(deserializer)?;
+        if raw.panes.is_some() && raw.tabs.is_some() {
+            return Err(de::Error::custom(
+                "repository on_open panes and tabs cannot both be set",
+            ));
+        }
+        Ok(Self {
+            focus: raw.focus,
+            panes: raw.panes.unwrap_or_default(),
+            tabs: raw.tabs.unwrap_or_default(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+/// The section is optional and contains no layout by default.
+pub struct OnOpenConfig {
+    /// Optional pane identifier to focus after the layout is built.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub focus: Option<String>,
+    /// Pane definitions, created in order without moving focus from the primary
+    /// pane. Commands are sent from the opened repository or worktree. This
+    /// legacy form cannot be combined with `tabs`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub panes: Vec<OnOpenPaneConfig>,
+    /// Declarative tabs created in order. The first entry uses the workspace's
+    /// existing tab; later entries create new tabs. Panes within each tab are
+    /// chained from that tab's root pane.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tabs: Vec<OnOpenTabConfig>,
+    /// Per-repository layouts keyed by exact repository name. An override
+    /// replaces the global `panes` or `tabs` layout and applies to every
+    /// repository sharing that name. Its omitted `focus` value inherits the
+    /// global setting. These overrides live only in this central config.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub repos: BTreeMap<String, OnOpenRepoConfig>,
+}
+
+impl<'de> Deserialize<'de> for OnOpenConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Default, Deserialize)]
+        #[serde(default)]
+        struct RawOnOpenConfig {
+            focus: Option<String>,
+            panes: Option<Vec<OnOpenPaneConfig>>,
+            tabs: Option<Vec<OnOpenTabConfig>>,
+            repos: BTreeMap<String, OnOpenRepoConfig>,
+        }
+
+        let raw = RawOnOpenConfig::deserialize(deserializer)?;
+        if raw.panes.is_some() && raw.tabs.is_some() {
+            return Err(de::Error::custom(
+                "on_open.panes and on_open.tabs cannot both be set",
+            ));
+        }
+        Ok(Self {
+            focus: raw.focus,
+            panes: raw.panes.unwrap_or_default(),
+            tabs: raw.tabs.unwrap_or_default(),
+            repos: raw.repos,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -171,7 +282,7 @@ pub struct Config {
     /// Customize terminal-palette colors used by the picker. Light-terminal users
     /// can set `muted`, `border`, and other colors explicitly.
     pub theme: ThemeConfig,
-    /// Configure command panes created after opening a new workspace.
+    /// Configure tabs and panes applied when a repository is opened.
     pub on_open: OnOpenConfig,
     /// Customize key bindings grouped by where they are active.
     pub keys: KeysConfig,
@@ -374,19 +485,117 @@ fn validate_config(config: &Config) -> Result<()> {
             bail!("search directory depth must be at least 1 for {path}");
         }
     }
-    for (index, pane) in config.on_open.panes.iter().enumerate() {
-        if pane.command.trim().is_empty() {
-            bail!("on_open pane {} command must not be empty", index + 1);
+    validate_on_open_layout(
+        "on_open",
+        config.on_open.focus.as_deref(),
+        &config.on_open.panes,
+        &config.on_open.tabs,
+    )?;
+    for (repo_name, layout) in &config.on_open.repos {
+        if repo_name.trim().is_empty() {
+            bail!("on_open.repos repository name must not be empty");
         }
-        if pane
-            .ratio
-            .is_some_and(|ratio| !ratio.is_finite() || ratio <= 0.0 || ratio >= 1.0)
+        validate_on_open_layout(
+            &format!("on_open.repos.{repo_name}"),
+            layout.focus.as_deref().or(config.on_open.focus.as_deref()),
+            &layout.panes,
+            &layout.tabs,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_on_open_layout(
+    field: &str,
+    focus: Option<&str>,
+    legacy_panes: &[OnOpenPaneConfig],
+    tabs: &[OnOpenTabConfig],
+) -> Result<()> {
+    if !legacy_panes.is_empty() && !tabs.is_empty() {
+        bail!("{field}.panes and {field}.tabs cannot both be set");
+    }
+
+    let mut pane_ids = BTreeSet::new();
+    for (index, pane) in legacy_panes.iter().enumerate() {
+        validate_on_open_pane(field, "pane", index, pane, &mut pane_ids)?;
+    }
+    for (tab_index, tab) in tabs.iter().enumerate() {
+        if let Some(id) = &tab.id {
+            if id.trim().is_empty() {
+                bail!("{field}.tabs[{}].id must not be empty", tab_index + 1);
+            }
+            if !pane_ids.insert(id.clone()) {
+                bail!(
+                    "{field}.tabs[{}].id must be unique across the layout",
+                    tab_index + 1
+                );
+            }
+        }
+        if tab
+            .name
+            .as_deref()
+            .is_some_and(|name| name.trim().is_empty())
         {
+            bail!("{field}.tabs[{}].name must not be empty", tab_index + 1);
+        }
+        if tab
+            .command
+            .as_deref()
+            .is_some_and(|command| command.trim().is_empty())
+        {
+            bail!("{field}.tabs[{}].command must not be empty", tab_index + 1);
+        }
+        for (pane_index, pane) in tab.panes.iter().enumerate() {
+            validate_on_open_pane(
+                &format!("{field}.tabs[{}]", tab_index + 1),
+                "pane",
+                pane_index,
+                pane,
+                &mut pane_ids,
+            )?;
+        }
+    }
+
+    if let Some(focus) = focus {
+        if focus.trim().is_empty() {
+            bail!("{field}.focus must not be empty");
+        }
+        if !pane_ids.contains(focus) {
+            bail!("{field}.focus must match a configured pane id");
+        }
+    }
+    Ok(())
+}
+
+fn validate_on_open_pane(
+    field: &str,
+    noun: &str,
+    index: usize,
+    pane: &OnOpenPaneConfig,
+    pane_ids: &mut BTreeSet<String>,
+) -> Result<()> {
+    if let Some(id) = &pane.id {
+        if id.trim().is_empty() {
+            bail!("{field} {noun} {} id must not be empty", index + 1);
+        }
+        if !pane_ids.insert(id.clone()) {
             bail!(
-                "on_open pane {} ratio must be greater than 0 and less than 1",
+                "{field} {noun} {} id must be unique across the layout",
                 index + 1
             );
         }
+    }
+    if pane.command.trim().is_empty() {
+        bail!("{field} {noun} {} command must not be empty", index + 1);
+    }
+    if pane
+        .ratio
+        .is_some_and(|ratio| !ratio.is_finite() || ratio <= 0.0 || ratio >= 1.0)
+    {
+        bail!(
+            "{field} {noun} {} ratio must be greater than 0 and less than 1",
+            index + 1
+        );
     }
     Ok(())
 }
@@ -528,16 +737,145 @@ panes = [
             config.on_open.panes,
             [
                 OnOpenPaneConfig {
+                    id: None,
                     command: "hx".into(),
                     direction: OnOpenPaneDirection::Right,
                     ratio: None,
                 },
                 OnOpenPaneConfig {
+                    id: None,
                     command: "cargo test".into(),
                     direction: OnOpenPaneDirection::Down,
                     ratio: Some(0.35),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn parses_declarative_on_open_layout_and_repo_override() {
+        let (config, warnings) = parse_config(
+            r#"
+[on_open]
+focus = "editor"
+
+[[on_open.tabs]]
+id = "root"
+name = "code"
+command = "hx ."
+
+[[on_open.tabs.panes]]
+id = "editor"
+command = "lazygit"
+direction = "right"
+ratio = 0.3
+
+[[on_open.tabs]]
+name = "server"
+command = "npm run dev"
+
+[on_open.repos."my-service"]
+focus = "logs"
+
+[[on_open.repos."my-service".tabs]]
+name = "service"
+
+[[on_open.repos."my-service".tabs.panes]]
+id = "logs"
+command = "tail -f service.log"
+direction = "down"
+"#,
+        )
+        .unwrap();
+
+        assert!(warnings.is_empty());
+        assert_eq!(config.on_open.focus.as_deref(), Some("editor"));
+        assert!(config.on_open.panes.is_empty());
+        assert_eq!(config.on_open.tabs.len(), 2);
+        assert_eq!(config.on_open.tabs[0].id.as_deref(), Some("root"));
+        assert_eq!(config.on_open.tabs[0].name.as_deref(), Some("code"));
+        assert_eq!(config.on_open.tabs[0].command.as_deref(), Some("hx ."));
+        assert_eq!(
+            config.on_open.tabs[0].panes,
+            [OnOpenPaneConfig {
+                id: Some("editor".into()),
+                command: "lazygit".into(),
+                direction: OnOpenPaneDirection::Right,
+                ratio: Some(0.3),
+            }]
+        );
+        let override_layout = &config.on_open.repos["my-service"];
+        assert_eq!(override_layout.focus.as_deref(), Some("logs"));
+        assert_eq!(override_layout.tabs[0].name.as_deref(), Some("service"));
+        assert_eq!(override_layout.tabs[0].panes[0].id.as_deref(), Some("logs"));
+    }
+
+    #[test]
+    fn rejects_legacy_panes_combined_with_tabs() {
+        let error = parse_config(
+            r#"
+[on_open]
+panes = [{ command = "hx", direction = "right" }]
+tabs = []
+"#,
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("on_open.panes and on_open.tabs cannot both be set"));
+    }
+
+    #[test]
+    fn on_open_validation_names_the_offending_field() {
+        let cases = [
+            (
+                "[[on_open.tabs]]\ncommand = \"  \"",
+                "on_open.tabs[1].command",
+            ),
+            ("[[on_open.tabs]]\nname = \"  \"", "on_open.tabs[1].name"),
+            (
+                "[on_open]\nfocus = \"missing\"\n[[on_open.tabs]]\ncommand = \"hx\"",
+                "on_open.focus",
+            ),
+            (
+                "[[on_open.tabs]]\n[[on_open.tabs.panes]]\nid = \"editor\"\ncommand = \" \"\ndirection = \"right\"",
+                "on_open.tabs[1] pane 1 command",
+            ),
+            (
+                "[[on_open.tabs]]\n[[on_open.tabs.panes]]\nid = \"editor\"\ncommand = \"hx\"\ndirection = \"right\"\nratio = 1",
+                "on_open.tabs[1] pane 1 ratio",
+            ),
+        ];
+        for (contents, field) in cases {
+            let error = parse_config(contents).unwrap_err();
+            assert!(
+                format!("{error:#}").contains(field),
+                "expected {field} in error: {error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn repo_override_supports_legacy_panes_and_rejects_mixed_layouts() {
+        let (config, warnings) = parse_config(
+            r#"
+[on_open.repos.service]
+panes = [{ id = "editor", command = "hx", direction = "right" }]
+focus = "editor"
+"#,
+        )
+        .unwrap();
+        assert!(warnings.is_empty());
+        assert_eq!(config.on_open.repos["service"].panes.len(), 1);
+
+        let error = parse_config(
+            r#"
+[on_open.repos.service]
+panes = [{ command = "hx", direction = "right" }]
+tabs = []
+"#,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("repository on_open panes and tabs cannot both be set")
         );
     }
 
@@ -693,11 +1031,17 @@ future_root_key = true
 
 [theme]
 future_theme_key = "blue"
+
+[on_open]
+on = "created"
+
+[on_open.repos.service]
+on = "created"
 "#,
         )
         .unwrap();
         assert!(config.search_dirs.is_empty());
-        assert_eq!(warnings.len(), 2);
+        assert_eq!(warnings.len(), 4);
         assert!(
             warnings
                 .iter()
@@ -707,6 +1051,16 @@ future_theme_key = "blue"
             warnings
                 .iter()
                 .any(|warning| warning.message.contains("future_theme_key"))
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.message.contains("on_open.on"))
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.message.contains("on_open.repos.service.on"))
         );
     }
 

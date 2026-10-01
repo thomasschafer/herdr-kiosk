@@ -295,7 +295,15 @@ pub(crate) fn open_selected(
         branch: None,
     };
     if is_git {
-        spawn_open_repo(provider, sender, repo_path, state.on_open.clone());
+        spawn_open_repo(
+            provider,
+            sender,
+            crate::spawn::RepoOpenTarget {
+                path: repo_path,
+                name: repo_name,
+            },
+            state.on_open.clone(),
+        );
     } else {
         spawn_open_folder(provider, sender, repo_path);
     }
