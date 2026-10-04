@@ -14,7 +14,7 @@ pub enum FilterTarget {
     Help,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FilterKey {
     Repo(PathBuf),
     Branch(BranchId),
