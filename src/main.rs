@@ -368,7 +368,7 @@ mod tests {
             KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
             None,
         );
-        assert!(state.input.text.is_empty());
+        assert_eq!(state.input.text, "");
         assert!(!state.depth_default_pristine);
         handle_depth_key(
             &mut state,

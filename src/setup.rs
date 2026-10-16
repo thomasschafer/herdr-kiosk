@@ -499,7 +499,7 @@ mod tests {
             }]
         );
         assert!(state.remove_last().is_some());
-        assert!(state.dirs.is_empty());
+        assert_eq!(state.dirs, vec![]);
         assert!(state.begin_depth().is_err());
     }
 
@@ -515,7 +515,7 @@ mod tests {
         assert_eq!(state.step, SetupStep::Directories);
         assert_eq!(state.input.text, "~/Code");
         assert_eq!(state.input.cursor, "~/Code".len());
-        assert!(state.dirs.is_empty());
+        assert_eq!(state.dirs, vec![]);
     }
 
     #[test]

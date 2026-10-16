@@ -530,7 +530,7 @@ mod tests {
         input.backspace();
         assert_eq!(input.text, "one ");
         input.delete_word();
-        assert!(input.text.is_empty());
+        assert_eq!(input.text, "");
     }
 
     #[test]
