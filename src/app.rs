@@ -817,13 +817,13 @@ mod tests {
 
     #[test]
     fn no_matches_returns_an_empty_result() {
-        assert!(
+        assert_eq!(
             fuzzy_filter(
                 "zzzzz",
                 &items(&["alpha", "beta"]),
                 &SkimMatcherV2::default()
-            )
-            .is_empty()
+            ),
+            []
         );
     }
 

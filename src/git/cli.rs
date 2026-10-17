@@ -640,11 +640,11 @@ mod tests {
         let provider = CliGitProvider;
 
         let (repos, warnings) = scan_streaming(&provider, temp.path(), 1).unwrap();
-        assert!(warnings.is_empty());
+        assert_eq!(warnings, []);
         assert_eq!(repos.len(), 1);
         assert_eq!(repos[0].name, "my-repo");
         assert_eq!(repos[0].path, fs::canonicalize(repo).unwrap());
-        assert!(repos[0].worktrees.is_empty());
+        assert_eq!(repos[0].worktrees, []);
     }
 
     #[test]
@@ -655,12 +655,7 @@ mod tests {
         init_test_repo(&nested);
         let provider = CliGitProvider;
 
-        assert!(
-            scan_streaming(&provider, temp.path(), 1)
-                .unwrap()
-                .0
-                .is_empty()
-        );
+        assert_eq!(scan_streaming(&provider, temp.path(), 1).unwrap().0, []);
         assert_eq!(
             scan_streaming(&provider, temp.path(), 2).unwrap().0.len(),
             1
@@ -687,7 +682,7 @@ mod tests {
 
         let (mut entries, warnings) =
             scan_streaming_with_non_git(&CliGitProvider, temp.path(), 3, true).unwrap();
-        assert!(warnings.is_empty());
+        assert_eq!(warnings, []);
         entries.sort_by(|left, right| left.path.cmp(&right.path));
 
         let expected = [
@@ -717,7 +712,7 @@ mod tests {
 
         let (entries, warnings) =
             scan_streaming_with_non_git(&CliGitProvider, temp.path(), 2, false).unwrap();
-        assert!(warnings.is_empty());
+        assert_eq!(warnings, []);
         assert_eq!(
             entries,
             [Repo {
@@ -752,7 +747,7 @@ mod tests {
             })
             .unwrap();
 
-        assert!(warnings.is_empty());
+        assert_eq!(warnings, []);
         let streamed = streamed.into_inner();
         assert_eq!(streamed.len(), 1, "linked worktree must be deduplicated");
         assert_eq!(streamed[0].path, fs::canonicalize(repo).unwrap());
@@ -1053,8 +1048,8 @@ mod tests {
 
         let (repos, warnings) = scan_streaming(&CliGitProvider, temp.path(), 2).unwrap();
 
-        assert!(repos.is_empty());
-        assert!(warnings.is_empty());
+        assert_eq!(repos, []);
+        assert_eq!(warnings, []);
     }
 
     #[cfg(unix)]
@@ -1070,7 +1065,7 @@ mod tests {
 
         let (repos, warnings) = scan_streaming(&CliGitProvider, temp.path(), 2).unwrap();
 
-        assert!(repos.is_empty());
+        assert_eq!(repos, []);
         assert!(warnings.iter().any(|warning| {
             warning.path == candidate.join(".git")
                 && warning.message.contains("failed to inspect .git entry")
@@ -1096,8 +1091,8 @@ mod tests {
         )
         .unwrap();
 
-        assert!(warnings.is_empty());
-        assert!(found.is_empty());
+        assert_eq!(warnings, []);
+        assert_eq!(found, Vec::<PathBuf>::new());
         assert!(checks.get() > 1);
     }
 

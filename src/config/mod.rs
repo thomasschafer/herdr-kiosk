@@ -431,7 +431,7 @@ mod tests {
             ]"#,
         )
         .unwrap();
-        assert!(warnings.is_empty());
+        assert_eq!(warnings, []);
         assert_eq!(
             config.search_dirs,
             [
@@ -465,7 +465,7 @@ search_dirs = [
         )
         .unwrap();
 
-        assert!(warnings.is_empty());
+        assert_eq!(warnings, []);
         assert!(config.include_non_git);
         assert!(config.search_dirs[0].resolved_include_non_git(config.include_non_git));
         assert!(config.search_dirs[1].resolved_include_non_git(config.include_non_git));
@@ -523,7 +523,7 @@ panes = [
         )
         .unwrap();
 
-        assert!(warnings.is_empty());
+        assert_eq!(warnings, []);
         assert_eq!(
             config.on_open.panes,
             [
@@ -573,15 +573,8 @@ panes = [{ command = "  ", direction = "right" }]"#,
 
     #[test]
     fn absent_or_empty_on_open_has_no_panes() {
-        assert!(parse_config("").unwrap().0.on_open.panes.is_empty());
-        assert!(
-            parse_config("[on_open]")
-                .unwrap()
-                .0
-                .on_open
-                .panes
-                .is_empty()
-        );
+        assert_eq!(parse_config("").unwrap().0.on_open.panes, []);
+        assert_eq!(parse_config("[on_open]").unwrap().0.on_open.panes, []);
     }
 
     #[test]
@@ -612,7 +605,7 @@ panes = [{ command = "  ", direction = "right" }]"#,
                 },
             ]
         );
-        assert!(resolved.warnings.is_empty());
+        assert_eq!(resolved.warnings, []);
     }
 
     #[test]
@@ -696,7 +689,7 @@ future_theme_key = "blue"
 "#,
         )
         .unwrap();
-        assert!(config.search_dirs.is_empty());
+        assert_eq!(config.search_dirs, []);
         assert_eq!(warnings.len(), 2);
         assert!(
             warnings
@@ -722,7 +715,7 @@ highlight_fg = "reset"
 "#,
         )
         .unwrap();
-        assert!(warnings.is_empty());
+        assert_eq!(warnings, []);
         assert_eq!(config.theme.accent, ThemeColor::Cyan);
         assert_eq!(config.theme.secondary, ThemeColor::Blue);
         assert_eq!(config.theme.tertiary, ThemeColor::Yellow);
@@ -736,7 +729,7 @@ highlight_fg = "reset"
     #[test]
     fn missing_config_loads_empty_defaults_without_reading_relative_paths() {
         let loaded = load_config_with(|_| None, |_| panic!("no path should be read")).unwrap();
-        assert!(loaded.config.search_dirs.is_empty());
+        assert_eq!(loaded.config.search_dirs, []);
         assert!(loaded.path.is_none());
         assert!(!loaded.exists);
     }
@@ -777,7 +770,7 @@ highlight_fg = "reset"
         )
         .unwrap();
         assert!(empty.exists);
-        assert!(empty.config.search_dirs.is_empty());
+        assert_eq!(empty.config.search_dirs, []);
     }
 
     #[test]

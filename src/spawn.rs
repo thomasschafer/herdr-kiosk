@@ -973,7 +973,7 @@ mod tests {
             panic!("repository was not streamed")
         };
         assert_eq!(repo.path, Path::new("/repo"));
-        assert!(repo.worktrees.is_empty());
+        assert_eq!(repo.worktrees, []);
         assert!(matches!(
             rx.recv_timeout(Duration::from_secs(1)).unwrap(),
             AppEvent::ScanComplete
