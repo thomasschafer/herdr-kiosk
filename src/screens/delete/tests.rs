@@ -423,7 +423,7 @@ fn late_recovered_delete_completion_does_not_change_a_newer_mode() {
     );
 
     assert_eq!(state.mode, Mode::RepoSelect);
-    assert!(state.delete.pending.is_empty());
-    assert!(state.repo_view.entries[0].repo.worktrees.is_empty());
+    assert_eq!(state.delete.pending, vec![]);
+    assert_eq!(state.repo_view.entries[0].repo.worktrees, vec![]);
     assert!(changes.refresh_branch.is_none());
 }

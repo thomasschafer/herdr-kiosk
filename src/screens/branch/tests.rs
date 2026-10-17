@@ -506,7 +506,7 @@ fn tracking_success_then_create_failure_reconciles_to_selected_local_branch() {
     process_app_event(event, &mut state, &mut changes);
 
     assert!(matches!(state.mode, Mode::BranchSelect(_)));
-    assert!(state.branch_view.list.input.text.is_empty());
+    assert_eq!(state.branch_view.list.input.text, "");
     assert_eq!(
         state.selected_branch().unwrap().id(),
         BranchId::Local("feature".into())

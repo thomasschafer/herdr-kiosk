@@ -332,7 +332,7 @@ mod tests {
             started_at_unix_secs: 0,
         };
         save_to(&path, &[entry]).unwrap();
-        assert!(load_from(&path).entries.is_empty());
+        assert_eq!(load_from(&path).entries, vec![]);
     }
 
     #[test]
@@ -343,7 +343,7 @@ mod tests {
 
         let loaded = load_from(&path);
 
-        assert!(loaded.entries.is_empty());
+        assert_eq!(loaded.entries, vec![]);
         assert_eq!(loaded.warnings.len(), 1);
         assert!(loaded.warnings[0].message.contains("is malformed"));
         assert!(
@@ -391,7 +391,7 @@ mod tests {
         ]);
         let resolution = resolve_state_path(|name| values.get(name).cloned());
         assert_eq!(resolution.path, Some(plugin.join("pending_deletes.toml")));
-        assert!(resolution.warnings.is_empty());
+        assert_eq!(resolution.warnings, vec![]);
 
         let xdg = HashMap::from([
             ("XDG_STATE_HOME", path_string(&xdg_path)),
