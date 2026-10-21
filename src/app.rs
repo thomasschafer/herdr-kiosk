@@ -646,9 +646,6 @@ fn footer_spans<'a>(
         add(Command::Quit, "quit");
         return hints;
     }
-    if !matches!(binding_mode, BindingMode::Modal) {
-        add(Command::MoveUp, "move");
-    }
     add(
         Command::Open,
         if matches!(
