@@ -2,6 +2,8 @@
 set -euo pipefail
 
 PROJECT_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+# shellcheck source=scripts/harness-env.sh
+source "$PROJECT_ROOT/scripts/harness-env.sh"
 HK_ROOT=${HK_E2E_HOME:-/tmp/hk-m7}
 HERDR_BIN=${HERDR:-"$PROJECT_ROOT/../herdr/target/release/herdr"}
 HK_HOME_DIR="$HK_ROOT/home"
@@ -9,7 +11,7 @@ TMUX_SOCKET="$HK_ROOT/tmux.sock"
 SESSION=hk-m7
 LAST_SCREEN="$HK_ROOT/last-screen.txt"
 TMUX_BIN=${HK_TMUX:-$(command -v tmux || true)}
-CARGO_PATH=/Users/tomschafer/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin
+CARGO_PATH=$HARNESS_CARGO_BIN:/usr/bin:/bin:/usr/sbin:/sbin
 export PATH="$CARGO_PATH"
 
 case "$HK_ROOT" in
@@ -133,6 +135,29 @@ assert_screen_absent "Welcome to herdr-kiosk"
 t send-keys -t "$SESSION" C-c
 wait_screen_absent "No search directories configured"
 printf 'existing empty search_dirs keeps the explicit empty-config screen: ok\n'
+
+cat >"$PLUGIN_CONFIG_DIR/config.toml" <<EOF
+search_dirs = [
+  { path = "$HK_ROOT/absent-optional", optional = true },
+]
+EOF
+h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
+wait_screen_contains "No repos found (1 optional search directory not found)"
+assert_screen_absent "does not exist"
+t send-keys -t "$SESSION" C-c
+wait_screen_absent "herdr-kiosk — select repo"
+
+cat >"$PLUGIN_CONFIG_DIR/config.toml" <<EOF
+search_dirs = [
+  { path = "$HK_ROOT/absent-required" },
+]
+EOF
+h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
+wait_screen_contains "No repos found in the configured search directories"
+wait_screen_contains "does not exist"
+t send-keys -t "$SESSION" C-c
+wait_screen_absent "herdr-kiosk — select repo"
+printf 'missing optional search directories are silent; required ones warn: ok\n'
 
 cat >"$PLUGIN_CONFIG_DIR/config.toml" <<EOF
 search_dirs = [

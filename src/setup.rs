@@ -221,6 +221,7 @@ impl SetupState {
                 path: entry.path.clone(),
                 depth: Some(entry.depth),
                 include_non_git: entry.include_non_git,
+                optional: false,
             })
             .collect()
     }
@@ -590,11 +591,13 @@ mod tests {
                 path: "~/Code".into(),
                 depth: Some(2),
                 include_non_git: None,
+                optional: false,
             },
             SearchDirEntry::Rich {
                 path: "/work".into(),
                 depth: Some(4),
                 include_non_git: None,
+                optional: false,
             },
         ])
         .unwrap();
@@ -621,13 +624,12 @@ mod tests {
                 path: "~/Code".into(),
                 depth: Some(2),
                 include_non_git: None,
+                optional: false,
             }]
         );
-        assert!(
-            !config_contents(&search_dirs)
-                .unwrap()
-                .contains("include_non_git")
-        );
+        let contents = config_contents(&search_dirs).unwrap();
+        assert!(!contents.contains("include_non_git"));
+        assert!(!contents.contains("optional"));
     }
 
     #[test]

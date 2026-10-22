@@ -67,7 +67,7 @@ fn start() -> Result<()> {
     let home = user_home_dir();
     let resolved = loaded
         .config
-        .resolved_search_dirs_with(home.as_deref(), std::path::Path::is_dir)?;
+        .resolved_search_dirs_with(home.as_deref(), config::probe_search_dir)?;
     let mut warnings = loaded.warnings;
     warnings.extend(resolved.warnings);
     let current_cwd = context
@@ -75,6 +75,7 @@ fn start() -> Result<()> {
         .map(|path| std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path)));
     let mut state = AppState::new(current_cwd);
     state.on_open = loaded.config.on_open.clone();
+    state.repo_view.missing_optional_dirs = resolved.missing_optional.len();
     warnings.extend(herdr_kiosk::screens::delete::load_pending(&mut state));
     for ConfigWarning { message } in warnings {
         state.push_toast(ToastKind::Warning, message);

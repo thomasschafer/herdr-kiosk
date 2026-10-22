@@ -22,7 +22,8 @@ pub enum SearchDirEntry {
         /// with `~/` expand from the user's home directory.
         String,
     ),
-    /// A path with optional per-directory scan depth and plain-folder override.
+    /// A path with optional per-directory scan depth, plain-folder override, and
+    /// missing-directory tolerance.
     Rich {
         /// Directory to scan. `~` and paths beginning with `~/` expand from the
         /// user's home directory; other relative paths are accepted as written.
@@ -34,10 +35,29 @@ pub enum SearchDirEntry {
         /// the global `include_non_git` value is used.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         include_non_git: Option<bool>,
+        /// Whether this directory may be absent. A missing optional directory is
+        /// skipped without a warning; a path that exists but is not a readable
+        /// directory still warns. Defaults to `false`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        optional: bool,
     },
 }
 
 impl SearchDirEntry {
+    fn path_and_depth(&self) -> (&str, u16) {
+        match self {
+            Self::Simple(path) => (path, DEFAULT_SEARCH_DEPTH),
+            Self::Rich { path, depth, .. } => (path, depth.unwrap_or(DEFAULT_SEARCH_DEPTH)),
+        }
+    }
+
+    const fn optional(&self) -> bool {
+        match self {
+            Self::Simple(_) => false,
+            Self::Rich { optional, .. } => *optional,
+        }
+    }
+
     pub const fn resolved_include_non_git(&self, global: bool) -> bool {
         match self {
             Self::Simple(_) => global,
@@ -163,6 +183,7 @@ pub struct Config {
     /// Directories searched recursively for Git repositories and, when enabled,
     /// plain folders. Entries can be simple strings such as `"~/Code"` or inline
     /// tables such as `{ path = "~/Work", depth = 3 }`, and both forms can be mixed.
+    /// Missing directories are reported as warnings unless marked `optional`.
     pub search_dirs: Vec<SearchDirEntry>,
     /// Include plain folders in search results globally. Rich search-directory
     /// entries can override this value with their own `include_non_git` setting.
@@ -181,41 +202,88 @@ impl Config {
     pub fn resolved_search_dirs_with(
         &self,
         home: Option<&Path>,
-        is_dir: impl Fn(&Path) -> bool,
+        probe: impl Fn(&Path) -> SearchDirStatus,
     ) -> Result<ResolvedSearchDirs> {
         let expanded = self
             .search_dirs
             .iter()
             .map(|entry| {
-                let (path, depth) = match entry {
-                    SearchDirEntry::Simple(path) => (path, DEFAULT_SEARCH_DEPTH),
-                    SearchDirEntry::Rich { path, depth, .. } => {
-                        (path, depth.unwrap_or(DEFAULT_SEARCH_DEPTH))
-                    }
-                };
-                expand_tilde(path, home).map(|path| ResolvedSearchDir {
-                    path,
-                    depth,
-                    include_non_git: entry.resolved_include_non_git(self.include_non_git),
+                let (path, depth) = entry.path_and_depth();
+                expand_tilde(path, home).map(|path| {
+                    let dir = ResolvedSearchDir {
+                        path,
+                        depth,
+                        include_non_git: entry.resolved_include_non_git(self.include_non_git),
+                    };
+                    (dir, entry.optional())
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        let mut dirs = Vec::with_capacity(expanded.len());
-        let mut warnings = Vec::new();
-        for dir in expanded {
-            if is_dir(&dir.path) {
-                dirs.push(dir);
-            } else {
-                warnings.push(ConfigWarning {
-                    message: format!(
-                        "configured search directory does not exist or is not a directory: {}",
-                        dir.path.display()
-                    ),
-                });
-            }
+        let mut resolved = ResolvedSearchDirs {
+            dirs: Vec::with_capacity(expanded.len()),
+            missing_optional: Vec::new(),
+            warnings: Vec::new(),
+        };
+        for (dir, optional) in expanded {
+            let problem = match probe(&dir.path) {
+                SearchDirStatus::Directory => {
+                    resolved.dirs.push(dir);
+                    continue;
+                }
+                SearchDirStatus::Missing if optional => {
+                    resolved.missing_optional.push(dir.path);
+                    continue;
+                }
+                SearchDirStatus::Missing => "does not exist".to_string(),
+                SearchDirStatus::NotADirectory => "is not a directory".to_string(),
+                SearchDirStatus::Inaccessible(error) => format!("cannot be read ({error})"),
+            };
+            resolved.warnings.push(ConfigWarning {
+                message: format!(
+                    "configured search directory {problem}: {}",
+                    dir.path.display()
+                ),
+            });
         }
-        Ok(ResolvedSearchDirs { dirs, warnings })
+        Ok(resolved)
     }
+}
+
+#[derive(Debug)]
+/// What a configured search directory path refers to on disk.
+pub enum SearchDirStatus {
+    Directory,
+    /// Nothing exists at the path, including a symlink whose target is missing.
+    Missing,
+    /// The path, or one of its ancestors, is not a directory.
+    NotADirectory,
+    Inaccessible(io::Error),
+}
+
+pub fn probe_search_dir(path: &Path) -> SearchDirStatus {
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_dir() => SearchDirStatus::Directory,
+        Ok(_) => SearchDirStatus::NotADirectory,
+        Err(error) if error.kind() == io::ErrorKind::NotADirectory => {
+            SearchDirStatus::NotADirectory
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => probe_missing_ancestry(path),
+        Err(error) => SearchDirStatus::Inaccessible(error),
+    }
+}
+
+/// Windows reports a path beneath a file as not found, so the nearest existing
+/// ancestor decides whether the path is genuinely missing.
+fn probe_missing_ancestry(path: &Path) -> SearchDirStatus {
+    for ancestor in path.ancestors().skip(1) {
+        match fs::metadata(ancestor) {
+            Ok(metadata) if metadata.is_dir() => return SearchDirStatus::Missing,
+            Ok(_) => return SearchDirStatus::NotADirectory,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return SearchDirStatus::Inaccessible(error),
+        }
+    }
+    SearchDirStatus::Missing
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -226,6 +294,8 @@ pub struct ConfigWarning {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedSearchDirs {
     pub dirs: Vec<ResolvedSearchDir>,
+    /// Optional search directories that were skipped because they do not exist.
+    pub missing_optional: Vec<PathBuf>,
     pub warnings: Vec<ConfigWarning>,
 }
 
@@ -361,12 +431,7 @@ pub fn load_config() -> Result<LoadedConfig> {
 
 fn validate_config(config: &Config) -> Result<()> {
     for entry in &config.search_dirs {
-        let (path, depth) = match entry {
-            SearchDirEntry::Simple(path) => (path, DEFAULT_SEARCH_DEPTH),
-            SearchDirEntry::Rich { path, depth, .. } => {
-                (path, depth.unwrap_or(DEFAULT_SEARCH_DEPTH))
-            }
-        };
+        let (path, depth) = entry.path_and_depth();
         if path.trim().is_empty() {
             bail!("search directory path must not be empty");
         }
@@ -440,11 +505,13 @@ mod tests {
                     path: "~/Work".into(),
                     depth: Some(3),
                     include_non_git: None,
+                    optional: false,
                 },
                 SearchDirEntry::Rich {
                     path: "~/Projects".into(),
                     depth: None,
                     include_non_git: None,
+                    optional: false,
                 },
             ]
         );
@@ -498,7 +565,9 @@ search_dirs = [
         );
 
         let resolved = config
-            .resolved_search_dirs_with(Some(Path::new("/home/tester")), |_| true)
+            .resolved_search_dirs_with(Some(Path::new("/home/tester")), |_| {
+                SearchDirStatus::Directory
+            })
             .unwrap();
         assert_eq!(
             resolved
@@ -583,7 +652,9 @@ panes = [{ command = "  ", direction = "right" }]"#,
             parse_config(r#"search_dirs = ["~", { path = "~/Work", depth = 4 }, "/absolute"]"#)
                 .unwrap();
         let resolved = config
-            .resolved_search_dirs_with(Some(Path::new("/home/tester")), |_| true)
+            .resolved_search_dirs_with(Some(Path::new("/home/tester")), |_| {
+                SearchDirStatus::Directory
+            })
             .unwrap();
         assert_eq!(
             resolved.dirs,
@@ -611,14 +682,25 @@ panes = [{ command = "  ", direction = "right" }]"#,
     #[test]
     fn missing_home_makes_tilde_expansion_fail_loudly() {
         let (config, _) = parse_config(r#"search_dirs = ["~/Work"]"#).unwrap();
-        assert!(config.resolved_search_dirs_with(None, |_| true).is_err());
+        assert!(
+            config
+                .resolved_search_dirs_with(None, |_| SearchDirStatus::Directory)
+                .is_err()
+        );
     }
 
     #[test]
-    fn missing_search_directories_are_reported_instead_of_silently_dropped() {
-        let (config, _) = parse_config(r#"search_dirs = ["/exists", "/missing"]"#).unwrap();
+    fn unusable_search_directories_are_reported_instead_of_silently_dropped() {
+        let (config, _) =
+            parse_config(r#"search_dirs = ["/exists", "/missing", "/file", "/denied"]"#).unwrap();
         let resolved = config
-            .resolved_search_dirs_with(None, |path| path == Path::new("/exists"))
+            .resolved_search_dirs_with(None, |path| match path.to_str().unwrap() {
+                "/exists" => SearchDirStatus::Directory,
+                "/missing" => SearchDirStatus::Missing,
+                "/file" => SearchDirStatus::NotADirectory,
+                "/denied" => SearchDirStatus::Inaccessible(io::ErrorKind::PermissionDenied.into()),
+                other => panic!("unexpected probe for {other}"),
+            })
             .unwrap();
 
         assert_eq!(
@@ -629,8 +711,135 @@ panes = [{ command = "  ", direction = "right" }]"#,
                 include_non_git: false,
             }]
         );
-        assert_eq!(resolved.warnings.len(), 1);
-        assert!(resolved.warnings[0].message.contains("/missing"));
+        assert_eq!(resolved.missing_optional, Vec::<PathBuf>::new());
+        let messages = resolved
+            .warnings
+            .iter()
+            .map(|warning| warning.message.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(messages.len(), 3, "warnings were: {messages:?}");
+        assert!(messages[0].contains("does not exist: /missing"));
+        assert!(messages[1].contains("is not a directory: /file"));
+        assert!(messages[2].contains("cannot be read"));
+        assert!(messages[2].contains("/denied"));
+    }
+
+    #[test]
+    fn optional_search_directories_are_skipped_silently_only_when_missing() {
+        let (config, warnings) = parse_config(
+            r#"search_dirs = [
+                { path = "/present", optional = true },
+                { path = "/missing", optional = true },
+                { path = "/file", optional = true },
+                { path = "/denied", optional = true },
+                { path = "/required-missing", optional = false },
+            ]"#,
+        )
+        .unwrap();
+        assert_eq!(warnings, vec![]);
+        assert!(config.search_dirs[..4].iter().all(SearchDirEntry::optional));
+        assert!(!config.search_dirs[4].optional());
+
+        let resolved = config
+            .resolved_search_dirs_with(None, |path| match path.to_str().unwrap() {
+                "/present" => SearchDirStatus::Directory,
+                "/missing" | "/required-missing" => SearchDirStatus::Missing,
+                "/file" => SearchDirStatus::NotADirectory,
+                "/denied" => SearchDirStatus::Inaccessible(io::ErrorKind::PermissionDenied.into()),
+                other => panic!("unexpected probe for {other}"),
+            })
+            .unwrap();
+
+        assert_eq!(
+            resolved.dirs,
+            [ResolvedSearchDir {
+                path: PathBuf::from("/present"),
+                depth: 1,
+                include_non_git: false,
+            }]
+        );
+        assert_eq!(resolved.missing_optional, [PathBuf::from("/missing")]);
+        let messages = resolved
+            .warnings
+            .iter()
+            .map(|warning| warning.message.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(messages.len(), 3, "warnings were: {messages:?}");
+        assert!(messages[0].contains("is not a directory: /file"));
+        assert!(messages[1].contains("/denied"));
+        assert!(messages[2].contains("does not exist: /required-missing"));
+    }
+
+    #[test]
+    fn optional_defaults_to_false_and_is_omitted_when_serialized() {
+        let (config, _) = parse_config(
+            r#"search_dirs = ["/simple", { path = "/rich" }, { path = "/opt", optional = true }]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            config
+                .search_dirs
+                .iter()
+                .map(SearchDirEntry::optional)
+                .collect::<Vec<_>>(),
+            [false, false, true]
+        );
+
+        let serialized = toml::to_string(&config.search_dirs[1]).unwrap();
+        assert!(!serialized.contains("optional"), "serialized: {serialized}");
+        let serialized = toml::to_string(&config.search_dirs[2]).unwrap();
+        assert!(
+            serialized.contains("optional = true"),
+            "serialized: {serialized}"
+        );
+    }
+
+    #[test]
+    fn probe_distinguishes_missing_paths_from_other_problems() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("file");
+        fs::write(&file, "").unwrap();
+
+        assert!(matches!(
+            probe_search_dir(temp.path()),
+            SearchDirStatus::Directory
+        ));
+        assert!(matches!(
+            probe_search_dir(&temp.path().join("missing")),
+            SearchDirStatus::Missing
+        ));
+        assert!(matches!(
+            probe_search_dir(&file),
+            SearchDirStatus::NotADirectory
+        ));
+        assert!(
+            matches!(
+                probe_search_dir(&file.join("child")),
+                SearchDirStatus::NotADirectory
+            ),
+            "a path beneath a file is misconfigured, not missing"
+        );
+        assert!(
+            matches!(
+                probe_search_dir(&file.join("child").join("grandchild")),
+                SearchDirStatus::NotADirectory
+            ),
+            "a path several levels beneath a file is misconfigured, not missing"
+        );
+        assert!(matches!(
+            probe_search_dir(&temp.path().join("missing").join("child")),
+            SearchDirStatus::Missing
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_treats_a_dangling_symlink_as_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let link = temp.path().join("unmounted");
+        std::os::unix::fs::symlink(temp.path().join("absent-target"), &link).unwrap();
+
+        assert!(matches!(probe_search_dir(&link), SearchDirStatus::Missing));
     }
 
     #[test]
