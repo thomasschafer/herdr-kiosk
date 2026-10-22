@@ -16,13 +16,15 @@ pub struct BaseBranchSelection {
     pub list: SearchableList,
 }
 
-/// Offered when a new branch name matches branches that exist only on remotes, so
-/// the user decides between tracking one of them and creating an unrelated branch.
+/// Offered when a new branch name matches branches that exist only on remotes, or
+/// could do once a pending fetch finishes, so the user decides between tracking a
+/// remote branch and creating an unrelated one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteBranchPrompt {
     name: String,
     choices: Vec<RemoteBranchChoice>,
     selected: usize,
+    remotes_pending: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,9 +34,10 @@ pub enum RemoteBranchChoice {
 }
 
 impl RemoteBranchPrompt {
-    /// Returns `None` when there are no remote matches, as there is nothing to ask.
-    fn new(name: String, remote_matches: Vec<BranchEntry>) -> Option<Self> {
-        if remote_matches.is_empty() {
+    /// Returns `None` when there are no remote matches and no remotes still
+    /// loading, as there is nothing to ask.
+    fn new(name: String, remote_matches: Vec<BranchEntry>, remotes_pending: bool) -> Option<Self> {
+        if remote_matches.is_empty() && !remotes_pending {
             return None;
         }
         assert!(
@@ -52,6 +55,7 @@ impl RemoteBranchPrompt {
             name,
             choices,
             selected: 0,
+            remotes_pending,
         })
     }
 
@@ -69,6 +73,10 @@ impl RemoteBranchPrompt {
 
     pub fn remote_count(&self) -> usize {
         self.choices.len() - 1
+    }
+
+    pub fn remotes_pending(&self) -> bool {
+        self.remotes_pending
     }
 
     fn move_selection(&mut self, delta: i32) {
@@ -156,17 +164,13 @@ pub(crate) fn edit(
     queue_filter(state, worker, None);
 }
 
-/// `wait_for_remotes` refuses to start while remote branches are still being
-/// fetched, so an implicit trigger cannot miss a remote branch that is about to
-/// appear. Explicit triggers skip the wait and prompt with whatever has loaded.
 pub(crate) fn start(
     state: &mut AppState,
     git: &Arc<dyn GitProvider>,
     herdr: Option<&Arc<dyn HerdrProvider>>,
     sender: &EventSender,
-    wait_for_remotes: bool,
 ) {
-    match route(state, wait_for_remotes) {
+    match route(state) {
         Err(message) => state.push_toast(ToastKind::Error, message),
         Ok(NewBranchRoute::Existing(branch)) => {
             crate::screens::branch::open(state, git, herdr, sender, &branch);
@@ -265,7 +269,7 @@ pub(crate) fn cancel(state: &mut AppState) -> bool {
     }
 }
 
-fn route(state: &AppState, wait_for_remotes: bool) -> Result<NewBranchRoute, &'static str> {
+fn route(state: &AppState) -> Result<NewBranchRoute, &'static str> {
     let Mode::BranchSelect(context) = &state.mode else {
         return Err("New branches can only be created from the branch view");
     };
@@ -284,9 +288,6 @@ fn route(state: &AppState, wait_for_remotes: bool) -> Result<NewBranchRoute, &'s
     {
         return Ok(NewBranchRoute::Existing(branch.clone()));
     }
-    if wait_for_remotes && state.branch_view.fetching_remote_repo.is_some() {
-        return Err("Remote branches are still loading");
-    }
     let remote_matches = state
         .branch_view
         .entries
@@ -294,7 +295,8 @@ fn route(state: &AppState, wait_for_remotes: bool) -> Result<NewBranchRoute, &'s
         .filter(|branch| branch.remote.is_some() && branch.name == name)
         .cloned()
         .collect();
-    if let Some(prompt) = RemoteBranchPrompt::new(name.clone(), remote_matches) {
+    let remotes_pending = state.branch_view.fetching_remote_repo.is_some();
+    if let Some(prompt) = RemoteBranchPrompt::new(name.clone(), remote_matches, remotes_pending) {
         return Ok(NewBranchRoute::ConfirmRemote {
             context: context.clone(),
             prompt,
@@ -434,7 +436,11 @@ fn apply_filter_result(
 }
 
 #[cfg(test)]
-pub(crate) fn test_remote_prompt(name: &str, remotes: &[&str]) -> RemoteBranchPrompt {
+pub(crate) fn test_remote_prompt(
+    name: &str,
+    remotes: &[&str],
+    remotes_pending: bool,
+) -> RemoteBranchPrompt {
     RemoteBranchPrompt::new(
         name.into(),
         remotes
@@ -448,8 +454,9 @@ pub(crate) fn test_remote_prompt(name: &str, remotes: &[&str]) -> RemoteBranchPr
                 open_workspace_id: None,
             })
             .collect(),
+        remotes_pending,
     )
-    .expect("at least one remote")
+    .expect("remote matches or pending remotes")
 }
 
 #[cfg(test)]

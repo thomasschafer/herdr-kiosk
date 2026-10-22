@@ -27,6 +27,7 @@ use crate::{
 };
 
 use super::*;
+use crate::state::RemoteBranchPrompt;
 
 fn state_with_repo() -> AppState {
     let mut state = AppState::new(None);
@@ -88,7 +89,7 @@ fn new_branch_routing_rejects_empty_and_routes_existing_local() {
         repo_path: "/repo".into(),
         repo_name: "repo".into(),
     });
-    assert_eq!(route(&state, true), Err("Type a branch name first"));
+    assert_eq!(route(&state), Err("Type a branch name first"));
 
     state.branch_view.entries = BranchEntry::build_local(
         &Repo {
@@ -104,7 +105,7 @@ fn new_branch_routing_rejects_empty_and_routes_existing_local() {
     state.branch_view.list = SearchableList::new(1);
     state.branch_view.list.input.text = "feature".into();
     assert!(matches!(
-        route(&state, true),
+        route(&state),
         Ok(NewBranchRoute::Existing(branch)) if branch.name == "feature"
     ));
 }
@@ -238,7 +239,7 @@ fn invalid_new_branch_name_is_validated_by_git_and_returns_to_branch_view() {
     state.branch_view.list.input.text = "bad..name".into();
     state.branch_view.list.input.cursor = 9;
 
-    start(&mut state, &git, None, &sender, true);
+    start(&mut state, &git, None, &sender);
     assert!(matches!(state.mode, Mode::ValidatingNewBranch { .. }));
     let event = rx.recv_timeout(Duration::from_secs(1)).unwrap();
     process_app_event(event, &mut state, &mut TickChanges::default());
@@ -270,7 +271,7 @@ fn new_branch_before_local_load_stays_in_branch_view_then_works_after_load() {
     state.branch_view.list.input.cursor = "feat/new".len();
     state.branch_view.loading = true;
 
-    start(&mut state, &git, None, &sender, true);
+    start(&mut state, &git, None, &sender);
 
     assert!(matches!(state.mode, Mode::BranchSelect(_)));
     assert!(state.branch_view.loading);
@@ -285,7 +286,7 @@ fn new_branch_before_local_load_stays_in_branch_view_then_works_after_load() {
     assert!(rx.try_recv().is_err());
 
     state.branch_view.loading = false;
-    start(&mut state, &git, None, &sender, true);
+    start(&mut state, &git, None, &sender);
 
     assert!(matches!(state.mode, Mode::ValidatingNewBranch { .. }));
     let event = rx.recv_timeout(Duration::from_secs(1)).unwrap();
@@ -440,7 +441,7 @@ fn new_branch_matching_remote_only_branches_prompts_with_track_first() {
     let (sender, rx) = sender();
     let mut state = state_with_remote_branches("feat/x", &["origin-a", "origin-b"]);
 
-    start(&mut state, &git, None, &sender, true);
+    start(&mut state, &git, None, &sender);
 
     assert_eq!(
         prompt_labels(&state),
@@ -459,7 +460,7 @@ fn new_branch_without_remote_match_skips_the_prompt() {
     let (sender, _rx) = sender();
     let mut state = state_with_remote_branches("feat/x", &[]);
 
-    start(&mut state, &git, None, &sender, true);
+    start(&mut state, &git, None, &sender);
 
     assert!(matches!(
         &state.mode,
@@ -468,24 +469,55 @@ fn new_branch_without_remote_match_skips_the_prompt() {
 }
 
 #[test]
-fn implicit_new_branch_waits_for_remote_fetch_but_explicit_does_not() {
-    let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+fn pending_remotes_without_a_match_ask_before_creating() {
+    let git_mock = Arc::new(MockGitProvider::default());
+    let git: Arc<dyn GitProvider> = git_mock.clone();
     let (sender, rx) = sender();
+    let worker = FilterWorker::spawn(sender.clone());
+    let mut state = state_with_remote_branches("feat/x", &[]);
+    state.branch_view.fetching_remote_repo = Some("/repo".into());
+
+    start(&mut state, &git, None, &sender);
+
+    assert_eq!(prompt_labels(&state), ["<create>"]);
+    let Mode::ConfirmRemoteBranch { prompt, .. } = &state.mode else {
+        unreachable!()
+    };
+    assert!(prompt.remotes_pending());
+    assert!(rx.try_recv().is_err());
+
+    process_action(
+        Action::ResolveRemoteBranch,
+        &mut state,
+        &git,
+        None,
+        &sender,
+        &worker,
+        &KeysConfig::default(),
+    );
+
+    assert!(matches!(
+        &state.mode,
+        Mode::ValidatingNewBranch { name, .. } if name == "feat/x"
+    ));
+    let event = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert!(matches!(event, AppEvent::BranchNameValidated { .. }));
+}
+
+#[test]
+fn pending_remotes_with_a_match_offer_tracking_and_note_the_pending_fetch() {
+    let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+    let (sender, _rx) = sender();
     let mut state = state_with_remote_branches("feat/x", &["origin"]);
     state.branch_view.fetching_remote_repo = Some("/repo".into());
 
-    start(&mut state, &git, None, &sender, true);
-
-    assert!(matches!(state.mode, Mode::BranchSelect(_)));
-    assert_eq!(
-        state.toasts.back().unwrap().message,
-        "Remote branches are still loading"
-    );
-    assert!(rx.try_recv().is_err());
-
-    start(&mut state, &git, None, &sender, false);
+    start(&mut state, &git, None, &sender);
 
     assert_eq!(prompt_labels(&state), ["origin/feat/x", "<create>"]);
+    let Mode::ConfirmRemoteBranch { prompt, .. } = &state.mode else {
+        unreachable!()
+    };
+    assert!(prompt.remotes_pending());
 }
 
 #[test]
@@ -495,7 +527,7 @@ fn existing_local_branch_opens_even_while_remotes_are_loading() {
     state.branch_view.fetching_remote_repo = Some("/repo".into());
 
     assert!(matches!(
-        route(&state, true),
+        route(&state),
         Ok(NewBranchRoute::Existing(branch)) if branch.name == "feature"
     ));
 }
@@ -515,7 +547,7 @@ fn tracking_choice_checks_out_the_selected_remote_branch() {
     let worker = FilterWorker::spawn(sender.clone());
     let keys = KeysConfig::default();
     let mut state = state_with_remote_branches("feat/x", &["origin-a", "origin-b"]);
-    start(&mut state, &git, Some(&herdr), &sender, true);
+    start(&mut state, &git, Some(&herdr), &sender);
 
     for action in [Action::MoveSelection(1), Action::ResolveRemoteBranch] {
         process_action(
@@ -551,7 +583,7 @@ fn create_new_choice_validates_then_offers_local_bases() {
     let worker = FilterWorker::spawn(sender.clone());
     let keys = KeysConfig::default();
     let mut state = state_with_remote_branches("feat/x", &["origin"]);
-    start(&mut state, &git, None, &sender, true);
+    start(&mut state, &git, None, &sender);
 
     for action in [
         Action::MoveSelection(5),
@@ -581,7 +613,7 @@ fn cancelling_remote_prompt_returns_to_branch_view_with_query_intact() {
     let (sender, rx) = sender();
     let worker = FilterWorker::spawn(sender.clone());
     let mut state = state_with_remote_branches("feat/x", &["origin"]);
-    start(&mut state, &git, None, &sender, true);
+    start(&mut state, &git, None, &sender);
 
     process_action(
         Action::CancelOverlay,
@@ -600,7 +632,7 @@ fn cancelling_remote_prompt_returns_to_branch_view_with_query_intact() {
 
 #[test]
 fn remote_prompt_selection_is_clamped_to_its_choices() {
-    let mut prompt = test_remote_prompt("feat/x", &["origin-a", "origin-b"]);
+    let mut prompt = test_remote_prompt("feat/x", &["origin-a", "origin-b"], false);
     prompt.move_selection(-1);
     assert_eq!(prompt.selected(), 0);
     prompt.move_selection(10);
@@ -611,18 +643,21 @@ fn remote_prompt_selection_is_clamped_to_its_choices() {
 #[test]
 #[should_panic(expected = "remote branch prompt built from non-matching branches")]
 fn remote_prompt_rejects_branches_with_a_different_name() {
-    let _ = RemoteBranchPrompt::new("feat/x".into(), vec![remote_branch("other", "origin")]);
+    let _ = RemoteBranchPrompt::new(
+        "feat/x".into(),
+        vec![remote_branch("other", "origin")],
+        false,
+    );
 }
 
-#[test]
-fn remote_prompt_renders_over_branch_view_with_choices_and_hints() {
+fn render_remote_prompt(prompt: RemoteBranchPrompt) -> String {
     let mut state = state_with_remote_branches("feat/x", &["origin-a", "origin-b"]);
     state.mode = Mode::ConfirmRemoteBranch {
         context: BranchContext {
             repo_path: "/repo".into(),
             repo_name: "repo".into(),
         },
-        prompt: test_remote_prompt("feat/x", &["origin-a", "origin-b"]),
+        prompt,
     };
     let backend = TestBackend::new(100, 30);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -646,7 +681,16 @@ fn remote_prompt_renders_over_branch_view_with_choices_and_hints() {
                 .collect::<String>()
         })
         .collect::<Vec<_>>();
-    let rendered = rows.join("\n");
+    rows.join("\n")
+}
+
+#[test]
+fn remote_prompt_renders_over_branch_view_with_choices_and_hints() {
+    let rendered = render_remote_prompt(test_remote_prompt(
+        "feat/x",
+        &["origin-a", "origin-b"],
+        false,
+    ));
     assert!(rendered.contains("repo — select branch"), "{rendered}");
     assert!(rendered.contains("Branch exists on remote"), "{rendered}");
     assert!(
@@ -658,6 +702,31 @@ fn remote_prompt_renders_over_branch_view_with_choices_and_hints() {
     assert!(rendered.contains("Create new branch feat/x"), "{rendered}");
     assert!(
         rendered.contains("↑/↓ move / enter confirm / esc cancel"),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn remote_prompt_explains_pending_remotes() {
+    let rendered = render_remote_prompt(test_remote_prompt("feat/x", &[], true));
+    assert!(rendered.contains("Remotes still loading"), "{rendered}");
+    assert!(
+        rendered.contains("Remotes are still loading, so feat/x may already exist on one."),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("▸ Create new branch feat/x"),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("Track"), "{rendered}");
+
+    let rendered = render_remote_prompt(test_remote_prompt("feat/x", &["origin"], true));
+    assert!(
+        rendered.contains("feat/x already exists on a remote."),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("Other remotes are still loading."),
         "{rendered}"
     );
 }

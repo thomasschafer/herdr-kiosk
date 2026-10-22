@@ -24,17 +24,23 @@ pub fn draw_remote_prompt(
     keys: &KeysConfig,
 ) {
     let name = crate::display::sanitize(prompt.name()).into_owned();
-    let mut lines = vec![
-        Line::raw(if prompt.remote_count() == 1 {
-            format!("{name} already exists on a remote.")
-        } else {
-            format!(
-                "{name} already exists on {} remotes.",
-                prompt.remote_count()
-            )
-        }),
-        Line::raw(""),
-    ];
+    let mut lines = match prompt.remote_count() {
+        0 => vec![Line::raw(format!(
+            "Remotes are still loading, so {name} may already exist on one."
+        ))],
+        count => {
+            let mut lines = vec![Line::raw(if count == 1 {
+                format!("{name} already exists on a remote.")
+            } else {
+                format!("{name} already exists on {count} remotes.")
+            })];
+            if prompt.remotes_pending() {
+                lines.push(Line::raw("Other remotes are still loading."));
+            }
+            lines
+        }
+    };
+    lines.push(Line::raw(""));
     for (index, choice) in prompt.choices().iter().enumerate() {
         let label = match choice {
             RemoteBranchChoice::Track(branch) => {
@@ -63,8 +69,12 @@ pub fn draw_remote_prompt(
         lines.push(Line::raw(""));
         lines.push(hints);
     }
-    super::dialog::Dialog::new(" Branch exists on remote ", lines, theme.secondary)
-        .render(frame, area);
+    let title = if prompt.remote_count() == 0 {
+        " Remotes still loading "
+    } else {
+        " Branch exists on remote "
+    };
+    super::dialog::Dialog::new(title, lines, theme.secondary).render(frame, area);
 }
 
 pub fn draw(

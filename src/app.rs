@@ -392,9 +392,7 @@ pub(crate) fn process_action(
         Action::OpenRepo => crate::screens::repo::open_selected(state, herdr, sender),
         Action::OpenBranches => crate::screens::branch::enter(state, git, herdr, sender),
         Action::OpenBranch => crate::screens::branch::open_selected(state, git, herdr, sender),
-        Action::StartNewBranch { wait_for_remotes } => {
-            crate::screens::new_branch::start(state, git, herdr, sender, wait_for_remotes);
-        }
+        Action::StartNewBranch => crate::screens::new_branch::start(state, git, herdr, sender),
         Action::CreateNewBranch => crate::screens::new_branch::create(state, herdr, sender),
         Action::ResolveRemoteBranch => {
             crate::screens::new_branch::resolve_remote_prompt(state, git, herdr, sender);

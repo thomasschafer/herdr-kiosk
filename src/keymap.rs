@@ -105,9 +105,7 @@ fn command_to_action(command: Command, state: &AppState) -> Option<Action> {
                     && !active_query(state).is_empty()
                     && state.branch_view.list.filtered.is_empty() =>
             {
-                Some(Action::StartNewBranch {
-                    wait_for_remotes: true,
-                })
+                Some(Action::StartNewBranch)
             }
             Mode::BranchSelect(_) => Some(Action::OpenBranch),
             Mode::SelectBaseBranch { .. } => Some(Action::CreateNewBranch),
@@ -137,9 +135,7 @@ fn command_to_action(command: Command, state: &AppState) -> Option<Action> {
         }
         Command::NewBranch => (matches!(state.mode, Mode::BranchSelect(_))
             && !state.branch_view.loading)
-            .then_some(Action::StartNewBranch {
-                wait_for_remotes: false,
-            }),
+            .then_some(Action::StartNewBranch),
         Command::Delete => {
             matches!(state.mode, Mode::BranchSelect(_)).then_some(Action::DeleteWorktree)
         }
@@ -301,15 +297,11 @@ mod tests {
                 &state,
                 &keys
             ),
-            Some(Action::StartNewBranch {
-                wait_for_remotes: false
-            })
+            Some(Action::StartNewBranch)
         );
         assert_eq!(
             resolve_action(key(KeyCode::Enter, KeyModifiers::NONE), &state, &keys),
-            Some(Action::StartNewBranch {
-                wait_for_remotes: true
-            })
+            Some(Action::StartNewBranch)
         );
     }
 
@@ -361,7 +353,7 @@ mod tests {
                 repo_path: "/repo".into(),
                 repo_name: "repo".into(),
             },
-            prompt: crate::screens::new_branch::test_remote_prompt("feature", &["origin"]),
+            prompt: crate::screens::new_branch::test_remote_prompt("feature", &["origin"], false),
         };
         let keys = KeysConfig::default();
         for (code, modifiers, expected) in [

@@ -11,7 +11,7 @@ pub enum Action {
     OpenRepo,
     OpenBranches,
     OpenBranch,
-    StartNewBranch { wait_for_remotes: bool },
+    StartNewBranch,
     CreateNewBranch,
     ResolveRemoteBranch,
     DeleteWorktree,
