@@ -486,7 +486,9 @@ pub(crate) fn draw_dialog(
             format!("{spinner} Removing checkout…"),
             Style::default().fg(theme.secondary),
         )));
-    } else if let Some(hints) = components::dialog::confirm_cancel_hints(keys, theme) {
+    } else if let Some(hints) =
+        components::dialog::hint_line(&components::dialog::confirm_cancel_hints(keys), theme)
+    {
         lines.push(hints);
     }
     components::dialog::Dialog::new(" Confirm delete ", lines, theme.secondary).render(frame, area);

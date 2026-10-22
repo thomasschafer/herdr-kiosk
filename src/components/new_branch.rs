@@ -11,7 +11,7 @@ use ratatui::{
 };
 
 use crate::{
-    config::keys::KeysConfig,
+    config::keys::{BindingMode, KeysConfig},
     state::{AppState, Mode, RemoteBranchChoice, RemoteBranchPrompt},
     theme::Theme,
 };
@@ -54,7 +54,12 @@ pub fn draw_remote_prompt(
             Line::raw(format!("  {label}"))
         });
     }
-    if let Some(hints) = super::dialog::confirm_cancel_hints(keys, theme) {
+    let hints = [
+        super::dialog::move_hints(keys, BindingMode::Choice),
+        super::dialog::confirm_cancel_hints(keys),
+    ]
+    .concat();
+    if let Some(hints) = super::dialog::hint_line(&hints, theme) {
         lines.push(Line::raw(""));
         lines.push(hints);
     }

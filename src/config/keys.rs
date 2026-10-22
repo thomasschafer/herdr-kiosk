@@ -483,6 +483,21 @@ impl KeysConfig {
             .find_map(|(key, command)| (command == wanted).then_some(key))
     }
 
+    /// Like `first_key`, but favours unmodified keys such as arrows over chords
+    /// like `ctrl+p`, which sort first but are the less obvious binding to show.
+    pub fn preferred_key(&self, mode: BindingMode, wanted: Command) -> Option<KeyChord> {
+        let keys = self
+            .sections(mode)
+            .into_iter()
+            .flat_map(|section| section.bindings)
+            .filter_map(|(key, command)| (command == wanted).then_some(key))
+            .collect::<Vec<_>>();
+        keys.iter()
+            .find(|key| key.modifiers == KeyModifiers::NONE)
+            .or_else(|| keys.first())
+            .copied()
+    }
+
     pub fn sections(&self, mode: BindingMode) -> Vec<HelpSection> {
         let effective = |key| self.command_for(mode, key);
         let mut sections = Vec::new();
@@ -617,6 +632,22 @@ impl<'de> Deserialize<'de> for KeysConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preferred_key_favours_unmodified_bindings_but_follows_remaps() {
+        let keys = KeysConfig::default();
+        assert_eq!(
+            keys.preferred_key(BindingMode::Choice, Command::MoveUp),
+            Some(KeyChord::new(KeyCode::Up, KeyModifiers::NONE))
+        );
+        let keys =
+            toml::from_str::<KeysConfig>("[list_navigation]\nup = \"noop\"\ndown = \"noop\"")
+                .unwrap();
+        assert_eq!(
+            keys.preferred_key(BindingMode::Choice, Command::MoveUp),
+            Some(KeyChord::new(KeyCode::Char('p'), KeyModifiers::CONTROL))
+        );
+    }
 
     #[test]
     fn parses_and_displays_valid_chords() {

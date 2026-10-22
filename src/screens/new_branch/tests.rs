@@ -657,7 +657,7 @@ fn remote_prompt_renders_over_branch_view_with_choices_and_hints() {
     assert!(rendered.contains("Track origin-b/feat/x"), "{rendered}");
     assert!(rendered.contains("Create new branch feat/x"), "{rendered}");
     assert!(
-        rendered.contains("enter confirm / esc cancel"),
+        rendered.contains("↑/↓ move / enter confirm / esc cancel"),
         "{rendered}"
     );
 }

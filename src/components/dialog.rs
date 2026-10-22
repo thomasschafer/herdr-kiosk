@@ -20,22 +20,39 @@ pub(crate) fn confirm_cancel_keys(keys: &KeysConfig) -> (Option<String>, Option<
     )
 }
 
-/// Returns `None` when both the confirm and cancel commands are unbound.
-pub(crate) fn confirm_cancel_hints<'a>(keys: &KeysConfig, theme: &Theme) -> Option<Line<'a>> {
+pub(crate) fn confirm_cancel_hints(keys: &KeysConfig) -> Vec<(String, &'static str)> {
     let (confirm, cancel) = confirm_cancel_keys(keys);
-    let mut hints = Vec::new();
-    if let Some(confirm) = confirm {
-        hints.push(Span::styled(confirm, Style::default().fg(theme.hint)));
-        hints.push(Span::raw(" confirm"));
+    confirm
+        .map(|key| (key, "confirm"))
+        .into_iter()
+        .chain(cancel.map(|key| (key, "cancel")))
+        .collect()
+}
+
+/// Combines the up and down keys into one hint when both are bound.
+pub(crate) fn move_hints(keys: &KeysConfig, mode: BindingMode) -> Vec<(String, &'static str)> {
+    match (
+        keys.preferred_key(mode, Command::MoveUp),
+        keys.preferred_key(mode, Command::MoveDown),
+    ) {
+        (Some(up), Some(down)) => vec![(format!("{up}/{down}"), "move")],
+        (Some(up), None) => vec![(up.to_string(), "move up")],
+        (None, Some(down)) => vec![(down.to_string(), "move down")],
+        (None, None) => Vec::new(),
     }
-    if let Some(cancel) = cancel {
-        if !hints.is_empty() {
-            hints.push(Span::raw(" / "));
+}
+
+/// Renders `(key, label)` pairs as one line. Returns `None` when there are no hints.
+pub(crate) fn hint_line<'a>(hints: &[(String, &'static str)], theme: &Theme) -> Option<Line<'a>> {
+    let mut spans = Vec::new();
+    for (key, label) in hints {
+        if !spans.is_empty() {
+            spans.push(Span::raw(" / "));
         }
-        hints.push(Span::styled(cancel, Style::default().fg(theme.hint)));
-        hints.push(Span::raw(" cancel"));
+        spans.push(Span::styled(key.clone(), Style::default().fg(theme.hint)));
+        spans.push(Span::raw(format!(" {label}")));
     }
-    (!hints.is_empty()).then(|| Line::from(hints))
+    (!spans.is_empty()).then(|| Line::from(spans))
 }
 
 pub struct Dialog<'a> {
