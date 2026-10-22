@@ -35,10 +35,9 @@ pub enum SearchDirEntry {
         /// the global `include_non_git` value is used.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         include_non_git: Option<bool>,
-        /// Whether this directory may be absent, such as a work directory in a config
-        /// shared across machines. A missing optional directory is skipped without a
-        /// warning; a path that exists but is not a readable directory still warns.
-        /// Defaults to `false`.
+        /// Whether this directory may be absent. A missing optional directory is
+        /// skipped without a warning; a path that exists but is not a readable
+        /// directory still warns. Defaults to `false`.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         optional: bool,
     },
@@ -256,6 +255,7 @@ pub enum SearchDirStatus {
     Directory,
     /// Nothing exists at the path, including a symlink whose target is missing.
     Missing,
+    /// The path, or one of its ancestors, is not a directory.
     NotADirectory,
     Inaccessible(io::Error),
 }
@@ -264,9 +264,26 @@ pub fn probe_search_dir(path: &Path) -> SearchDirStatus {
     match fs::metadata(path) {
         Ok(metadata) if metadata.is_dir() => SearchDirStatus::Directory,
         Ok(_) => SearchDirStatus::NotADirectory,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => SearchDirStatus::Missing,
+        Err(error) if error.kind() == io::ErrorKind::NotADirectory => {
+            SearchDirStatus::NotADirectory
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => probe_missing_ancestry(path),
         Err(error) => SearchDirStatus::Inaccessible(error),
     }
+}
+
+/// Windows reports a path beneath a file as not found, so the nearest existing
+/// ancestor decides whether the path is genuinely missing.
+fn probe_missing_ancestry(path: &Path) -> SearchDirStatus {
+    for ancestor in path.ancestors().skip(1) {
+        match fs::metadata(ancestor) {
+            Ok(metadata) if metadata.is_dir() => return SearchDirStatus::Missing,
+            Ok(_) => return SearchDirStatus::NotADirectory,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return SearchDirStatus::Inaccessible(error),
+        }
+    }
+    SearchDirStatus::Missing
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -796,12 +813,23 @@ panes = [{ command = "  ", direction = "right" }]"#,
             SearchDirStatus::NotADirectory
         ));
         assert!(
-            !matches!(
+            matches!(
                 probe_search_dir(&file.join("child")),
-                SearchDirStatus::Directory | SearchDirStatus::Missing
+                SearchDirStatus::NotADirectory
             ),
             "a path beneath a file is misconfigured, not missing"
         );
+        assert!(
+            matches!(
+                probe_search_dir(&file.join("child").join("grandchild")),
+                SearchDirStatus::NotADirectory
+            ),
+            "a path several levels beneath a file is misconfigured, not missing"
+        );
+        assert!(matches!(
+            probe_search_dir(&temp.path().join("missing").join("child")),
+            SearchDirStatus::Missing
+        ));
     }
 
     #[cfg(unix)]

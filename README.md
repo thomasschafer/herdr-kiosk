@@ -82,7 +82,7 @@ Accepted forms:
   - `path` — Directory to scan. `~` and paths beginning with `~/` expand from the user's home directory; other relative paths are accepted as written.
   - `depth` — Maximum directory depth to scan. The value must be at least 1 and defaults to 1 when omitted.
   - `include_non_git` — Whether to include plain folders for this search root. When omitted, the global `include_non_git` value is used.
-  - `optional` — Whether this directory may be absent, such as a work directory in a config shared across machines. A missing optional directory is skipped without a warning; a path that exists but is not a readable directory still warns. Defaults to `false`.
+  - `optional` — Whether this directory may be absent. A missing optional directory is skipped without a warning; a path that exists but is not a readable directory still warns. Defaults to `false`.
 
 #### `include_non_git`
 
