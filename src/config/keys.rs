@@ -265,8 +265,8 @@ pub struct KeysConfig {
     /// Bindings active in navigable lists. Accepted actions are `move_up`,
     /// `move_down`, and `noop`.
     list_navigation: HashMap<KeyChord, Command>,
-    /// Bindings active in confirmation dialogs and the base-branch picker. Accepted
-    /// actions are `open`, `back`, and `noop`.
+    /// Bindings active in confirmation dialogs, the remote-branch prompt, and the
+    /// base-branch picker. Accepted actions are `open`, `back`, and `noop`.
     modal: HashMap<KeyChord, Command>,
     /// Bindings specific to the repository picker. Accepted actions are `open`,
     /// `branches_view`, `quit`, and `noop`.
@@ -292,6 +292,7 @@ pub enum BindingMode {
     Repo,
     Branch,
     BaseBranch,
+    Choice,
     Modal,
 }
 
@@ -433,14 +434,19 @@ impl KeysConfig {
 
     pub fn command_for(&self, mode: BindingMode, chord: KeyChord) -> Option<Command> {
         let mut command = self.general.get(&chord).copied();
-        if !matches!(mode, BindingMode::Modal) {
+        if matches!(
+            mode,
+            BindingMode::Repo | BindingMode::Branch | BindingMode::BaseBranch
+        ) {
             command = self.text_edit.get(&chord).copied().or(command);
+        }
+        if !matches!(mode, BindingMode::Modal) {
             command = self.list_navigation.get(&chord).copied().or(command);
         }
         command = match mode {
             BindingMode::Repo => self.repo_select.get(&chord).copied().or(command),
             BindingMode::Branch => self.branch_select.get(&chord).copied().or(command),
-            BindingMode::BaseBranch | BindingMode::Modal => {
+            BindingMode::BaseBranch | BindingMode::Choice | BindingMode::Modal => {
                 self.modal.get(&chord).copied().or(command)
             }
         };
@@ -463,6 +469,7 @@ impl KeysConfig {
             Mode::RepoSelect => BindingMode::Repo,
             Mode::BranchSelect(_) => BindingMode::Branch,
             Mode::SelectBaseBranch { .. } => BindingMode::BaseBranch,
+            Mode::ConfirmRemoteBranch { .. } => BindingMode::Choice,
             Mode::ValidatingNewBranch { .. }
             | Mode::ConfirmWorktreeDelete(_)
             | Mode::Loading { .. } => BindingMode::Modal,
@@ -496,6 +503,11 @@ impl KeysConfig {
                 ("base branch", &self.modal),
                 ("navigation", &self.list_navigation),
                 ("search", &self.text_edit),
+                ("general", &self.general),
+            ],
+            BindingMode::Choice => vec![
+                ("dialog", &self.modal),
+                ("navigation", &self.list_navigation),
                 ("general", &self.general),
             ],
             BindingMode::Modal => vec![("dialog", &self.modal), ("general", &self.general)],

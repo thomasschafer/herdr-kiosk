@@ -11,9 +11,56 @@ use ratatui::{
 };
 
 use crate::{
-    state::{AppState, Mode},
+    config::keys::KeysConfig,
+    state::{AppState, Mode, RemoteBranchChoice, RemoteBranchPrompt},
     theme::Theme,
 };
+
+pub fn draw_remote_prompt(
+    frame: &mut Frame,
+    area: Rect,
+    prompt: &RemoteBranchPrompt,
+    theme: &Theme,
+    keys: &KeysConfig,
+) {
+    let name = crate::display::sanitize(prompt.name()).into_owned();
+    let mut lines = vec![
+        Line::raw(if prompt.remote_count() == 1 {
+            format!("{name} already exists on a remote.")
+        } else {
+            format!(
+                "{name} already exists on {} remotes.",
+                prompt.remote_count()
+            )
+        }),
+        Line::raw(""),
+    ];
+    for (index, choice) in prompt.choices().iter().enumerate() {
+        let label = match choice {
+            RemoteBranchChoice::Track(branch) => {
+                format!("Track {}", crate::display::sanitize(&branch.display_name()))
+            }
+            RemoteBranchChoice::CreateNew => format!("Create new branch {name}"),
+        };
+        lines.push(if index == prompt.selected() {
+            Line::from(Span::styled(
+                format!("▸ {label}"),
+                Style::default()
+                    .bg(theme.secondary)
+                    .fg(theme.highlight_fg)
+                    .add_modifier(Modifier::BOLD),
+            ))
+        } else {
+            Line::raw(format!("  {label}"))
+        });
+    }
+    if let Some(hints) = super::dialog::confirm_cancel_hints(keys, theme) {
+        lines.push(Line::raw(""));
+        lines.push(hints);
+    }
+    super::dialog::Dialog::new(" Branch exists on remote ", lines, theme.secondary)
+        .render(frame, area);
+}
 
 pub fn draw(
     frame: &mut Frame,
@@ -116,6 +163,7 @@ pub fn draw(
         }
         Mode::RepoSelect
         | Mode::BranchSelect(_)
+        | Mode::ConfirmRemoteBranch { .. }
         | Mode::ConfirmWorktreeDelete(_)
         | Mode::Loading { .. } => {}
     }

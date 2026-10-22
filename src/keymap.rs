@@ -105,10 +105,13 @@ fn command_to_action(command: Command, state: &AppState) -> Option<Action> {
                     && !active_query(state).is_empty()
                     && state.branch_view.list.filtered.is_empty() =>
             {
-                Some(Action::StartNewBranch)
+                Some(Action::StartNewBranch {
+                    wait_for_remotes: true,
+                })
             }
             Mode::BranchSelect(_) => Some(Action::OpenBranch),
             Mode::SelectBaseBranch { .. } => Some(Action::CreateNewBranch),
+            Mode::ConfirmRemoteBranch { .. } => Some(Action::ResolveRemoteBranch),
             Mode::ConfirmWorktreeDelete(flow) if !flow.in_progress() => {
                 Some(Action::ConfirmDeleteWorktree)
             }
@@ -123,9 +126,9 @@ fn command_to_action(command: Command, state: &AppState) -> Option<Action> {
             if active_query(state).is_empty() {
                 match state.mode {
                     Mode::BranchSelect(_) => Some(Action::BackToRepos),
-                    Mode::SelectBaseBranch { .. } | Mode::ConfirmWorktreeDelete(_) => {
-                        Some(Action::CancelOverlay)
-                    }
+                    Mode::SelectBaseBranch { .. }
+                    | Mode::ConfirmRemoteBranch { .. }
+                    | Mode::ConfirmWorktreeDelete(_) => Some(Action::CancelOverlay),
                     _ => None,
                 }
             } else {
@@ -134,7 +137,9 @@ fn command_to_action(command: Command, state: &AppState) -> Option<Action> {
         }
         Command::NewBranch => (matches!(state.mode, Mode::BranchSelect(_))
             && !state.branch_view.loading)
-            .then_some(Action::StartNewBranch),
+            .then_some(Action::StartNewBranch {
+                wait_for_remotes: false,
+            }),
         Command::Delete => {
             matches!(state.mode, Mode::BranchSelect(_)).then_some(Action::DeleteWorktree)
         }
@@ -161,6 +166,7 @@ fn active_query(state: &AppState) -> &str {
         Mode::SelectBaseBranch { flow, .. } => &flow.list.input.text,
         Mode::Loading { .. }
         | Mode::ValidatingNewBranch { .. }
+        | Mode::ConfirmRemoteBranch { .. }
         | Mode::ConfirmWorktreeDelete(_) => "",
     }
 }
@@ -295,11 +301,15 @@ mod tests {
                 &state,
                 &keys
             ),
-            Some(Action::StartNewBranch)
+            Some(Action::StartNewBranch {
+                wait_for_remotes: false
+            })
         );
         assert_eq!(
             resolve_action(key(KeyCode::Enter, KeyModifiers::NONE), &state, &keys),
-            Some(Action::StartNewBranch)
+            Some(Action::StartNewBranch {
+                wait_for_remotes: true
+            })
         );
     }
 
@@ -341,6 +351,49 @@ mod tests {
             resolve_action(key(KeyCode::Enter, KeyModifiers::NONE), &state, &keys),
             Some(Action::ConfirmDeleteWorktree)
         );
+    }
+
+    #[test]
+    fn remote_branch_prompt_navigates_confirms_and_cancels_without_text_editing() {
+        let mut state = AppState::new(None);
+        state.mode = Mode::ConfirmRemoteBranch {
+            context: BranchContext {
+                repo_path: "/repo".into(),
+                repo_name: "repo".into(),
+            },
+            prompt: crate::screens::new_branch::test_remote_prompt("feature", &["origin"]),
+        };
+        let keys = KeysConfig::default();
+        for (code, modifiers, expected) in [
+            (
+                KeyCode::Up,
+                KeyModifiers::NONE,
+                Some(Action::MoveSelection(-1)),
+            ),
+            (
+                KeyCode::Char('n'),
+                KeyModifiers::CONTROL,
+                Some(Action::MoveSelection(1)),
+            ),
+            (
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+                Some(Action::ResolveRemoteBranch),
+            ),
+            (
+                KeyCode::Esc,
+                KeyModifiers::NONE,
+                Some(Action::CancelOverlay),
+            ),
+            (KeyCode::Char('x'), KeyModifiers::NONE, None),
+            (KeyCode::Backspace, KeyModifiers::NONE, None),
+        ] {
+            assert_eq!(
+                resolve_action(key(code, modifiers), &state, &keys),
+                expected,
+                "{code:?} {modifiers:?}"
+            );
+        }
     }
 
     #[test]

@@ -16,6 +16,77 @@ pub struct BaseBranchSelection {
     pub list: SearchableList,
 }
 
+/// Offered when a new branch name matches branches that exist only on remotes, so
+/// the user decides between tracking one of them and creating an unrelated branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteBranchPrompt {
+    name: String,
+    choices: Vec<RemoteBranchChoice>,
+    selected: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteBranchChoice {
+    Track(BranchEntry),
+    CreateNew,
+}
+
+impl RemoteBranchPrompt {
+    /// Returns `None` when there are no remote matches, as there is nothing to ask.
+    fn new(name: String, remote_matches: Vec<BranchEntry>) -> Option<Self> {
+        if remote_matches.is_empty() {
+            return None;
+        }
+        assert!(
+            remote_matches
+                .iter()
+                .all(|branch| branch.remote.is_some() && branch.name == name),
+            "remote branch prompt built from non-matching branches"
+        );
+        let choices = remote_matches
+            .into_iter()
+            .map(RemoteBranchChoice::Track)
+            .chain(std::iter::once(RemoteBranchChoice::CreateNew))
+            .collect();
+        Some(Self {
+            name,
+            choices,
+            selected: 0,
+        })
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn choices(&self) -> &[RemoteBranchChoice] {
+        &self.choices
+    }
+
+    pub fn selected(&self) -> usize {
+        self.selected
+    }
+
+    pub fn remote_count(&self) -> usize {
+        self.choices.len() - 1
+    }
+
+    fn move_selection(&mut self, delta: i32) {
+        let last = self.choices.len() - 1;
+        self.selected = if delta.is_positive() {
+            self.selected
+                .saturating_add(delta.unsigned_abs() as usize)
+                .min(last)
+        } else {
+            self.selected.saturating_sub(delta.unsigned_abs() as usize)
+        };
+    }
+
+    fn selected_choice(&self) -> &RemoteBranchChoice {
+        &self.choices[self.selected]
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct NewBranchState {
     pub(crate) filter_generation: u64,
@@ -24,6 +95,10 @@ pub(crate) struct NewBranchState {
 #[derive(Debug, PartialEq, Eq)]
 enum NewBranchRoute {
     Existing(BranchEntry),
+    ConfirmRemote {
+        context: BranchContext,
+        prompt: RemoteBranchPrompt,
+    },
     Validate {
         context: BranchContext,
         name: String,
@@ -63,8 +138,10 @@ pub(crate) fn handle_event(
 }
 
 pub(crate) fn move_selection(state: &mut AppState, delta: i32) {
-    if let Mode::SelectBaseBranch { flow, .. } = &mut state.mode {
-        flow.list.move_selection(delta);
+    match &mut state.mode {
+        Mode::SelectBaseBranch { flow, .. } => flow.list.move_selection(delta),
+        Mode::ConfirmRemoteBranch { prompt, .. } => prompt.move_selection(delta),
+        _ => {}
     }
 }
 
@@ -79,26 +156,64 @@ pub(crate) fn edit(
     queue_filter(state, worker, None);
 }
 
+/// `wait_for_remotes` refuses to start while remote branches are still being
+/// fetched, so an implicit trigger cannot miss a remote branch that is about to
+/// appear. Explicit triggers skip the wait and prompt with whatever has loaded.
 pub(crate) fn start(
     state: &mut AppState,
     git: &Arc<dyn GitProvider>,
     herdr: Option<&Arc<dyn HerdrProvider>>,
     sender: &EventSender,
+    wait_for_remotes: bool,
 ) {
-    match route(state) {
+    match route(state, wait_for_remotes) {
         Err(message) => state.push_toast(ToastKind::Error, message),
         Ok(NewBranchRoute::Existing(branch)) => {
             crate::screens::branch::open(state, git, herdr, sender, &branch);
         }
+        Ok(NewBranchRoute::ConfirmRemote { context, prompt }) => {
+            state.mode = Mode::ConfirmRemoteBranch { context, prompt };
+        }
         Ok(NewBranchRoute::Validate { context, name }) => {
-            let repo_path = context.repo_path.clone();
-            state.mode = Mode::ValidatingNewBranch {
-                context,
-                name: name.clone(),
-            };
-            spawn_validate_branch_name(git, sender, repo_path, name);
+            begin_validation(state, git, sender, context, name);
         }
     }
+}
+
+pub(crate) fn resolve_remote_prompt(
+    state: &mut AppState,
+    git: &Arc<dyn GitProvider>,
+    herdr: Option<&Arc<dyn HerdrProvider>>,
+    sender: &EventSender,
+) {
+    let Mode::ConfirmRemoteBranch { context, prompt } = &state.mode else {
+        return;
+    };
+    match prompt.selected_choice().clone() {
+        RemoteBranchChoice::Track(branch) => {
+            crate::screens::branch::open(state, git, herdr, sender, &branch);
+        }
+        RemoteBranchChoice::CreateNew => {
+            let context = context.clone();
+            let name = prompt.name.clone();
+            begin_validation(state, git, sender, context, name);
+        }
+    }
+}
+
+fn begin_validation(
+    state: &mut AppState,
+    git: &Arc<dyn GitProvider>,
+    sender: &EventSender,
+    context: BranchContext,
+    name: String,
+) {
+    let repo_path = context.repo_path.clone();
+    state.mode = Mode::ValidatingNewBranch {
+        context,
+        name: name.clone(),
+    };
+    spawn_validate_branch_name(git, sender, repo_path, name);
 }
 
 pub(crate) fn create(
@@ -141,7 +256,8 @@ pub(crate) fn create(
 
 pub(crate) fn cancel(state: &mut AppState) -> bool {
     let mode = state.mode.clone();
-    if let Mode::SelectBaseBranch { context, .. } = mode {
+    if let Mode::SelectBaseBranch { context, .. } | Mode::ConfirmRemoteBranch { context, .. } = mode
+    {
         state.mode = Mode::BranchSelect(context);
         true
     } else {
@@ -149,7 +265,7 @@ pub(crate) fn cancel(state: &mut AppState) -> bool {
     }
 }
 
-fn route(state: &AppState) -> Result<NewBranchRoute, &'static str> {
+fn route(state: &AppState, wait_for_remotes: bool) -> Result<NewBranchRoute, &'static str> {
     let Mode::BranchSelect(context) = &state.mode else {
         return Err("New branches can only be created from the branch view");
     };
@@ -167,6 +283,22 @@ fn route(state: &AppState) -> Result<NewBranchRoute, &'static str> {
         .find(|branch| branch.remote.is_none() && branch.name == name)
     {
         return Ok(NewBranchRoute::Existing(branch.clone()));
+    }
+    if wait_for_remotes && state.branch_view.fetching_remote_repo.is_some() {
+        return Err("Remote branches are still loading");
+    }
+    let remote_matches = state
+        .branch_view
+        .entries
+        .iter()
+        .filter(|branch| branch.remote.is_some() && branch.name == name)
+        .cloned()
+        .collect();
+    if let Some(prompt) = RemoteBranchPrompt::new(name.clone(), remote_matches) {
+        return Ok(NewBranchRoute::ConfirmRemote {
+            context: context.clone(),
+            prompt,
+        });
     }
     Ok(NewBranchRoute::Validate {
         context: context.clone(),
@@ -299,6 +431,25 @@ fn apply_filter_result(
         })
         .or_else(|| (!flow.list.filtered.is_empty()).then_some(0));
     flow.list.scroll_offset = 0;
+}
+
+#[cfg(test)]
+pub(crate) fn test_remote_prompt(name: &str, remotes: &[&str]) -> RemoteBranchPrompt {
+    RemoteBranchPrompt::new(
+        name.into(),
+        remotes
+            .iter()
+            .map(|remote| BranchEntry {
+                name: name.into(),
+                worktree_path: None,
+                is_current: false,
+                is_default: false,
+                remote: Some((*remote).into()),
+                open_workspace_id: None,
+            })
+            .collect(),
+    )
+    .expect("at least one remote")
 }
 
 #[cfg(test)]
