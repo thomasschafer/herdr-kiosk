@@ -99,7 +99,7 @@ fn render_config_field(
 fn render_curated_example(docs: &mut String, name: &str) {
     match name {
         "search_dirs" => docs.push_str(
-            "Example:\n\n```toml\ninclude_non_git = false\nsearch_dirs = [\n  \"~/Code\",\n  { path = \"~/Work\", depth = 2, include_non_git = true },\n]\n```\n\n",
+            "Example:\n\n```toml\ninclude_non_git = false\nsearch_dirs = [\n  \"~/Code\",\n  { path = \"~/Work\", depth = 2, include_non_git = true },\n  { path = \"~/Clients\", optional = true },\n]\n```\n\n",
         ),
         "on_open" => docs.push_str(
             "Example:\n\n```toml\n[on_open]\npanes = [\n  { command = \"hx\", direction = \"right\" },\n]\n```\n\n",
@@ -137,15 +137,15 @@ fn render_collection_schema(docs: &mut String, field: &Field, model: &ConfigMode
         docs.push_str("Each entry is an inline table with:\n\n");
         for nested in named_fields(item)? {
             let name = field_name(nested)?;
-            let prose = required_doc(&nested.attrs, &format!("{element_name}::{name}"))?;
-            writeln!(docs, "- `{name}` — {}", prose.replace('\n', " "))?;
+            let prose = required_list_item_doc(&nested.attrs, &format!("{element_name}::{name}"))?;
+            writeln!(docs, "- `{name}` — {prose}")?;
         }
         docs.push('\n');
     } else if let Some(item) = model.enums.get(&element_name) {
         push_doc(docs, &required_doc(&item.attrs, &element_name)?);
         docs.push_str("Accepted forms:\n\n");
         for variant in &item.variants {
-            let variant_doc = required_doc(
+            let variant_doc = required_list_item_doc(
                 &variant.attrs,
                 &format!("{element_name}::{}", variant.ident),
             )?;
@@ -153,11 +153,11 @@ fn render_collection_schema(docs: &mut String, field: &Field, model: &ConfigMode
                 Fields::Unnamed(fields) => {
                     writeln!(docs, "- {variant_doc}")?;
                     for (index, nested) in fields.unnamed.iter().enumerate() {
-                        let prose = required_doc(
+                        let prose = required_list_item_doc(
                             &nested.attrs,
                             &format!("{element_name}::{} field {index}", variant.ident),
                         )?;
-                        writeln!(docs, "  - {}", prose.replace('\n', " "))?;
+                        writeln!(docs, "  - {prose}")?;
                     }
                 }
                 Fields::Unit => {
@@ -167,11 +167,11 @@ fn render_collection_schema(docs: &mut String, field: &Field, model: &ConfigMode
                     writeln!(docs, "- {variant_doc}")?;
                     for nested in &fields.named {
                         let name = field_name(nested)?;
-                        let prose = required_doc(
+                        let prose = required_list_item_doc(
                             &nested.attrs,
                             &format!("{element_name}::{}::{name}", variant.ident),
                         )?;
-                        writeln!(docs, "  - `{name}` — {}", prose.replace('\n', " "))?;
+                        writeln!(docs, "  - `{name}` — {prose}")?;
                     }
                 }
             }
@@ -306,6 +306,11 @@ fn required_doc(attrs: &[Attribute], item: &str) -> Result<String> {
         bail!("missing user-facing doc comment on {item}");
     }
     Ok(doc)
+}
+
+/// Joins wrapped doc-comment lines so the prose stays within one Markdown list item.
+fn required_list_item_doc(attrs: &[Attribute], item: &str) -> Result<String> {
+    required_doc(attrs, item).map(|doc| doc.replace('\n', " "))
 }
 
 fn push_doc(output: &mut String, doc: &str) {
