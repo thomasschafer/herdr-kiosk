@@ -2,6 +2,8 @@
 set -euo pipefail
 
 PROJECT_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+# shellcheck source=scripts/harness-env.sh
+source "$PROJECT_ROOT/scripts/harness-env.sh"
 HK_ROOT=${HK_E2E_HOME:-/tmp/hk-m7}
 HERDR_BIN=${HERDR:-"$PROJECT_ROOT/../herdr/target/release/herdr"}
 HK_HOME_DIR="$HK_ROOT/home"
@@ -9,7 +11,7 @@ TMUX_SOCKET="$HK_ROOT/tmux.sock"
 SESSION=hk-m7
 LAST_SCREEN="$HK_ROOT/last-screen.txt"
 TMUX_BIN=${HK_TMUX:-$(command -v tmux || true)}
-CARGO_PATH=/Users/tomschafer/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin
+CARGO_PATH=$HARNESS_CARGO_BIN:/usr/bin:/bin:/usr/sbin:/sbin
 export PATH="$CARGO_PATH"
 
 case "$HK_ROOT" in

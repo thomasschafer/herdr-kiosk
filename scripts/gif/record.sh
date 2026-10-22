@@ -2,6 +2,8 @@
 set -euo pipefail
 
 PROJECT_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+# shellcheck source=scripts/harness-env.sh
+source "$PROJECT_ROOT/scripts/harness-env.sh"
 HK_ROOT=${HK_GIF_HOME:-/tmp/hk-gif}
 HERDR_BIN=${HERDR:-"$PROJECT_ROOT/../herdr/target/release/herdr"}
 HK_HOME_DIR="$HK_ROOT/home"
@@ -14,9 +16,9 @@ CAST="$HK_ROOT/preview.cast"
 RENDERED_GIF="$HK_ROOT/preview.gif"
 COLS=120
 ROWS=32
-PINNED_PATH=/Users/tomschafer/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin
-RUNTIME_PATH=/etc/profiles/per-user/tomschafer/bin:$PINNED_PATH
-TMUX_BIN=/etc/profiles/per-user/tomschafer/bin/tmux
+PINNED_PATH=$HARNESS_CARGO_BIN:/usr/bin:/bin:/usr/sbin:/sbin
+RUNTIME_PATH=$HARNESS_PROFILE_BIN:$PINNED_PATH
+TMUX_BIN=${HK_TMUX:-$(command -v tmux || true)}
 AGG_BIN=/opt/homebrew/bin/agg
 FFPROBE_BIN=/opt/homebrew/bin/ffprobe
 AGG_THEME=24273a,cad3f5,494d64,ed8796,a6da95,eed49f,8aadf4,c6a0f6,8bd5ca,b8c0e0,5b6078,ed8796,a6da95,eed49f,8aadf4,f5bde6,8bd5ca,a5adcb

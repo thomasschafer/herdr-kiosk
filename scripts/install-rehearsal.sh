@@ -11,13 +11,15 @@ if [ "${HK_RUN_INSTALL_REHEARSAL:-}" != 1 ]; then
 fi
 
 PROJECT_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+# shellcheck source=scripts/harness-env.sh
+source "$PROJECT_ROOT/scripts/harness-env.sh"
 HK_ROOT=${HK_INSTALL_REHEARSAL_HOME:-/tmp/hk-install}
 HERDR_BIN=${HERDR:-"$PROJECT_ROOT/../herdr/target/release/herdr"}
 HK_HOME_DIR="$HK_ROOT/home"
 TMUX_SOCKET="$HK_ROOT/tmux.sock"
 SESSION=hk-install
 LAST_SCREEN="$HK_ROOT/last-screen.txt"
-CARGO_PATH=/Users/tomschafer/.cargo/bin:/etc/profiles/per-user/tomschafer/bin:/usr/bin:/bin:/usr/sbin:/sbin
+CARGO_PATH=$HARNESS_CARGO_BIN:$HARNESS_PROFILE_BIN:/usr/bin:/bin:/usr/sbin:/sbin
 export PATH="$CARGO_PATH"
 TMUX_BIN=${HK_TMUX:-$(command -v tmux || true)}
 
