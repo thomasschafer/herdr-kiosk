@@ -14,10 +14,7 @@ use ratatui::{
 use crate::{
     app::TickChanges,
     components,
-    config::{
-        ConfigWarning,
-        keys::{BindingMode, Command, KeysConfig},
-    },
+    config::{ConfigWarning, keys::KeysConfig},
     event::{AppEvent, WorktreeRemovalOutcome},
     git::GitProvider,
     herdr::HerdrProvider,
@@ -489,34 +486,12 @@ pub(crate) fn draw_dialog(
             format!("{spinner} Removing checkout…"),
             Style::default().fg(theme.secondary),
         )));
-    } else {
-        let (confirm, cancel) = dialog_hints(keys);
-        let mut hints = Vec::new();
-        if let Some(confirm) = confirm {
-            hints.push(Span::styled(confirm, Style::default().fg(theme.hint)));
-            hints.push(Span::raw(" confirm"));
-        }
-        if let Some(cancel) = cancel {
-            if !hints.is_empty() {
-                hints.push(Span::raw(" / "));
-            }
-            hints.push(Span::styled(cancel, Style::default().fg(theme.hint)));
-            hints.push(Span::raw(" cancel"));
-        }
-        if !hints.is_empty() {
-            lines.push(Line::from(hints));
-        }
+    } else if let Some(hints) =
+        components::dialog::hint_line(&components::dialog::confirm_cancel_hints(keys), theme)
+    {
+        lines.push(hints);
     }
     components::dialog::Dialog::new(" Confirm delete ", lines, theme.secondary).render(frame, area);
-}
-
-pub(crate) fn dialog_hints(keys: &KeysConfig) -> (Option<String>, Option<String>) {
-    (
-        keys.first_key(BindingMode::Modal, Command::Open)
-            .map(|key| key.to_string()),
-        keys.first_key(BindingMode::Modal, Command::Back)
-            .map(|key| key.to_string()),
-    )
 }
 
 fn selected_target(state: &AppState) -> Result<DeleteWorktreeTarget, &'static str> {

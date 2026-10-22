@@ -13,6 +13,7 @@ pub enum Action {
     OpenBranch,
     StartNewBranch,
     CreateNewBranch,
+    ResolveRemoteBranch,
     DeleteWorktree,
     ConfirmDeleteWorktree,
     CancelOverlay,

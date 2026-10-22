@@ -19,7 +19,7 @@ use crate::{
 
 pub use crate::screens::branch::{BranchContext, BranchId, OpenWorktreeLoadState};
 pub use crate::screens::delete::DeleteFlowState;
-pub use crate::screens::new_branch::BaseBranchSelection;
+pub use crate::screens::new_branch::{BaseBranchSelection, RemoteBranchChoice, RemoteBranchPrompt};
 pub use crate::screens::repo::RepoEntry;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -207,6 +207,10 @@ pub enum Mode {
         context: BranchContext,
         flow: BaseBranchSelection,
     },
+    ConfirmRemoteBranch {
+        context: BranchContext,
+        prompt: RemoteBranchPrompt,
+    },
     ConfirmWorktreeDelete(DeleteFlowState),
     Loading {
         message: String,
@@ -283,6 +287,7 @@ impl AppState {
             Mode::BranchSelect(context)
             | Mode::ValidatingNewBranch { context, .. }
             | Mode::SelectBaseBranch { context, .. }
+            | Mode::ConfirmRemoteBranch { context, .. }
             | Mode::Loading {
                 branch: Some(context),
                 ..

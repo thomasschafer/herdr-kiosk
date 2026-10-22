@@ -366,7 +366,10 @@ pub(crate) fn process_action(
                 crate::screens::repo::move_selection(state, delta);
             } else if matches!(state.mode, Mode::BranchSelect(_)) {
                 crate::screens::branch::move_selection(state, delta);
-            } else if matches!(state.mode, Mode::SelectBaseBranch { .. }) {
+            } else if matches!(
+                state.mode,
+                Mode::SelectBaseBranch { .. } | Mode::ConfirmRemoteBranch { .. }
+            ) {
                 crate::screens::new_branch::move_selection(state, delta);
             }
         }
@@ -391,6 +394,9 @@ pub(crate) fn process_action(
         Action::OpenBranch => crate::screens::branch::open_selected(state, git, herdr, sender),
         Action::StartNewBranch => crate::screens::new_branch::start(state, git, herdr, sender),
         Action::CreateNewBranch => crate::screens::new_branch::create(state, herdr, sender),
+        Action::ResolveRemoteBranch => {
+            crate::screens::new_branch::resolve_remote_prompt(state, git, herdr, sender);
+        }
         Action::DeleteWorktree => crate::screens::delete::begin(state),
         Action::ConfirmDeleteWorktree => {
             crate::screens::delete::confirm(state, git, herdr, sender);
@@ -424,6 +430,7 @@ fn active_list_mut(state: &mut AppState) -> &mut SearchableList {
         Mode::RepoSelect
         | Mode::Loading { .. }
         | Mode::ValidatingNewBranch { .. }
+        | Mode::ConfirmRemoteBranch { .. }
         | Mode::ConfirmWorktreeDelete(_) => &mut state.repo_view.list,
     }
 }
@@ -450,6 +457,7 @@ fn edit_active_list(
         }
         Mode::Loading { .. }
         | Mode::ValidatingNewBranch { .. }
+        | Mode::ConfirmRemoteBranch { .. }
         | Mode::ConfirmWorktreeDelete(_) => {}
     }
 }
@@ -583,6 +591,10 @@ pub(crate) fn draw(
             components::branch_picker::draw(frame, main_area, state, theme, spinner_start);
             components::new_branch::draw(frame, main_area, state, theme, spinner_start);
         }
+        Mode::ConfirmRemoteBranch { prompt, .. } => {
+            components::branch_picker::draw(frame, main_area, state, theme, spinner_start);
+            components::new_branch::draw_remote_prompt(frame, main_area, prompt, theme, keys);
+        }
         Mode::ConfirmWorktreeDelete(flow) => {
             components::branch_picker::draw(frame, main_area, state, theme, spinner_start);
             crate::screens::delete::draw_dialog(frame, main_area, flow, theme, keys, spinner_start);
@@ -609,7 +621,9 @@ fn animation_active(state: &AppState) -> bool {
         state.branch_view.loading || state.branch_view.fetching_remote_repo.is_some();
     match &state.mode {
         Mode::RepoSelect => state.repo_view.loading,
-        Mode::BranchSelect(_) | Mode::SelectBaseBranch { .. } => branch_spinner,
+        Mode::BranchSelect(_)
+        | Mode::SelectBaseBranch { .. }
+        | Mode::ConfirmRemoteBranch { .. } => branch_spinner,
         Mode::ValidatingNewBranch { .. } | Mode::Loading { .. } => true,
         Mode::ConfirmWorktreeDelete(flow) => branch_spinner || flow.in_progress(),
     }
@@ -650,7 +664,9 @@ fn footer_spans<'a>(
         Command::Open,
         if matches!(
             mode,
-            Mode::SelectBaseBranch { .. } | Mode::ConfirmWorktreeDelete(_)
+            Mode::SelectBaseBranch { .. }
+                | Mode::ConfirmRemoteBranch { .. }
+                | Mode::ConfirmWorktreeDelete(_)
         ) {
             "confirm"
         } else {
@@ -666,7 +682,10 @@ fn footer_spans<'a>(
     }
     if matches!(
         mode,
-        Mode::BranchSelect(_) | Mode::SelectBaseBranch { .. } | Mode::ConfirmWorktreeDelete(_)
+        Mode::BranchSelect(_)
+            | Mode::SelectBaseBranch { .. }
+            | Mode::ConfirmRemoteBranch { .. }
+            | Mode::ConfirmWorktreeDelete(_)
     ) {
         add(Command::Back, "back");
     } else {
@@ -869,7 +888,7 @@ mod tests {
             Some("ctrl+q to close (operation continues)")
         );
         assert_eq!(
-            crate::screens::delete::dialog_hints(&keys),
+            components::dialog::confirm_cancel_keys(&keys),
             (Some("ctrl+y".into()), Some("ctrl+g".into()))
         );
     }
