@@ -44,6 +44,8 @@ pub struct RepoViewState {
     pub list: SearchableList,
     pub loading: bool,
     pub selection_touched: bool,
+    /// Optional search directories skipped at startup because they do not exist.
+    pub missing_optional_dirs: usize,
     seen_paths: HashSet<PathBuf>,
     open_roots: HashSet<PathBuf>,
     open_folder_roots: HashSet<PathBuf>,
@@ -59,6 +61,7 @@ impl RepoViewState {
             list: SearchableList::new(0),
             loading: true,
             selection_touched: false,
+            missing_optional_dirs: 0,
             seen_paths: HashSet::new(),
             open_roots: HashSet::new(),
             open_folder_roots: HashSet::new(),

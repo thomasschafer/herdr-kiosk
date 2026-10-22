@@ -136,6 +136,29 @@ printf 'existing empty search_dirs keeps the explicit empty-config screen: ok\n'
 
 cat >"$PLUGIN_CONFIG_DIR/config.toml" <<EOF
 search_dirs = [
+  { path = "$HK_ROOT/absent-optional", optional = true },
+]
+EOF
+h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
+wait_screen_contains "No repos found (1 optional search directory not found)"
+assert_screen_absent "does not exist"
+t send-keys -t "$SESSION" C-c
+wait_screen_absent "herdr-kiosk — select repo"
+
+cat >"$PLUGIN_CONFIG_DIR/config.toml" <<EOF
+search_dirs = [
+  { path = "$HK_ROOT/absent-required" },
+]
+EOF
+h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
+wait_screen_contains "No repos found in the configured search directories"
+wait_screen_contains "does not exist"
+t send-keys -t "$SESSION" C-c
+wait_screen_absent "herdr-kiosk — select repo"
+printf 'missing optional search directories are silent; required ones warn: ok\n'
+
+cat >"$PLUGIN_CONFIG_DIR/config.toml" <<EOF
+search_dirs = [
   { path = "$HK_ROOT/plain-search", depth = 1, include_non_git = true },
 ]
 EOF

@@ -73,9 +73,18 @@ pub fn draw(
             ListItem::new(Line::from(spans))
         })
         .collect();
-    if state.repo_view.loading && items.is_empty() {
+    let placeholder = if state.repo_view.loading {
+        items.is_empty().then(|| "Discovering repos…".to_string())
+    } else {
+        state
+            .repo_view
+            .entries
+            .is_empty()
+            .then(|| no_repos_message(state.repo_view.missing_optional_dirs))
+    };
+    if let Some(placeholder) = placeholder {
         items.push(ListItem::new(Span::styled(
-            "Discovering repos…",
+            placeholder,
             Style::default().fg(theme.muted),
         )));
     }
@@ -110,6 +119,14 @@ pub fn draw(
     frame.render_stateful_widget(list, list_area, &mut list_state);
 }
 
+fn no_repos_message(missing_optional_dirs: usize) -> String {
+    match missing_optional_dirs {
+        0 => "No repos found in the configured search directories".into(),
+        1 => "No repos found (1 optional search directory not found)".into(),
+        count => format!("No repos found ({count} optional search directories not found)"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Instant;
@@ -124,6 +141,24 @@ mod tests {
 
     use super::draw;
 
+    fn render(state: &mut AppState, width: u16) -> String {
+        let theme = Theme::from_config(&crate::config::ThemeConfig::default());
+        let mut terminal = Terminal::new(TestBackend::new(width, 8)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw(frame, area, state, &theme, Instant::now());
+            })
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
+    }
+
     #[test]
     fn repo_controls_render_as_visible_text_on_one_row() {
         let mut state = AppState::new(None);
@@ -136,24 +171,8 @@ mod tests {
         })];
         state.repo_view.list = SearchableList::new(1);
         state.repo_view.list.selected = None;
-        let theme = Theme::from_config(&crate::config::ThemeConfig::default());
-        let backend = TestBackend::new(80, 8);
-        let mut terminal = Terminal::new(backend).unwrap();
 
-        terminal
-            .draw(|frame| {
-                let area = frame.area();
-                draw(frame, area, &mut state, &theme, Instant::now());
-            })
-            .unwrap();
-
-        let rendered = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(ratatui::buffer::Cell::symbol)
-            .collect::<String>();
+        let rendered = render(&mut state, 80);
         assert!(rendered.contains("repo\\nname\\u{1b}"));
         assert!(!rendered.chars().any(char::is_control));
     }
@@ -170,24 +189,31 @@ mod tests {
         })];
         state.repo_view.list = SearchableList::new(1);
         state.repo_view.list.selected = None;
-        let theme = Theme::from_config(&crate::config::ThemeConfig::default());
-        let backend = TestBackend::new(40, 8);
-        let mut terminal = Terminal::new(backend).unwrap();
 
-        terminal
-            .draw(|frame| {
-                let area = frame.area();
-                draw(frame, area, &mut state, &theme, Instant::now());
-            })
-            .unwrap();
-
-        let rendered = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(ratatui::buffer::Cell::symbol)
-            .collect::<String>();
+        let rendered = render(&mut state, 40);
         assert!(rendered.contains("folder  dir"));
+    }
+
+    #[test]
+    fn empty_results_explain_skipped_optional_directories() {
+        let mut state = AppState::new(None);
+        assert!(render(&mut state, 80).contains("Discovering repos…"));
+
+        state.repo_view.loading = false;
+        assert!(
+            render(&mut state, 80).contains("No repos found in the configured search directories")
+        );
+
+        state.repo_view.missing_optional_dirs = 1;
+        assert!(
+            render(&mut state, 80)
+                .contains("No repos found (1 optional search directory not found)")
+        );
+
+        state.repo_view.missing_optional_dirs = 2;
+        assert!(
+            render(&mut state, 80)
+                .contains("No repos found (2 optional search directories not found)")
+        );
     }
 }
