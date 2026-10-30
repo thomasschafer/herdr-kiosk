@@ -159,6 +159,7 @@ pub struct OnOpenPaneConfig {
     pub direction: OnOpenPaneDirection,
     /// Fraction of the resulting split occupied by the new command pane. The value
     /// must be greater than 0 and less than 1, and defaults to 0.5 when omitted.
+    /// The Herdr app always splits in half, so it refuses a pane with a ratio.
     #[serde(default)]
     pub ratio: Option<f32>,
 }
@@ -175,9 +176,10 @@ pub struct OnOpenConfig {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-/// The plugin reads `config.toml` from its config directory. Run
-/// `herdr plugin config-dir thomasschafer.herdr-kiosk` to locate that directory.
-/// All sections are optional, and the defaults are shown below alongside curated
+/// In the herdr TUI, the plugin reads `config.toml` from its config directory: run
+/// `herdr plugin config-dir thomasschafer.herdr-kiosk` to locate it. In the Herdr
+/// app, kiosk reads `$XDG_CONFIG_HOME/herdr-kiosk/config.toml`, which is
+/// `~/.config/herdr-kiosk/config.toml` when `XDG_CONFIG_HOME` is unset. All sections are optional, and the defaults are shown below alongside curated
 /// examples for settings that benefit from one.
 pub struct Config {
     /// Directories searched recursively for Git repositories and, when enabled,

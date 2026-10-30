@@ -501,7 +501,7 @@ wait_screen_contains "open-me — select branch"
 t send-keys -t "$SESSION" delete-open
 wait_screen_contains "● open"
 t send-keys -t "$SESSION" C-x
-wait_screen_contains "Its herdr workspace will also be closed."
+wait_screen_contains "It will also be closed in Herdr."
 t send-keys -t "$SESSION" Enter
 wait_path_absent "$DELETE_OPEN_WORKTREE"
 assert_workspace_absent_checkout "$DELETE_OPEN_WORKTREE"
@@ -534,7 +534,7 @@ wait_screen_contains "open-me — select branch"
 t send-keys -t "$SESSION" dirty-open
 wait_screen_contains "● open"
 t send-keys -t "$SESSION" C-x
-wait_screen_contains "Its herdr workspace will also be closed."
+wait_screen_contains "It will also be closed in Herdr."
 t send-keys -t "$SESSION" Enter
 wait_screen_contains "This checkout has uncommitted changes."
 [ -d "$DIRTY_OPEN_WORKTREE" ] || fail "dirty checkout disappeared before force confirmation"

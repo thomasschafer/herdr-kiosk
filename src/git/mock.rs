@@ -14,6 +14,9 @@ use super::{
     Worktree,
 };
 
+/// Repository, checkout path, branch and base of one `add_worktree` call.
+pub type AddWorktreeCall = (PathBuf, PathBuf, String, Option<String>);
+
 #[derive(Default)]
 pub struct MockGitProvider {
     pub repos: Vec<Repo>,
@@ -32,6 +35,8 @@ pub struct MockGitProvider {
     pub invalid_branch_names: HashSet<String>,
     pub validation_calls: Mutex<Vec<(PathBuf, String)>>,
     pub dirty_remove_once: AtomicBool,
+    pub add_worktree_calls: Mutex<Vec<AddWorktreeCall>>,
+    pub main_checkouts: HashMap<PathBuf, PathBuf>,
     pub remove_calls: Mutex<Vec<(PathBuf, PathBuf, bool)>>,
     pub prune_calls: Mutex<Vec<PathBuf>>,
     pub fetch_calls: Mutex<Vec<(PathBuf, String)>>,
@@ -139,6 +144,28 @@ impl GitProvider for MockGitProvider {
             .unwrap()
             .push((repo_path.to_path_buf(), branch.to_string()));
         Ok(!self.invalid_branch_names.contains(branch))
+    }
+
+    fn add_worktree(
+        &self,
+        repo_path: &Path,
+        worktree_path: &Path,
+        branch: &str,
+        base: Option<&str>,
+    ) -> Result<()> {
+        self.check_failure()?;
+        self.add_worktree_calls.lock().unwrap().push((
+            repo_path.to_path_buf(),
+            worktree_path.to_path_buf(),
+            branch.to_string(),
+            base.map(str::to_string),
+        ));
+        Ok(())
+    }
+
+    fn main_checkout(&self, path: &Path) -> Result<Option<PathBuf>> {
+        self.check_failure()?;
+        Ok(self.main_checkouts.get(path).cloned())
     }
 
     fn remove_worktree(&self, repo_path: &Path, worktree_path: &Path, force: bool) -> Result<()> {

@@ -8,6 +8,7 @@ use serde::{Deserialize, de::DeserializeOwned};
 
 use crate::config::OnOpenPaneDirection;
 
+pub mod app;
 pub mod mock;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

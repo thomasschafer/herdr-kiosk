@@ -8,6 +8,7 @@ pub mod git;
 pub mod herdr;
 pub mod keyboard;
 pub mod keymap;
+pub mod launch;
 pub mod path;
 pub mod pending_delete;
 pub mod screens;

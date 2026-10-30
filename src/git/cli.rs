@@ -12,7 +12,7 @@ use anyhow::{Context, Result, bail};
 
 use super::{
     DirtyWorktreeRequiresForce, GitProvider, Listed, LocalBranchAlreadyExists, Repo, ScanWarning,
-    Worktree, parse_worktree_porcelain,
+    Worktree, parse_worktree_porcelain, path_from_bytes,
 };
 
 const GIT_DIR_ENTRY: &str = ".git";
@@ -131,6 +131,81 @@ impl GitProvider for CliGitProvider {
             .output()
             .with_context(|| format!("failed to run git in {}", repo_path.display()))?;
         Ok(output.status.success())
+    }
+
+    fn add_worktree(
+        &self,
+        repo_path: &Path,
+        worktree_path: &Path,
+        branch: &str,
+        base: Option<&str>,
+    ) -> Result<()> {
+        let mut command = Command::new("git");
+        command.env("LC_ALL", "C").args(["worktree", "add"]);
+        match base {
+            Some(base) => {
+                command.args(["-b", branch]).arg(worktree_path).arg(base);
+            }
+            None => {
+                command.arg(worktree_path).arg(branch);
+            }
+        }
+        let output = command
+            .current_dir(repo_path)
+            .output()
+            .with_context(|| format!("failed to run git in {}", repo_path.display()))?;
+        if !output.status.success() {
+            bail!(
+                "git worktree add failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(())
+    }
+
+    fn main_checkout(&self, path: &Path) -> Result<Option<PathBuf>> {
+        if !path.is_dir() {
+            return Ok(None);
+        }
+        let output = Command::new("git")
+            .env("LC_ALL", "C")
+            .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+            .current_dir(path)
+            .output()
+            .with_context(|| format!("failed to run git in {}", path.display()))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("not a git repository") {
+                return Ok(None);
+            }
+            bail!(
+                "git rev-parse --git-common-dir failed in {}: {}",
+                path.display(),
+                stderr.trim()
+            );
+        }
+        let mut stdout = output.stdout;
+        while stdout
+            .last()
+            .is_some_and(|byte| matches!(byte, b'\n' | b'\r'))
+        {
+            stdout.pop();
+        }
+        let common_dir = path_from_bytes(stdout)?;
+        // A bare repository has no main checkout; its common directory stands in for it.
+        Ok(Some(
+            if common_dir
+                .file_name()
+                .is_some_and(|name| name == GIT_DIR_ENTRY)
+            {
+                common_dir
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or(common_dir)
+            } else {
+                common_dir
+            },
+        ))
     }
 
     fn remove_worktree(&self, repo_path: &Path, worktree_path: &Path, force: bool) -> Result<()> {
@@ -579,36 +654,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-
-    fn init_test_repo(dir: &Path) {
-        run_test_git(dir, &["init"]);
-        run_test_git(dir, &["config", "user.email", "test@example.com"]);
-        run_test_git(dir, &["config", "user.name", "Test"]);
-        fs::write(dir.join("README.md"), "# test").unwrap();
-        run_test_git(dir, &["add", "."]);
-        run_test_git(dir, &["commit", "-m", "init"]);
-    }
-
-    fn run_test_git(dir: &Path, args: &[&str]) {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "git {} failed: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    fn repo_fixture(parent: &Path, name: &str) -> PathBuf {
-        let repo = parent.join(name);
-        fs::create_dir_all(&repo).unwrap();
-        init_test_repo(&repo);
-        repo
-    }
+    use crate::git::test_fixtures::{init_test_repo, repo_fixture, run_test_git};
 
     fn scan_streaming(
         provider: &CliGitProvider,
@@ -751,6 +797,80 @@ mod tests {
         let streamed = streamed.into_inner();
         assert_eq!(streamed.len(), 1, "linked worktree must be deduplicated");
         assert_eq!(streamed[0].path, fs::canonicalize(repo).unwrap());
+    }
+
+    #[test]
+    fn adds_worktrees_for_new_and_existing_branches() {
+        let temp = TempDir::new().unwrap();
+        let repo = repo_fixture(temp.path(), "repo");
+        run_test_git(&repo, &["branch", "existing"]);
+        let provider = CliGitProvider;
+
+        let existing = temp.path().join("existing checkout");
+        provider
+            .add_worktree(&repo, &existing, "existing", None)
+            .unwrap();
+        let created = temp.path().join("created");
+        provider
+            .add_worktree(&repo, &created, "created", Some("existing"))
+            .unwrap();
+
+        let worktrees = provider.list_worktrees(&repo).unwrap();
+        let branch_at = |path: &Path| {
+            worktrees
+                .iter()
+                .find(|worktree| {
+                    crate::path::equivalent(
+                        &crate::path::canonical_or_original(&worktree.path),
+                        &crate::path::canonical_or_original(path),
+                    )
+                })
+                .and_then(|worktree| worktree.branch.clone())
+        };
+        assert_eq!(branch_at(&existing).as_deref(), Some("existing"));
+        assert_eq!(branch_at(&created).as_deref(), Some("created"));
+
+        let error = provider
+            .add_worktree(&repo, &temp.path().join("again"), "existing", None)
+            .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("git worktree add failed"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn main_checkout_resolves_linked_worktrees_and_rejects_non_repositories() {
+        let (temp, repo) = linked_worktree_fixture();
+        let provider = CliGitProvider;
+        let repo = fs::canonicalize(repo).unwrap();
+        let nested = temp.path().join("my-repo-worktree").join("src");
+        fs::create_dir_all(&nested).unwrap();
+
+        assert_eq!(
+            provider
+                .main_checkout(&repo)
+                .unwrap()
+                .map(|path| fs::canonicalize(path).unwrap()),
+            Some(repo.clone())
+        );
+        assert_eq!(
+            provider
+                .main_checkout(&nested)
+                .unwrap()
+                .map(|path| fs::canonicalize(path).unwrap()),
+            Some(repo)
+        );
+
+        let plain = temp.path().join("plain");
+        fs::create_dir(&plain).unwrap();
+        assert_eq!(provider.main_checkout(&plain).unwrap(), None);
+        assert_eq!(
+            provider
+                .main_checkout(&temp.path().join("missing"))
+                .unwrap(),
+            None
+        );
     }
 
     #[test]

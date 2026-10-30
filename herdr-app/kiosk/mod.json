@@ -1,0 +1,1 @@
+{ "place": "none", "title": "Kiosk", "overlay": { "kind": "dialog", "modal": true, "width": 380, "height": 96 } }

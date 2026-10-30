@@ -84,3 +84,46 @@ h server stop 2>/dev/null; t kill-server       # teardown (killing tmux also kil
    every other shim failure. Dismiss first-run onboarding (Enter through welcome,
    Escape out of Settings) before invoking popup actions, or reuse a sandbox HOME that
    has already completed onboarding.
+
+## The Herdr app
+
+The app is driven entirely by its own CLI, so no tmux is needed. Isolate it with a
+scratch app home and a separate herdr-core session, and give both a sandbox `HOME` so
+checkouts, kiosk's config and state, and the core's state stay out of your own:
+
+```sh
+SANDBOX=/tmp/kt                                 # short path: socket length limit
+export HOME=$SANDBOX/home HERDR_APP_HOME=$SANDBOX/apphome HC_SESSION=kiosktest
+export XDG_STATE_HOME=$SANDBOX/xdg/state XDG_CONFIG_HOME=$SANDBOX/xdg/config
+export XDG_RUNTIME_DIR=$SANDBOX/xdg/run
+export PATH=/path/to/herdr-app-and-hc:$PATH     # the app finds hc on PATH
+for v in $(env | sed -n 's/^\(HERDR_[A-Z_]*\)=.*/\1/p'); do
+  [ "$v" = HERDR_APP_HOME ] || unset "$v"       # a herdr TUI pane sets these
+done
+
+herdr-app &                                     # a second window, on this home
+ln -s "$PWD/herdr-app/kiosk" "$HERDR_APP_HOME/mods/kiosk"
+herdr-app check "$HERDR_APP_HOME/mods/kiosk"
+herdr-app do mod.open:kiosk                     # opens the picker
+hc ls --json                                    # kiosk's terminal has no "where"
+hc keys <terminal> down tab enter               # drive the picker
+hc read <terminal>                              # read its screen
+herdr-app ls; herdr-app status                  # assert spaces, panes and overlays
+herdr-app shot shot.png                         # look at the window
+
+herdr-app do app.quit; hc server stop           # teardown
+```
+
+Use `hc keys` to drive kiosk: `hc send` pastes its text and then presses Enter.
+
+On macOS the window stops drawing while another window covers it, so `shot` can
+return a stale frame. Toggling `herdr-app do window.maximize` twice before a shot
+makes it draw a fresh one.
+
+What to check: opening a repository makes a space in it with the `[on_open]` panes and
+focus on the first pane; opening it again selects that space without new panes; a
+branch without a checkout gets one in `~/.herdr/worktrees/<repo>/<branch>`, nested
+under its repository in the sidebar; deleting an open, dirty worktree asks to force,
+then removes the checkout and closes its space; `[on_open]` failures show as a
+notification; a failing kiosk (an invalid config) stays on screen until Enter; and a
+missing binary shows a notification.

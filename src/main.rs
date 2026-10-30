@@ -15,7 +15,11 @@ use herdr_kiosk::{
     config::{self, ConfigWarning},
     context::PluginContext,
     git::{self, CliGitProvider},
-    herdr::{CliHerdrProvider, HerdrProvider},
+    herdr::{
+        CliHerdrProvider, HerdrProvider,
+        app::{AppHerdrProvider, CliAppHost, WORKTREE_ROOT},
+    },
+    launch::{self, Host},
     path,
     setup::{self, SetupState, SetupStep},
     state::{AppState, ToastKind},
@@ -38,15 +42,11 @@ fn main() {
 }
 
 fn start() -> Result<()> {
+    let host = launch::detect_host()?;
     let mut loaded = config::load_config()?;
-    let herdr_binary = std::env::var_os("HERDR_BIN_PATH").filter(|path| !path.is_empty());
-    let context = std::env::var("HERDR_PLUGIN_CONTEXT_JSON")
-        .ok()
-        .filter(|json| !json.is_empty())
-        .map(|json| PluginContext::from_json(&json))
-        .transpose()
-        .map_err(|error| anyhow::anyhow!("invalid HERDR_PLUGIN_CONTEXT_JSON: {error}"))?
-        .unwrap_or_default();
+    let home = user_home_dir();
+    let git = Arc::new(CliGitProvider) as Arc<dyn git::GitProvider>;
+    let herdr = herdr_provider(&host, &git, home.as_deref())?;
 
     let theme = Theme::from_config(&loaded.config.theme);
     let _restore_guard = TerminalRestoreGuard;
@@ -64,14 +64,14 @@ fn start() -> Result<()> {
         return run_no_search_dirs(&mut terminal, loaded.path.as_ref());
     }
 
-    let home = user_home_dir();
     let resolved = loaded
         .config
         .resolved_search_dirs_with(home.as_deref(), config::probe_search_dir)?;
     let mut warnings = loaded.warnings;
     warnings.extend(resolved.warnings);
-    let current_cwd = context
-        .current_cwd()
+    let current_cwd = host
+        .context()
+        .and_then(PluginContext::current_cwd)
         .map(|path| std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path)));
     let mut state = AppState::new(current_cwd);
     state.on_open = loaded.config.on_open.clone();
@@ -80,9 +80,6 @@ fn start() -> Result<()> {
     for ConfigWarning { message } in warnings {
         state.push_toast(ToastKind::Warning, message);
     }
-    let herdr: Option<Arc<dyn HerdrProvider>> = herdr_binary
-        .map(|binary| Arc::new(CliHerdrProvider::new(binary)) as Arc<dyn HerdrProvider>);
-    let git = Arc::new(CliGitProvider) as Arc<dyn git::GitProvider>;
     app::run(
         &mut terminal,
         &mut state,
@@ -93,6 +90,33 @@ fn start() -> Result<()> {
         &loaded.config.keys,
     )?;
     Ok(())
+}
+
+fn herdr_provider(
+    host: &Host,
+    git: &Arc<dyn git::GitProvider>,
+    home: Option<&std::path::Path>,
+) -> Result<Option<Arc<dyn HerdrProvider>>> {
+    Ok(match host {
+        Host::Standalone => None,
+        Host::HerdrTui { herdr_binary, .. } => Some(Arc::new(CliHerdrProvider::new(herdr_binary))),
+        Host::HerdrApp {
+            herdr_app_binary,
+            hc_binary,
+            notice_file,
+            ..
+        } => {
+            let Some(home) = home else {
+                anyhow::bail!("HOME must be set to place new worktrees for the Herdr app");
+            };
+            Some(Arc::new(AppHerdrProvider::new(
+                Arc::new(CliAppHost::new(herdr_app_binary, hc_binary)),
+                Arc::clone(git),
+                home.join(WORKTREE_ROOT),
+                notice_file.clone(),
+            )))
+        }
+    })
 }
 
 fn run_setup_wizard(
