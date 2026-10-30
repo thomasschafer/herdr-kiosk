@@ -1,11 +1,12 @@
 # herdr-kiosk
 
 Fuzzy-find Git repositories (or any folder) and branches, then open them as Herdr
-workspaces and worktrees.
+workspaces and worktrees. It runs in both the herdr TUI (as a plugin) and the Herdr
+desktop app (as a mod), from the same binary.
 
 ![Demo of fuzzy-finding a repository and branch, then opening its Herdr worktree](media/preview.gif)
 
-## Install
+## Install in the herdr TUI
 
 Install from GitHub:
 
@@ -39,6 +40,43 @@ herdr plugin config-dir thomasschafer.herdr-kiosk
 At the time of writing, Herdr has no plugin-update command. Reinstall the plugin
 from GitHub to update to a newer version.
 
+## Install in the Herdr app
+
+The app runs kiosk from a checkout of this repository, through the mod in
+[`herdr-app/kiosk`](herdr-app/kiosk). Build the binary, then link the mod folder into
+the app's `mods/` as `kiosk` (the mod finds the binary through that link, at
+`target/release/herdr-kiosk` in the same checkout):
+
+```sh
+git clone https://github.com/thomasschafer/herdr-kiosk.git
+cd herdr-kiosk
+cargo build --release
+ln -s "$PWD/herdr-app/kiosk" ~/.config/herdr-app/mods/kiosk
+herdr-app check ~/.config/herdr-app/mods/kiosk
+```
+
+Bind a key to open it in `~/.config/herdr-app/keys.json`:
+
+```json
+{ "global": { "cmd-p": "mod.open:kiosk" } }
+```
+
+On macOS this takes `cmd-p` from the app's own tab picker.
+
+Kiosk opens in a large dialog over the window and closes when it exits. Its
+configuration lives in `~/.config/herdr-kiosk/config.toml` (or under
+`$XDG_CONFIG_HOME`), and the setup wizard writes it on first use. To update,
+pull the checkout and rebuild.
+
+In the app, a workspace is a space: opening a repository makes an unnamed space in it,
+which the app names after its folder, and selects the existing space when one is already
+there. A space shows a checkout when its first terminal's folder is inside it. New
+worktrees go in `~/.herdr/worktrees/<repo>/<branch>`, the same place as the herdr TUI's
+default and the app's own worktree menu, and the app's sidebar nests them under their
+repository. `[on_open]` panes split the new space's first pane and type their command
+into the new shell; the app always splits in half, so a pane with a `ratio` is refused
+with a notification.
+
 ## Usage
 
 Type to fuzzy-search repositories and branches (and plain folders, if you enable
@@ -49,9 +87,10 @@ for the current view.
 ## Configuration
 
 <!-- CONFIG:START -->
-The plugin reads `config.toml` from its config directory. Run
-`herdr plugin config-dir thomasschafer.herdr-kiosk` to locate that directory.
-All sections are optional, and the defaults are shown below alongside curated
+In the herdr TUI, the plugin reads `config.toml` from its config directory: run
+`herdr plugin config-dir thomasschafer.herdr-kiosk` to locate it. In the Herdr
+app, kiosk reads `$XDG_CONFIG_HOME/herdr-kiosk/config.toml`, which is
+`~/.config/herdr-kiosk/config.toml` when `XDG_CONFIG_HOME` is unset. All sections are optional, and the defaults are shown below alongside curated
 examples for settings that benefit from one.
 
 #### `search_dirs`
@@ -141,7 +180,7 @@ Each entry is an inline table with:
 
 - `command` — Shell command Herdr runs in the opened checkout. The command must not be empty.
 - `direction` — Split direction: `right` or `down`.
-- `ratio` — Fraction of the resulting split occupied by the new command pane. The value must be greater than 0 and less than 1, and defaults to 0.5 when omitted.
+- `ratio` — Fraction of the resulting split occupied by the new command pane. The value must be greater than 0 and less than 1, and defaults to 0.5 when omitted. The Herdr app always splits in half, so it refuses a pane with a ratio.
 
 ### `[keys]`
 
@@ -207,7 +246,9 @@ cargo build --release
 herdr plugin link .
 ```
 
-`just link` combines these steps. `just e2e` runs the popup integration suite; it
+`just link` combines these steps. For the Herdr app, `cargo build --release` is
+enough once the mod folder is linked: the app reloads the mod by itself, and kiosk
+starts fresh each time it opens. `just e2e` runs the popup integration suite; it
 uses a built Herdr checkout next to this repository unless `HERDR` points elsewhere.
 Harness and manual-testing details are in
 [`docs/VERIFYING.md`](docs/VERIFYING.md).
