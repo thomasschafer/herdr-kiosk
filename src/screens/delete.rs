@@ -474,7 +474,7 @@ pub(crate) fn draw_dialog(
         ))]
     };
     if target.open_workspace_id.is_some() {
-        lines.push(Line::raw("Its herdr workspace will also be closed."));
+        lines.push(Line::raw("It will also be closed in Herdr."));
     }
     lines.push(Line::raw(""));
     if target.in_progress {

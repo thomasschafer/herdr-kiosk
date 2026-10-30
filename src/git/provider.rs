@@ -1,4 +1,8 @@
-use std::{error::Error, fmt, path::Path};
+use std::{
+    error::Error,
+    fmt,
+    path::{Path, PathBuf},
+};
 
 use anyhow::Result;
 
@@ -64,6 +68,18 @@ pub trait GitProvider: Send + Sync {
     fn fetch_remote(&self, repo_path: &Path, remote: &str) -> Result<()>;
     fn create_tracking_branch(&self, repo_path: &Path, branch: &str, remote: &str) -> Result<()>;
     fn is_valid_branch_name(&self, repo_path: &Path, branch: &str) -> Result<bool>;
+    /// Checks `branch` out in a new linked worktree at `worktree_path`. With `base`, the branch
+    /// is created from it; without, the branch must already exist.
+    fn add_worktree(
+        &self,
+        repo_path: &Path,
+        worktree_path: &Path,
+        branch: &str,
+        base: Option<&str>,
+    ) -> Result<()>;
+    /// The main checkout of the repository containing `path`, or `None` when `path` is not a
+    /// directory inside a Git repository.
+    fn main_checkout(&self, path: &Path) -> Result<Option<PathBuf>>;
     fn remove_worktree(&self, repo_path: &Path, worktree_path: &Path, force: bool) -> Result<()>;
     fn prune_worktrees(&self, repo_path: &Path) -> Result<()>;
     fn default_branch(&self, repo_path: &Path, local_branches: &[String])

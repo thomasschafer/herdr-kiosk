@@ -2,6 +2,8 @@ mod cli;
 pub mod mock;
 mod provider;
 mod repo;
+#[cfg(test)]
+pub(crate) mod test_fixtures;
 
 pub use cli::CliGitProvider;
 pub use provider::{
@@ -44,6 +46,17 @@ impl<T> std::ops::Deref for Listed<T> {
 pub const UNSUPPORTED_REF_WARNING: &str =
     "Some Git refs were skipped because non-UTF-8 ref names are unsupported.";
 
+/// A path git printed as raw bytes.
+#[cfg_attr(unix, allow(clippy::unnecessary_wraps))]
+pub(crate) fn path_from_bytes(bytes: Vec<u8>) -> Result<PathBuf> {
+    #[cfg(unix)]
+    return Ok(PathBuf::from(OsString::from_vec(bytes)));
+    #[cfg(not(unix))]
+    return Ok(PathBuf::from(OsString::from(
+        String::from_utf8(bytes).context("git returned a non-UTF-8 path")?,
+    )));
+}
+
 /// Parse `git worktree list --porcelain -z` output into worktrees.
 pub fn parse_worktree_porcelain(output: &[u8]) -> Result<Listed<Worktree>> {
     let mut worktrees = Vec::new();
@@ -53,12 +66,7 @@ pub fn parse_worktree_porcelain(output: &[u8]) -> Result<Listed<Worktree>> {
 
     for field in output.split(|byte| *byte == 0) {
         if let Some(path) = field.strip_prefix(b"worktree ") {
-            #[cfg(unix)]
-            let path = PathBuf::from(OsString::from_vec(path.to_vec()));
-            #[cfg(not(unix))]
-            let path = PathBuf::from(OsString::from(
-                std::str::from_utf8(path).context("git returned a non-UTF-8 worktree path")?,
-            ));
+            let path = path_from_bytes(path.to_vec())?;
             if let Some(previous_path) = current_path.replace(path) {
                 worktrees.push(Worktree {
                     path: previous_path,
