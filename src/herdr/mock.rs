@@ -5,7 +5,7 @@ use std::{
 };
 
 use super::{
-    HerdrError, HerdrProvider, PaneInfo, PaneRunResponse, PaneSplitRequest, PaneSplitResponse,
+    HerdrError, HerdrProvider, PaneInfo, PaneOpenError, PaneSplitRequest, PaneSplitResponse,
     WorkspaceCreateResponse, WorkspaceInfo, WorktreeCreateRequest, WorktreeCreateResponse,
     WorktreeListResponse, WorktreeOpenResponse, WorktreeOpenTarget, WorktreeRemoveResponse,
 };
@@ -34,9 +34,8 @@ pub enum HerdrCall {
     WorkspaceFocus {
         workspace_id: String,
     },
-    PaneSplit(PaneSplitRequest),
-    PaneRun {
-        pane_id: String,
+    PaneOpen {
+        request: PaneSplitRequest,
         command: String,
     },
     NotificationShow {
@@ -56,8 +55,7 @@ pub struct MockHerdrProvider {
     pub pane_list_results: Mutex<VecDeque<Result<Vec<PaneInfo>, HerdrError>>>,
     pub workspace_create_results: Mutex<VecDeque<Result<WorkspaceCreateResponse, HerdrError>>>,
     pub workspace_focus_results: Mutex<VecDeque<Result<(), HerdrError>>>,
-    pub pane_split_results: Mutex<VecDeque<Result<PaneSplitResponse, HerdrError>>>,
-    pub pane_run_results: Mutex<VecDeque<Result<PaneRunResponse, HerdrError>>>,
+    pub pane_open_results: Mutex<VecDeque<Result<PaneSplitResponse, PaneOpenError>>>,
     pub notification_show_results: Mutex<VecDeque<Result<(), HerdrError>>>,
 }
 
@@ -143,20 +141,24 @@ impl HerdrProvider for MockHerdrProvider {
         next(&self.workspace_focus_results, "workspace_focus")
     }
 
-    fn pane_split(&self, request: &PaneSplitRequest) -> Result<PaneSplitResponse, HerdrError> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push(HerdrCall::PaneSplit(request.clone()));
-        next(&self.pane_split_results, "pane_split")
-    }
-
-    fn pane_run(&self, pane_id: &str, command: &str) -> Result<PaneRunResponse, HerdrError> {
-        self.calls.lock().unwrap().push(HerdrCall::PaneRun {
-            pane_id: pane_id.into(),
+    fn pane_open(
+        &self,
+        request: &PaneSplitRequest,
+        command: &str,
+    ) -> Result<PaneSplitResponse, PaneOpenError> {
+        self.calls.lock().unwrap().push(HerdrCall::PaneOpen {
+            request: request.clone(),
             command: command.into(),
         });
-        next(&self.pane_run_results, "pane_run")
+        self.pane_open_results
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_else(|| {
+                Err(PaneOpenError::Split(HerdrError::InvalidResponse(
+                    "mock has no queued result for pane_open".into(),
+                )))
+            })
     }
 
     fn notification_show(&self, title: &str, body: &str) -> Result<(), HerdrError> {

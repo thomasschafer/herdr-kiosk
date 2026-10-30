@@ -120,8 +120,9 @@ On macOS the window stops drawing while another window covers it, so `shot` can
 return a stale frame. Toggling `herdr-app do window.maximize` twice before a shot
 makes it draw a fresh one.
 
-What to check: opening a repository makes a space in it with the `[on_open]` panes and
-focus on the first pane; opening it again selects that space without new panes; a
+What to check: keys typed right after `mod.open:kiosk` reach kiosk without a click;
+opening a repository makes a space in it with the `[on_open]` panes and focus on the
+first pane, and quitting an `[on_open]` command leaves its shell; opening it again selects that space without new panes; a
 branch without a checkout gets one in `~/.herdr/worktrees/<repo>/<branch>`, nested
 under its repository in the sidebar; deleting an open, dirty worktree asks to force,
 then removes the checkout and closes its space; `[on_open]` failures show as a

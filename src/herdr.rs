@@ -87,6 +87,15 @@ pub struct PaneSplitResponse {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PaneRunResponse;
 
+/// Why an `[on_open]` pane didn't open with its command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaneOpenError {
+    /// No pane was made.
+    Split(HerdrError),
+    /// The pane was made, but its command didn't reach it.
+    Run(HerdrError),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeRemoveResponse {
     pub warning: Option<String>,
@@ -191,8 +200,13 @@ pub trait HerdrProvider: Send + Sync {
         focus: bool,
     ) -> Result<WorkspaceCreateResponse, HerdrError>;
     fn workspace_focus(&self, workspace_id: &str) -> Result<(), HerdrError>;
-    fn pane_split(&self, request: &PaneSplitRequest) -> Result<PaneSplitResponse, HerdrError>;
-    fn pane_run(&self, pane_id: &str, command: &str) -> Result<PaneRunResponse, HerdrError>;
+    /// Splits `request.pane_id` and runs `command` in the new pane, typed into
+    /// its shell so the shell stays when the command ends.
+    fn pane_open(
+        &self,
+        request: &PaneSplitRequest,
+        command: &str,
+    ) -> Result<PaneSplitResponse, PaneOpenError>;
     fn notification_show(&self, title: &str, body: &str) -> Result<(), HerdrError>;
 }
 
@@ -259,6 +273,54 @@ impl CliHerdrProvider {
         }
 
         Ok(output.stdout)
+    }
+}
+
+impl CliHerdrProvider {
+    pub fn pane_split(&self, request: &PaneSplitRequest) -> Result<PaneSplitResponse, HerdrError> {
+        require_nonempty("pane id", &request.pane_id)?;
+        require_absolute("cwd", &request.cwd)?;
+        if request
+            .ratio
+            .is_some_and(|ratio| !ratio.is_finite() || ratio <= 0.0 || ratio >= 1.0)
+        {
+            return Err(HerdrError::InvalidArgument(
+                "pane split ratio must be greater than 0 and less than 1".into(),
+            ));
+        }
+        let mut args = vec![
+            "pane".into(),
+            "split".into(),
+            request.pane_id.clone(),
+            "--direction".into(),
+            request.direction.as_str().into(),
+        ];
+        if let Some(ratio) = request.ratio {
+            args.extend(["--ratio".into(), ratio.to_string()]);
+        }
+        args.extend([
+            "--cwd".into(),
+            path_arg("cwd", &request.cwd)?,
+            if request.focus {
+                "--focus"
+            } else {
+                "--no-focus"
+            }
+            .into(),
+        ]);
+        match self.invoke::<PaneSplitResult>(&args)? {
+            PaneSplitResult::PaneInfo { pane } => Ok(PaneSplitResponse {
+                pane_id: pane.pane_id,
+            }),
+        }
+    }
+
+    pub fn pane_run(&self, pane_id: &str, command: &str) -> Result<PaneRunResponse, HerdrError> {
+        require_nonempty("pane id", pane_id)?;
+        require_nonempty("command", command)?;
+        let args = vec!["pane".into(), "run".into(), pane_id.into(), command.into()];
+        self.invoke_output(&args)?;
+        Ok(PaneRunResponse)
     }
 }
 
@@ -430,50 +492,16 @@ impl HerdrProvider for CliHerdrProvider {
         Ok(())
     }
 
-    fn pane_split(&self, request: &PaneSplitRequest) -> Result<PaneSplitResponse, HerdrError> {
-        require_nonempty("pane id", &request.pane_id)?;
-        require_absolute("cwd", &request.cwd)?;
-        if request
-            .ratio
-            .is_some_and(|ratio| !ratio.is_finite() || ratio <= 0.0 || ratio >= 1.0)
-        {
-            return Err(HerdrError::InvalidArgument(
-                "pane split ratio must be greater than 0 and less than 1".into(),
-            ));
-        }
-        let mut args = vec![
-            "pane".into(),
-            "split".into(),
-            request.pane_id.clone(),
-            "--direction".into(),
-            request.direction.as_str().into(),
-        ];
-        if let Some(ratio) = request.ratio {
-            args.extend(["--ratio".into(), ratio.to_string()]);
-        }
-        args.extend([
-            "--cwd".into(),
-            path_arg("cwd", &request.cwd)?,
-            if request.focus {
-                "--focus"
-            } else {
-                "--no-focus"
-            }
-            .into(),
-        ]);
-        match self.invoke::<PaneSplitResult>(&args)? {
-            PaneSplitResult::PaneInfo { pane } => Ok(PaneSplitResponse {
-                pane_id: pane.pane_id,
-            }),
-        }
-    }
-
-    fn pane_run(&self, pane_id: &str, command: &str) -> Result<PaneRunResponse, HerdrError> {
-        require_nonempty("pane id", pane_id)?;
-        require_nonempty("command", command)?;
-        let args = vec!["pane".into(), "run".into(), pane_id.into(), command.into()];
-        self.invoke_output(&args)?;
-        Ok(PaneRunResponse)
+    /// The herdr TUI's `pane split`, then `pane run` in the new pane.
+    fn pane_open(
+        &self,
+        request: &PaneSplitRequest,
+        command: &str,
+    ) -> Result<PaneSplitResponse, PaneOpenError> {
+        let split = self.pane_split(request).map_err(PaneOpenError::Split)?;
+        self.pane_run(&split.pane_id, command)
+            .map_err(PaneOpenError::Run)?;
+        Ok(split)
     }
 
     fn notification_show(&self, title: &str, body: &str) -> Result<(), HerdrError> {
@@ -791,7 +819,7 @@ mod tests {
         let binary = temp.path().join("fake-herdr");
         let args_file = temp.path().join("args");
         let script = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" > '{}'\nprintf '%s' '{}'\nprintf '%s' '{}' >&2\nexit {exit_status}\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nprintf '%s' '{}'\nprintf '%s' '{}' >&2\nexit {exit_status}\n",
             args_file.display(),
             stdout,
             stderr
@@ -1079,6 +1107,58 @@ mod tests {
         assert_eq!(
             fs::read_to_string(args_file).unwrap().trim(),
             "pane split p_root --direction right --ratio 0.4 --cwd /repo checkout --no-focus"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_opens_a_pane_with_the_tui_split_then_run_in_the_new_pane() {
+        let temp = TempDir::new().unwrap();
+        let (binary, args_file) = fake_herdr(
+            &temp,
+            r#"{"id":"split","result":{"type":"pane_info","pane":{"pane_id":"p_2"}}}"#,
+        );
+        let provider = CliHerdrProvider::new(binary);
+        let request = PaneSplitRequest {
+            pane_id: "p_root".into(),
+            direction: OnOpenPaneDirection::Down,
+            ratio: None,
+            cwd: "/repo".into(),
+            focus: false,
+        };
+        let response = retry_fake_herdr(|| {
+            provider
+                .pane_open(&request, "hx .")
+                .map_err(|error| match error {
+                    PaneOpenError::Split(error) | PaneOpenError::Run(error) => error,
+                })
+        });
+        assert_eq!(response.pane_id, "p_2");
+        assert_eq!(
+            fs::read_to_string(args_file)
+                .unwrap()
+                .lines()
+                .collect::<Vec<_>>(),
+            [
+                "pane split p_root --direction down --cwd /repo --no-focus",
+                "pane run p_2 hx .",
+            ]
+        );
+
+        let error_temp = TempDir::new().unwrap();
+        let (binary, _) = fake_herdr_with_output(
+            &error_temp,
+            "",
+            r#"{"error":{"code":"pane_split_failed","message":"too small"}}"#,
+            1,
+        );
+        let provider = CliHerdrProvider::new(binary);
+        assert_eq!(
+            provider.pane_open(&request, "hx ."),
+            Err(PaneOpenError::Split(HerdrError::Other {
+                code: "pane_split_failed".into(),
+                message: "too small".into(),
+            }))
         );
     }
 
