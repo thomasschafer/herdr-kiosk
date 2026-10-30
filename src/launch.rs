@@ -125,10 +125,15 @@ mod tests {
         detect_host_with(|name| vars.get(name).cloned())
     }
 
+    #[cfg(not(windows))]
+    const ABSOLUTE: [&str; 3] = ["/bin/herdr-app", "/bin/hc", "/tmp/notices.jsonl"];
+    #[cfg(windows)]
+    const ABSOLUTE: [&str; 3] = [r"C:\bin\herdr-app", r"C:\bin\hc", r"C:\tmp\notices.jsonl"];
+
     const APP: [(&str, &str); 4] = [
-        (KIOSK_APP_BIN, "/bin/herdr-app"),
-        (KIOSK_HC_BIN, "/bin/hc"),
-        (KIOSK_NOTICE_FILE, "/tmp/notices.jsonl"),
+        (KIOSK_APP_BIN, ABSOLUTE[0]),
+        (KIOSK_HC_BIN, ABSOLUTE[1]),
+        (KIOSK_NOTICE_FILE, ABSOLUTE[2]),
         (KIOSK_CONTEXT_JSON, r#"{"focused_pane_cwd":"/repo/src"}"#),
     ];
 
@@ -163,9 +168,9 @@ mod tests {
         assert_eq!(
             host,
             Host::HerdrApp {
-                herdr_app_binary: "/bin/herdr-app".into(),
-                hc_binary: "/bin/hc".into(),
-                notice_file: "/tmp/notices.jsonl".into(),
+                herdr_app_binary: ABSOLUTE[0].into(),
+                hc_binary: ABSOLUTE[1].into(),
+                notice_file: ABSOLUTE[2].into(),
                 context: PluginContext {
                     focused_pane_cwd: Some("/repo/src".into()),
                     workspace_cwd: None,

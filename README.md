@@ -43,7 +43,7 @@ from GitHub to update to a newer version.
 ## Install in the Herdr app
 
 The app runs kiosk from a checkout of this repository, through the mod in
-[`herdr-app/kiosk`](herdr-app/kiosk). Build the binary, then link the mod folder into
+[`herdr-app/kiosk`](herdr-app/kiosk). The mod supports macOS and Linux. Build the binary, then link the mod folder into
 the app's `mods/` as `kiosk` (the mod finds the binary through that link, at
 `target/release/herdr-kiosk` in the same checkout):
 

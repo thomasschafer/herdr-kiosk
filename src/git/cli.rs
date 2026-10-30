@@ -847,7 +847,13 @@ mod tests {
         let nested = temp.path().join("my-repo-worktree").join("src");
         fs::create_dir_all(&nested).unwrap();
 
-        assert_eq!(provider.main_checkout(&repo).unwrap(), Some(repo.clone()));
+        assert_eq!(
+            provider
+                .main_checkout(&repo)
+                .unwrap()
+                .map(|path| fs::canonicalize(path).unwrap()),
+            Some(repo.clone())
+        );
         assert_eq!(
             provider
                 .main_checkout(&nested)
