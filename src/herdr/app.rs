@@ -27,7 +27,7 @@ use super::{
     HerdrError, PaneOpenError, PaneSplitRequest, PaneSplitResponse, focus_or_create_folder,
     on_open, path_arg, require_absolute, require_nonempty,
 };
-use crate::config::OnOpenConfig;
+use kiosk_core::config::OnOpenConfig;
 
 /// Where new checkouts go, below the user's home: the same place as the herdr
 /// TUI's default `worktrees.directory` and the app's `worktree` mod.

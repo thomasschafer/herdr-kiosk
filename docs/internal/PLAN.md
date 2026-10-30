@@ -75,8 +75,10 @@ and the setup wizard) comes from the kiosk repo's `kiosk-core` and `kiosk-tui` c
 pinned by git revision in `Cargo.toml`. kiosk-core defines the `Backend` trait a
 multiplexer implements: open-state queries, opening a checkout or folder, notifications,
 and worktree support, which is either native (the backend creates and removes worktrees)
-or managed (kiosk does it with git and the backend only shows and closes sessions). The
-shared schema is extended per product, so `[on_open]` is defined here.
+or managed (kiosk does it with git and the backend only shows and closes sessions). Each
+product extends the shared schema with the sections it uses. `[on_open]` is one kiosk-core
+provides; this repo includes it, words its README entry for herdr in `xtask`, and has the
+Herdr app refuse a pane `ratio` it cannot honour.
 
 | Module | Notes |
 |---|---|
@@ -84,7 +86,7 @@ shared schema is extended per product, so `[on_open]` is defined here.
 | `herdr/tui.rs` | The herdr TUI backend: native worktrees through `worktree open/create/remove`, identity by herdr's own matching, the stale-route retry, and `[on_open]` |
 | `herdr/app.rs` | The Herdr app backend: managed worktrees in `~/.herdr/worktrees`, spaces matched to checkouts by their first terminal's live folder, notifications through the mod's notice file |
 | `herdr/on_open.rs` | Running `[on_open]` panes after either backend opens a new workspace |
-| `config.rs` | The `[on_open]` section, read beside kiosk's shared sections |
+| `config.rs` | The config extension: kiosk-core's `[on_open]` section, read beside the shared sections |
 | `context.rs`, `launch.rs` | Which host started kiosk, and the current folder from its context (`HERDR_PLUGIN_CONTEXT_JSON`, never `std::env::current_dir()`, which is the plugin dir) |
 
 ### Herdr interaction map (exact calls)

@@ -8,7 +8,7 @@ use serde::{Deserialize, de::DeserializeOwned};
 
 use kiosk_core::backend::identity::{LiveFolder, session_in_folder};
 
-use crate::config::OnOpenPaneDirection;
+use kiosk_core::config::on_open::OnOpenPaneDirection;
 
 pub mod app;
 #[cfg(test)]
@@ -81,7 +81,7 @@ pub struct WorkspaceCreateResponse {
 pub struct PaneSplitRequest {
     pub pane_id: String,
     pub direction: OnOpenPaneDirection,
-    pub ratio: Option<f32>,
+    pub ratio: Option<f64>,
     pub cwd: PathBuf,
     pub focus: bool,
 }

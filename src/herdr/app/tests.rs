@@ -18,7 +18,10 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 use super::*;
-use crate::config::{OnOpenConfig, OnOpenPaneConfig, OnOpenPaneDirection};
+use kiosk_core::config::{
+    OnOpenConfig,
+    on_open::{OnOpenPaneConfig, OnOpenPaneDirection},
+};
 
 #[derive(Debug, Clone)]
 struct FakePane {

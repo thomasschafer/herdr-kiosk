@@ -603,7 +603,7 @@ dependencies = [
 [[package]]
 name = "kiosk-core"
 version = "0.2.3"
-source = "git+https://github.com/thomasschafer/kiosk?rev=ed3e6426f3c1164f42c87e6b4f2347450cd92aee#ed3e6426f3c1164f42c87e6b4f2347450cd92aee"
+source = "git+https://github.com/thomasschafer/kiosk?rev=128947451b90888da4efddfe6fa0e57ecc9ab782#128947451b90888da4efddfe6fa0e57ecc9ab782"
 dependencies = [
  "anyhow",
  "crossterm",
@@ -619,7 +619,7 @@ dependencies = [
 [[package]]
 name = "kiosk-docgen"
 version = "0.2.3"
-source = "git+https://github.com/thomasschafer/kiosk?rev=ed3e6426f3c1164f42c87e6b4f2347450cd92aee#ed3e6426f3c1164f42c87e6b4f2347450cd92aee"
+source = "git+https://github.com/thomasschafer/kiosk?rev=128947451b90888da4efddfe6fa0e57ecc9ab782#128947451b90888da4efddfe6fa0e57ecc9ab782"
 dependencies = [
  "anyhow",
  "kiosk-core",
@@ -630,7 +630,7 @@ dependencies = [
 [[package]]
 name = "kiosk-tui"
 version = "0.2.3"
-source = "git+https://github.com/thomasschafer/kiosk?rev=ed3e6426f3c1164f42c87e6b4f2347450cd92aee#ed3e6426f3c1164f42c87e6b4f2347450cd92aee"
+source = "git+https://github.com/thomasschafer/kiosk?rev=128947451b90888da4efddfe6fa0e57ecc9ab782#128947451b90888da4efddfe6fa0e57ecc9ab782"
 dependencies = [
  "anyhow",
  "crossterm",

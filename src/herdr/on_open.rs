@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use super::{PaneOpenError, PaneSplitRequest, PaneSplitResponse};
-use crate::config::OnOpenConfig;
+use kiosk_core::config::OnOpenConfig;
 
 /// Opens each configured pane beside `root_pane_id` with `open_pane`. Panes that fail are
 /// reported in the returned warning; the rest still open.
@@ -46,11 +46,10 @@ pub(crate) fn combine_warnings(first: Option<String>, second: Option<String>) ->
 
 #[cfg(test)]
 mod tests {
+    use kiosk_core::config::on_open::{OnOpenPaneConfig, OnOpenPaneDirection};
+
     use super::*;
-    use crate::{
-        config::{OnOpenPaneConfig, OnOpenPaneDirection},
-        herdr::HerdrError,
-    };
+    use crate::herdr::HerdrError;
 
     fn on_open_config() -> OnOpenConfig {
         OnOpenConfig {
@@ -127,7 +126,7 @@ mod tests {
                 pane_id: "p_2".into(),
             })
         });
-        assert!((ratio.expect("a configured ratio") - 0.65).abs() < f32::EPSILON);
+        assert!((ratio.expect("a configured ratio") - 0.65).abs() < f64::EPSILON);
     }
 
     #[test]

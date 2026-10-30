@@ -12,7 +12,7 @@ use super::{
     HerdrCli, HerdrError, OpenedWorktree, WorktreeCreateRequest, WorktreeOpenTarget,
     focus_or_create_folder, on_open,
 };
-use crate::config::OnOpenConfig;
+use kiosk_core::config::OnOpenConfig;
 
 /// A herdr workspace id. herdr recycles ids, so one only identifies a workspace for as
 /// long as kiosk is running.
