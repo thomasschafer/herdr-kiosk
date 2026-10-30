@@ -7,7 +7,7 @@ publish = false
 [dependencies]
 anyhow = "1"
 herdr-kiosk = { path = ".." }
-kiosk-docgen = { git = "https://github.com/thomasschafer/kiosk", rev = "128947451b90888da4efddfe6fa0e57ecc9ab782" }
+kiosk-docgen = { git = "https://github.com/thomasschafer/kiosk", rev = "08dd70c5db5cafe3bea3d6ebe84fb7400629bc70" }
 
 [lints]
 workspace = true
