@@ -7,13 +7,13 @@ license = "MIT"
 
 [dependencies]
 anyhow = "1"
-kiosk-core = { git = "https://github.com/thomasschafer/kiosk", rev = "ed3e6426f3c1164f42c87e6b4f2347450cd92aee" }
-kiosk-tui = { git = "https://github.com/thomasschafer/kiosk", rev = "ed3e6426f3c1164f42c87e6b4f2347450cd92aee" }
+kiosk-core = { git = "https://github.com/thomasschafer/kiosk", rev = "128947451b90888da4efddfe6fa0e57ecc9ab782" }
+kiosk-tui = { git = "https://github.com/thomasschafer/kiosk", rev = "128947451b90888da4efddfe6fa0e57ecc9ab782" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [dev-dependencies]
-kiosk-core = { git = "https://github.com/thomasschafer/kiosk", rev = "ed3e6426f3c1164f42c87e6b4f2347450cd92aee", features = ["test-support"] }
+kiosk-core = { git = "https://github.com/thomasschafer/kiosk", rev = "128947451b90888da4efddfe6fa0e57ecc9ab782", features = ["test-support"] }
 tempfile = "3"
 
 [workspace]

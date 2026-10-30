@@ -1,13 +1,12 @@
 use std::path::PathBuf;
 
+use kiosk_core::config::on_open::{OnOpenPaneConfig, OnOpenPaneDirection};
+
 use super::*;
-use crate::{
-    config::{OnOpenPaneConfig, OnOpenPaneDirection},
-    herdr::{
-        PaneInfo, PaneSplitResponse, WorkspaceCreateResponse, WorktreeCreateResponse, WorktreeInfo,
-        WorktreeListResponse, WorktreeOpenResponse, WorktreeRemoveResponse,
-        mock::{HerdrCall, MockHerdrCli},
-    },
+use crate::herdr::{
+    PaneInfo, PaneSplitResponse, WorkspaceCreateResponse, WorktreeCreateResponse, WorktreeInfo,
+    WorktreeListResponse, WorktreeOpenResponse, WorktreeRemoveResponse,
+    mock::{HerdrCall, MockHerdrCli},
 };
 
 fn on_open_config() -> OnOpenConfig {
