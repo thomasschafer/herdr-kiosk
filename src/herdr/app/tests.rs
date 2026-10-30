@@ -1,7 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, atomic::AtomicBool, mpsc},
+    sync::{Arc, Condvar, Mutex, atomic::AtomicBool, mpsc},
     time::Duration,
 };
 
@@ -39,16 +39,33 @@ struct FakeState {
     spaces: Vec<FakeSpace>,
     next_id: usize,
     commands: Vec<(String, Value)>,
-    sent: Vec<(String, String)>,
+    /// What each new terminal had typed into it as it started (`type`).
+    typed: Vec<(String, String)>,
     focused_pane: Option<String>,
-    /// A folder every split starts in, instead of the split pane's.
-    split_folder: Option<PathBuf>,
 }
 
 /// The parts of `herdr-app` and `hc` the app backend uses, over an in-memory window.
 #[derive(Default)]
 struct FakeApp {
     state: Mutex<FakeState>,
+    /// When set, each `hc get` waits (up to a deadline) for this many to be in flight at once.
+    rendezvous: Option<usize>,
+    /// `hc get`s in flight now, and the most there have been at once.
+    gets: (Mutex<(usize, usize)>, Condvar),
+}
+
+impl FakeApp {
+    fn meet_other_gets(&self, want: usize) {
+        let (gets, changed) = &self.gets;
+        let mut gets = gets.lock().unwrap();
+        gets.0 += 1;
+        gets.1 = gets.1.max(gets.0);
+        changed.notify_all();
+        let (mut gets, _) = changed
+            .wait_timeout_while(gets, Duration::from_secs(2), |gets| gets.1 < want)
+            .unwrap();
+        gets.0 -= 1;
+    }
 }
 
 impl FakeApp {
@@ -170,16 +187,22 @@ impl AppHost for FakeApp {
                     .iter()
                     .position(|space| space.panes.iter().any(|pane| pane.pane == target))
                     .ok_or_else(|| refused("no such pane"))?;
-                let folder = state.split_folder.clone().unwrap_or_else(|| {
-                    state.spaces[index]
-                        .panes
-                        .iter()
-                        .find(|pane| pane.pane == target)
-                        .unwrap()
-                        .live
-                        .clone()
-                });
+                let folder = args["folder"].as_str().map_or_else(
+                    || {
+                        state.spaces[index]
+                            .panes
+                            .iter()
+                            .find(|pane| pane.pane == target)
+                            .unwrap()
+                            .live
+                            .clone()
+                    },
+                    PathBuf::from,
+                );
                 let pane = new_pane(&mut state, &folder);
+                if let Some(line) = args["type"].as_str() {
+                    state.typed.push((pane.terminal.clone(), line.into()));
+                }
                 state.focused_pane = Some(pane.pane.clone());
                 let output = json!({ "pane": pane.pane, "terminal": pane.terminal });
                 state.spaces[index].panes.push(pane);
@@ -202,7 +225,10 @@ impl AppHost for FakeApp {
     }
 
     fn hc(&self, args: &[String]) -> Result<Vec<u8>, HerdrError> {
-        let mut state = self.state.lock().unwrap();
+        if let Some(want) = self.rendezvous {
+            self.meet_other_gets(want);
+        }
+        let state = self.state.lock().unwrap();
         let pane = |state: &FakeState, terminal: &str| {
             state
                 .spaces
@@ -225,11 +251,6 @@ impl AppHost for FakeApp {
                 })
                 .to_string()
                 .into())
-            }
-            [send, terminal, text] if send == "send" => {
-                pane(&state, terminal).expect("hc send to an unknown terminal");
-                state.sent.push((terminal.clone(), text.clone()));
-                Ok(br#"{"started":null,"status":null,"turn":0}"#.to_vec())
             }
             _ => panic!("unexpected hc call {args:?}"),
         }
@@ -580,76 +601,121 @@ fn split_request(pane_id: &str, cwd: &Path) -> PaneSplitRequest {
 }
 
 #[test]
-fn splitting_without_focus_gives_focus_back_to_the_split_pane() {
+fn a_pane_opens_with_its_command_typed_in_one_split_and_gives_focus_back() {
     let fixture = Fixture::new();
     let space = fixture.app.add_space(&fixture.repo);
     let root = &space.panes[0].pane;
 
     let split = fixture
         .provider
-        .pane_split(&split_request(root, &fixture.repo))
+        .pane_open(&split_request(root, &fixture.repo), "hx .")
         .unwrap();
 
     assert_ne!(&split.pane_id, root);
+    let folder = fixture.repo.to_str().unwrap();
     assert_eq!(
         fixture.app.commands(),
         [
             (
                 "pane.split".into(),
-                json!({ "direction": "right", "pane": root })
+                json!({ "direction": "right", "pane": root, "folder": folder, "type": "hx ." })
             ),
             ("pane.focus".into(), json!({ "pane": root })),
         ]
     );
+    let state = fixture.app.state.lock().unwrap();
+    let new = &state.spaces[0].panes[1];
     assert_eq!(
-        fixture.app.state.lock().unwrap().focused_pane.as_ref(),
-        Some(root)
+        (new.pane.as_str(), new.start.as_path()),
+        (split.pane_id.as_str(), fixture.repo.as_path())
     );
+    assert_eq!(state.typed, [(new.terminal.clone(), "hx .".into())]);
+    assert_eq!(state.focused_pane.as_ref(), Some(root));
 }
 
 #[test]
-fn a_split_ratio_is_refused_because_the_app_cannot_size_splits() {
+fn a_pane_starts_in_the_checkout_wherever_the_split_pane_has_gone() {
     let fixture = Fixture::new();
     let space = fixture.app.add_space(&fixture.repo);
-    let mut request = split_request(&space.panes[0].pane, &fixture.repo);
-    request.ratio = Some(0.6);
+    fixture.app.state.lock().unwrap().spaces[0].panes[0].live = "/elsewhere".into();
 
-    let error = fixture.provider.pane_split(&request).unwrap_err();
+    fixture
+        .provider
+        .pane_open(&split_request(&space.panes[0].pane, &fixture.repo), "hx")
+        .unwrap();
 
-    assert!(error.to_string().contains("ratio"), "{error}");
+    assert_eq!(fixture.app.spaces()[0].panes[1].start, fixture.repo);
+}
+
+#[test]
+fn a_pane_that_cannot_open_as_asked_is_refused_before_the_app_is_called() {
+    let fixture = Fixture::new();
+    let space = fixture.app.add_space(&fixture.repo);
+    let mut ratio = split_request(&space.panes[0].pane, &fixture.repo);
+    ratio.ratio = Some(0.6);
+    let relative = split_request(&space.panes[0].pane, Path::new("repo"));
+    let request = split_request(&space.panes[0].pane, &fixture.repo);
+
+    for (request, command, why) in [
+        (&ratio, "hx", "ratio"),
+        (&relative, "hx", "absolute"),
+        (&request, "", "command"),
+    ] {
+        let Err(PaneOpenError::Split(error)) = fixture.provider.pane_open(request, command) else {
+            panic!("{why}: expected a refused split");
+        };
+        assert!(error.to_string().contains(why), "{error}");
+    }
     assert_eq!(fixture.app.commands(), []);
 }
 
 #[test]
-fn a_split_that_starts_elsewhere_is_closed_and_reported() {
+fn a_refused_split_is_reported_as_no_pane_made() {
     let fixture = Fixture::new();
-    let space = fixture.app.add_space(&fixture.repo);
-    fixture.app.state.lock().unwrap().split_folder = Some("/elsewhere".into());
 
     let error = fixture
         .provider
-        .pane_split(&split_request(&space.panes[0].pane, &fixture.repo))
+        .pane_open(&split_request("missing", &fixture.repo), "hx")
         .unwrap_err();
 
-    assert!(error.to_string().contains("/elsewhere"), "{error}");
-    assert_eq!(fixture.app.spaces()[0].panes.len(), 1);
+    assert_eq!(error, PaneOpenError::Split(refused("no such pane")));
 }
 
 #[test]
-fn running_a_command_types_it_into_the_panes_shell() {
-    let fixture = Fixture::new();
-    let space = fixture.app.add_space(&fixture.repo);
+fn every_terminal_folder_is_looked_up_at_once_and_kept_with_its_pane() {
+    let temp = TempDir::new().unwrap();
+    let folders: Vec<PathBuf> = (0..5).map(|i| temp.path().join(format!("f{i}"))).collect();
+    let app = Arc::new(FakeApp {
+        rendezvous: Some(folders.len()),
+        ..FakeApp::default()
+    });
+    for folder in &folders {
+        app.add_space(folder);
+    }
+    let provider = AppHerdrProvider::new(
+        Arc::clone(&app) as Arc<dyn AppHost>,
+        Arc::new(CliGitProvider),
+        temp.path().join("worktrees"),
+        temp.path().join("notices.jsonl"),
+    );
 
-    fixture
-        .provider
-        .pane_run(&space.panes[0].pane, "hx .")
-        .unwrap();
+    let panes = provider.pane_list().unwrap();
 
     assert_eq!(
-        fixture.app.state.lock().unwrap().sent,
-        [(space.panes[0].terminal.clone(), "hx .".into())]
+        app.gets.0.lock().unwrap().1,
+        folders.len(),
+        "all in flight together"
     );
-    assert!(fixture.provider.pane_run("missing", "hx").is_err());
+    let listed: Vec<_> = panes
+        .iter()
+        .map(|pane| (pane.workspace_id.clone(), pane.cwd.clone().unwrap()))
+        .collect();
+    let expected: Vec<_> = app
+        .spaces()
+        .iter()
+        .map(|space| (space.id.clone(), space.panes[0].live.display().to_string()))
+        .collect();
+    assert_eq!(listed, expected);
 }
 
 #[test]
@@ -699,8 +765,12 @@ fn opening_a_repo_runs_on_open_panes_in_the_new_space() {
         panic!("expected two panes, got {:?}", spaces[0].panes);
     };
     assert_eq!(
-        fixture.app.state.lock().unwrap().sent,
+        fixture.app.state.lock().unwrap().typed,
         [(editor.terminal.clone(), "hx".into())]
+    );
+    assert_eq!(
+        crate::path::canonical_or_original(&editor.start),
+        crate::path::canonical_or_original(&fixture.repo)
     );
     assert_eq!(
         fixture.app.state.lock().unwrap().focused_pane.as_ref(),

@@ -1,9 +1,9 @@
 //! The Herdr desktop app as a backend. The app has no worktree API, so this
 //! provider does the Git work itself and drives the window through the
 //! `herdr-app` CLI (spaces, splits, focus) and herdr-core's `hc` (terminal
-//! folders, typing commands). Kiosk workspaces map to app spaces: a space
-//! counts as showing a checkout when its first terminal's live folder is
-//! inside it, the rule the app's own `worktree` mod uses.
+//! folders). Kiosk workspaces map to app spaces: a space counts as showing a
+//! checkout when its first terminal's live folder is inside it, the rule the
+//! app's own `worktree` mod uses.
 
 use std::{
     fs::{self, OpenOptions},
@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
 use super::{
-    HerdrError, HerdrProvider, OpenedWorktree, PaneInfo, PaneRunResponse, PaneSplitRequest,
+    HerdrError, HerdrProvider, OpenedWorktree, PaneInfo, PaneOpenError, PaneSplitRequest,
     PaneSplitResponse, WorkspaceCreateResponse, WorkspaceInfo, WorkspaceWorktreeInfo,
     WorktreeCreateRequest, WorktreeCreateResponse, WorktreeInfo, WorktreeListResponse,
     WorktreeOpenResponse, WorktreeOpenTarget, WorktreeRemoveResponse, path_arg, require_absolute,
@@ -149,7 +149,6 @@ struct SpaceCreated {
 #[derive(Deserialize)]
 struct PaneCreated {
     pane: String,
-    terminal: String,
 }
 
 #[derive(Deserialize)]
@@ -248,7 +247,8 @@ impl AppHerdrProvider {
     /// The spaces on this machine. Spaces on other machines are left out: their
     /// folders are not paths here.
     fn spaces(&self) -> Result<Vec<Space>, HerdrError> {
-        self.list()?
+        let spaces: Vec<(String, Vec<(String, String)>)> = self
+            .list()?
             .spaces
             .into_iter()
             .filter(|space| space.machine.is_none())
@@ -258,18 +258,52 @@ impl AppHerdrProvider {
                     .into_iter()
                     .flat_map(|tab| tab.terminals)
                     .filter_map(|terminal| Some((terminal.pane?, terminal.terminal)))
-                    .map(|(id, terminal)| {
-                        let info = self.terminal(&terminal)?;
-                        let cwd = info.foreground.and_then(|f| f.cwd).or(info.cwd);
-                        Ok(Pane { id, cwd })
-                    })
-                    .collect::<Result<_, HerdrError>>()?;
-                Ok(Space {
-                    id: space.id,
-                    panes,
-                })
+                    .collect();
+                (space.id, panes)
             })
-            .collect()
+            .collect();
+        let terminals: Vec<&str> = spaces
+            .iter()
+            .flat_map(|(_, panes)| panes.iter().map(|(_, terminal)| terminal.as_str()))
+            .collect();
+        let mut folders = self.live_folders(&terminals)?.into_iter();
+        Ok(spaces
+            .into_iter()
+            .map(|(id, panes)| Space {
+                id,
+                panes: panes
+                    .into_iter()
+                    .map(|(id, _)| Pane {
+                        id,
+                        cwd: folders.next().expect("a folder for every terminal"),
+                    })
+                    .collect(),
+            })
+            .collect())
+    }
+
+    /// Each terminal's live folder, in order. One `hc get` each, all at once:
+    /// one after another they add up to most of the time an open takes.
+    fn live_folders(&self, terminals: &[&str]) -> Result<Vec<Option<PathBuf>>, HerdrError> {
+        std::thread::scope(|scope| {
+            let lookups: Vec<_> = terminals
+                .iter()
+                .map(|terminal| {
+                    scope.spawn(move || {
+                        let info = self.terminal(terminal)?;
+                        Ok(info.foreground.and_then(|f| f.cwd).or(info.cwd))
+                    })
+                })
+                .collect();
+            lookups
+                .into_iter()
+                .map(|lookup| {
+                    lookup
+                        .join()
+                        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+                })
+                .collect()
+        })
     }
 
     /// Makes a space whose first terminal starts in `folder`, shown at once. It is
@@ -300,6 +334,38 @@ impl AppHerdrProvider {
         require_nonempty("space id", id)?;
         self.command("space.select", &json!({ "id": id }))?;
         Ok(())
+    }
+
+    fn split(
+        &self,
+        request: &PaneSplitRequest,
+        command: &str,
+    ) -> Result<PaneSplitResponse, HerdrError> {
+        require_nonempty("pane id", &request.pane_id)?;
+        require_nonempty("command", command)?;
+        require_absolute("cwd", &request.cwd)?;
+        let folder = path_arg("cwd", &request.cwd)?;
+        if request.ratio.is_some() {
+            return Err(HerdrError::InvalidArgument(
+                "the Herdr app always splits panes in half; remove `ratio` from this [on_open] pane"
+                    .into(),
+            ));
+        }
+        let created: PaneCreated = self.command_json(
+            "pane.split",
+            &json!({
+                "direction": request.direction.as_str(),
+                "pane": request.pane_id,
+                "folder": folder,
+                "type": command,
+            }),
+        )?;
+        if !request.focus {
+            self.command("pane.focus", &json!({ "pane": request.pane_id }))?;
+        }
+        Ok(PaneSplitResponse {
+            pane_id: created.pane,
+        })
     }
 
     fn worktrees(&self, cwd: &Path) -> Result<Vec<Worktree>, HerdrError> {
@@ -597,62 +663,15 @@ impl HerdrProvider for AppHerdrProvider {
         self.select_space(workspace_id)
     }
 
-    fn pane_split(&self, request: &PaneSplitRequest) -> Result<PaneSplitResponse, HerdrError> {
-        require_nonempty("pane id", &request.pane_id)?;
-        require_absolute("cwd", &request.cwd)?;
-        if request.ratio.is_some() {
-            return Err(HerdrError::InvalidArgument(
-                "the Herdr app always splits panes in half; remove `ratio` from this [on_open] pane"
-                    .into(),
-            ));
-        }
-        let created: PaneCreated = self.command_json(
-            "pane.split",
-            &json!({ "direction": request.direction.as_str(), "pane": request.pane_id }),
-        )?;
-        // The app starts a split where the pane it splits is; kiosk only splits a
-        // freshly opened checkout, so anything else means that assumption broke.
-        let started = self.terminal(&created.terminal)?.cwd;
-        let expected = crate::path::canonical_or_original(&request.cwd);
-        if !started.as_deref().is_some_and(|started| {
-            crate::path::equivalent(&crate::path::canonical_or_original(started), &expected)
-        }) {
-            let _ = self.command("pane.close", &json!({ "pane": created.pane }));
-            return Err(HerdrError::InvalidResponse(format!(
-                "the new pane started in {} instead of {}",
-                started
-                    .as_deref()
-                    .map_or_else(|| "an unknown folder".into(), crate::path::display),
-                crate::path::display(&request.cwd)
-            )));
-        }
-        if !request.focus {
-            self.command("pane.focus", &json!({ "pane": request.pane_id }))?;
-        }
-        Ok(PaneSplitResponse {
-            pane_id: created.pane,
-        })
-    }
-
-    fn pane_run(&self, pane_id: &str, command: &str) -> Result<PaneRunResponse, HerdrError> {
-        require_nonempty("pane id", pane_id)?;
-        require_nonempty("command", command)?;
-        let terminal = self
-            .list()?
-            .spaces
-            .into_iter()
-            .flat_map(|space| space.tabs)
-            .flat_map(|tab| tab.terminals)
-            .find(|terminal| terminal.pane.as_deref() == Some(pane_id))
-            .map(|terminal| terminal.terminal)
-            .ok_or_else(|| HerdrError::Other {
-                code: "pane_not_found".into(),
-                message: format!("no pane {pane_id}"),
-            })?;
-        // Typed into the pane's shell, as the herdr TUI's `pane run` does, so the
-        // shell stays when the command exits.
-        self.host.hc(&["send".into(), terminal, command.into()])?;
-        Ok(PaneRunResponse)
+    /// One `pane.split` that starts the new terminal in the checkout with the
+    /// command typed ahead into its shell: the shell runs it as soon as it is
+    /// ready, keeps it in its history, and stays when it ends.
+    fn pane_open(
+        &self,
+        request: &PaneSplitRequest,
+        command: &str,
+    ) -> Result<PaneSplitResponse, PaneOpenError> {
+        self.split(request, command).map_err(PaneOpenError::Split)
     }
 
     fn notification_show(&self, title: &str, body: &str) -> Result<(), HerdrError> {

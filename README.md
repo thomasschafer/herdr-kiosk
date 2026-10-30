@@ -73,8 +73,9 @@ which the app names after its folder, and selects the existing space when one is
 there. A space shows a checkout when its first terminal's folder is inside it. New
 worktrees go in `~/.herdr/worktrees/<repo>/<branch>`, the same place as the herdr TUI's
 default and the app's own worktree menu, and the app's sidebar nests them under their
-repository. `[on_open]` panes split the new space's first pane and type their command
-into the new shell; the app always splits in half, so a pane with a `ratio` is refused
+repository. `[on_open]` panes split the new space's first pane with their command typed
+into the new shell as it starts, so it runs as soon as the shell is ready and the shell
+stays when it ends; the app always splits in half, so a pane with a `ratio` is refused
 with a notification.
 
 ## Usage

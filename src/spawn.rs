@@ -19,8 +19,8 @@ use crate::{
         is_local_branch_already_exists,
     },
     herdr::{
-        HerdrError, HerdrProvider, OpenedWorktree, PaneSplitRequest, WorktreeCreateRequest,
-        WorktreeOpenTarget,
+        HerdrError, HerdrProvider, OpenedWorktree, PaneOpenError, PaneSplitRequest,
+        WorktreeCreateRequest, WorktreeOpenTarget,
     },
     state::BranchEntry,
 };
@@ -850,20 +850,21 @@ fn apply_on_open(
 ) -> Option<String> {
     let mut errors = Vec::new();
     for (index, pane) in on_open.panes.iter().enumerate() {
-        let split = provider.pane_split(&PaneSplitRequest {
+        let request = PaneSplitRequest {
             pane_id: root_pane_id.into(),
             direction: pane.direction,
             ratio: pane.ratio.map(|ratio| 1.0 - ratio),
             cwd: PathBuf::from(checkout_path),
             focus: false,
-        });
-        match split {
-            Ok(response) => {
-                if let Err(error) = provider.pane_run(&response.pane_id, &pane.command) {
-                    errors.push(format!("pane {} run failed: {error}", index + 1));
-                }
+        };
+        match provider.pane_open(&request, &pane.command) {
+            Ok(_) => {}
+            Err(PaneOpenError::Split(error)) => {
+                errors.push(format!("pane {} split failed: {error}", index + 1));
             }
-            Err(error) => errors.push(format!("pane {} split failed: {error}", index + 1)),
+            Err(PaneOpenError::Run(error)) => {
+                errors.push(format!("pane {} run failed: {error}", index + 1));
+            }
         }
     }
     (!errors.is_empty()).then(|| format!("on_open: {}", errors.join("; ")))
@@ -899,7 +900,7 @@ mod tests {
         config::{OnOpenPaneConfig, OnOpenPaneDirection},
         git::{Repo, Worktree, mock::MockGitProvider},
         herdr::{
-            OpenedWorktree, PaneRunResponse, PaneSplitResponse, WorktreeInfo, WorktreeListResponse,
+            OpenedWorktree, PaneOpenError, PaneSplitResponse, WorktreeInfo, WorktreeListResponse,
             WorktreeOpenResponse,
             mock::{HerdrCall, MockHerdrProvider},
         },
@@ -1061,45 +1062,32 @@ mod tests {
     }
 
     #[test]
-    fn on_open_splits_then_runs_each_configured_pane_in_order() {
+    fn on_open_opens_each_configured_pane_with_its_command_in_order() {
         let mock = MockHerdrProvider::default();
-        mock.pane_split_results
-            .lock()
-            .unwrap()
-            .extend(["p_2", "p_3"].map(|pane_id| {
-                Ok(PaneSplitResponse {
-                    pane_id: pane_id.into(),
-                })
-            }));
-        mock.pane_run_results
-            .lock()
-            .unwrap()
-            .extend([Ok(PaneRunResponse), Ok(PaneRunResponse)]);
+        queue_successful_on_open(&mock);
 
         assert!(apply_on_open(&mock, &on_open_config(), "p_root", "/repo").is_none());
         assert_eq!(
             *mock.calls.lock().unwrap(),
             [
-                HerdrCall::PaneSplit(PaneSplitRequest {
-                    pane_id: "p_root".into(),
-                    direction: OnOpenPaneDirection::Right,
-                    ratio: Some(0.6),
-                    cwd: "/repo".into(),
-                    focus: false,
-                }),
-                HerdrCall::PaneRun {
-                    pane_id: "p_2".into(),
+                HerdrCall::PaneOpen {
+                    request: PaneSplitRequest {
+                        pane_id: "p_root".into(),
+                        direction: OnOpenPaneDirection::Right,
+                        ratio: Some(0.6),
+                        cwd: "/repo".into(),
+                        focus: false,
+                    },
                     command: "hx".into(),
                 },
-                HerdrCall::PaneSplit(PaneSplitRequest {
-                    pane_id: "p_root".into(),
-                    direction: OnOpenPaneDirection::Down,
-                    ratio: None,
-                    cwd: "/repo".into(),
-                    focus: false,
-                }),
-                HerdrCall::PaneRun {
-                    pane_id: "p_3".into(),
+                HerdrCall::PaneOpen {
+                    request: PaneSplitRequest {
+                        pane_id: "p_root".into(),
+                        direction: OnOpenPaneDirection::Down,
+                        ratio: None,
+                        cwd: "/repo".into(),
+                        focus: false,
+                    },
                     command: "cargo test".into(),
                 },
             ]
@@ -1109,16 +1097,12 @@ mod tests {
     #[test]
     fn on_open_ratio_is_the_new_pane_fraction() {
         let mock = MockHerdrProvider::default();
-        mock.pane_split_results
+        mock.pane_open_results
             .lock()
             .unwrap()
             .push_back(Ok(PaneSplitResponse {
                 pane_id: "p_2".into(),
             }));
-        mock.pane_run_results
-            .lock()
-            .unwrap()
-            .push_back(Ok(PaneRunResponse));
         let config = OnOpenConfig {
             panes: vec![OnOpenPaneConfig {
                 command: "hx".into(),
@@ -1129,8 +1113,8 @@ mod tests {
 
         assert!(apply_on_open(&mock, &config, "p_root", "/repo").is_none());
         let calls = mock.calls.lock().unwrap();
-        let HerdrCall::PaneSplit(request) = &calls[0] else {
-            panic!("expected pane split call");
+        let HerdrCall::PaneOpen { request, .. } = &calls[0] else {
+            panic!("expected pane open call");
         };
         let ratio = request.ratio.expect("expected configured ratio");
         assert!((ratio - 0.65).abs() < f32::EPSILON);
@@ -1148,7 +1132,7 @@ mod tests {
     }
 
     fn queue_successful_on_open(mock: &MockHerdrProvider) {
-        mock.pane_split_results
+        mock.pane_open_results
             .lock()
             .unwrap()
             .extend(["p_2", "p_3"].map(|pane_id| {
@@ -1156,10 +1140,6 @@ mod tests {
                     pane_id: pane_id.into(),
                 })
             }));
-        mock.pane_run_results
-            .lock()
-            .unwrap()
-            .extend([Ok(PaneRunResponse), Ok(PaneRunResponse)]);
     }
 
     fn pane_call_count(mock: &MockHerdrProvider) -> usize {
@@ -1167,7 +1147,7 @@ mod tests {
             .lock()
             .unwrap()
             .iter()
-            .filter(|call| matches!(call, HerdrCall::PaneSplit(_) | HerdrCall::PaneRun { .. }))
+            .filter(|call| matches!(call, HerdrCall::PaneOpen { .. }))
             .count()
     }
 
@@ -1194,7 +1174,7 @@ mod tests {
             ));
             assert_eq!(
                 pane_call_count(&mock),
-                if already_open { 0 } else { 4 },
+                if already_open { 0 } else { 2 },
                 "already_open={already_open}"
             );
         }
@@ -1230,7 +1210,7 @@ mod tests {
             ));
             assert_eq!(
                 pane_call_count(&mock),
-                if already_open { 0 } else { 4 },
+                if already_open { 0 } else { 2 },
                 "already_open={already_open}"
             );
         }
@@ -1243,22 +1223,16 @@ mod tests {
             .lock()
             .unwrap()
             .push_back(Ok(worktree_open_response(false)));
-        mock.pane_split_results.lock().unwrap().extend([
-            Err(HerdrError::Other {
+        mock.pane_open_results.lock().unwrap().extend([
+            Err(PaneOpenError::Split(HerdrError::Other {
                 code: "pane_split_failed".into(),
                 message: "too small".into(),
-            }),
-            Ok(PaneSplitResponse {
-                pane_id: "p_3".into(),
-            }),
-        ]);
-        mock.pane_run_results
-            .lock()
-            .unwrap()
-            .push_back(Err(HerdrError::Other {
+            })),
+            Err(PaneOpenError::Run(HerdrError::Other {
                 code: "pane_run_failed".into(),
                 message: "shell closed".into(),
-            }));
+            })),
+        ]);
         let provider: Arc<dyn HerdrProvider> = mock;
         let (tx, rx) = mpsc::channel();
         let sender = EventSender::new(tx, Arc::new(AtomicBool::new(false)));
