@@ -7,8 +7,7 @@ publish = false
 [dependencies]
 anyhow = "1"
 herdr-kiosk = { path = ".." }
-syn = { version = "3", features = ["full", "parsing"] }
-toml = "1.1"
+kiosk-docgen = { git = "https://github.com/thomasschafer/kiosk", rev = "269d5bf378b8dada056ed350d8d72d69b514c4a4" }
 
 [lints]
 workspace = true

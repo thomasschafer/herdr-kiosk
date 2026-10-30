@@ -5,7 +5,7 @@ use std::{
 };
 
 use super::{
-    HerdrError, HerdrProvider, PaneInfo, PaneOpenError, PaneSplitRequest, PaneSplitResponse,
+    HerdrCli, HerdrError, PaneInfo, PaneOpenError, PaneSplitRequest, PaneSplitResponse,
     WorkspaceCreateResponse, WorkspaceInfo, WorktreeCreateRequest, WorktreeCreateResponse,
     WorktreeListResponse, WorktreeOpenResponse, WorktreeOpenTarget, WorktreeRemoveResponse,
 };
@@ -45,7 +45,7 @@ pub enum HerdrCall {
 }
 
 #[derive(Default)]
-pub struct MockHerdrProvider {
+pub struct MockHerdrCli {
     pub calls: Mutex<Vec<HerdrCall>>,
     pub worktree_open_results: Mutex<VecDeque<Result<WorktreeOpenResponse, HerdrError>>>,
     pub worktree_create_results: Mutex<VecDeque<Result<WorktreeCreateResponse, HerdrError>>>,
@@ -67,7 +67,7 @@ fn next<T>(queue: &Mutex<VecDeque<Result<T, HerdrError>>>, method: &str) -> Resu
     })
 }
 
-impl HerdrProvider for MockHerdrProvider {
+impl HerdrCli for MockHerdrCli {
     fn worktree_open(
         &self,
         cwd: &Path,
@@ -179,7 +179,7 @@ mod tests {
 
     #[test]
     fn mock_records_calls_and_returns_queued_errors() {
-        let mock = MockHerdrProvider::default();
+        let mock = MockHerdrCli::default();
         mock.worktree_open_results
             .lock()
             .unwrap()
@@ -203,7 +203,7 @@ mod tests {
 
     #[test]
     fn unconfigured_mock_fails_loudly() {
-        let error = MockHerdrProvider::default().workspace_list().unwrap_err();
+        let error = MockHerdrCli::default().workspace_list().unwrap_err();
         assert!(matches!(error, HerdrError::InvalidResponse(_)));
     }
 }

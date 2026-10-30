@@ -512,18 +512,11 @@ name = "herdr-kiosk"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "crossterm",
- "fuzzy-matcher",
- "libc",
- "ratatui",
- "rayon",
+ "kiosk-core",
+ "kiosk-tui",
  "serde",
- "serde_ignored",
  "serde_json",
  "tempfile",
- "toml",
- "unicode-segmentation",
- "unicode-width",
 ]
 
 [[package]]
@@ -605,6 +598,46 @@ dependencies = [
  "hashbrown 0.16.1",
  "portable-atomic",
  "thiserror 2.0.19",
+]
+
+[[package]]
+name = "kiosk-core"
+version = "0.2.3"
+source = "git+https://github.com/thomasschafer/kiosk?rev=269d5bf378b8dada056ed350d8d72d69b514c4a4#269d5bf378b8dada056ed350d8d72d69b514c4a4"
+dependencies = [
+ "anyhow",
+ "crossterm",
+ "fuzzy-matcher",
+ "libc",
+ "rayon",
+ "serde",
+ "serde_ignored",
+ "toml",
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "kiosk-docgen"
+version = "0.2.3"
+source = "git+https://github.com/thomasschafer/kiosk?rev=269d5bf378b8dada056ed350d8d72d69b514c4a4#269d5bf378b8dada056ed350d8d72d69b514c4a4"
+dependencies = [
+ "anyhow",
+ "kiosk-core",
+ "syn 3.0.9",
+ "toml",
+]
+
+[[package]]
+name = "kiosk-tui"
+version = "0.2.3"
+source = "git+https://github.com/thomasschafer/kiosk?rev=269d5bf378b8dada056ed350d8d72d69b514c4a4#269d5bf378b8dada056ed350d8d72d69b514c4a4"
+dependencies = [
+ "anyhow",
+ "crossterm",
+ "kiosk-core",
+ "ratatui",
+ "unicode-segmentation",
+ "unicode-width",
 ]
 
 [[package]]
@@ -1854,8 +1887,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "herdr-kiosk",
- "syn 3.0.9",
- "toml",
+ "kiosk-docgen",
 ]
 
 [[package]]

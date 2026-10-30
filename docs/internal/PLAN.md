@@ -29,7 +29,7 @@ These decisions shaped v1:
 | D10 | Naming | Repo/dir/binary: `herdr-kiosk`. Plugin id: `thomasschafer.herdr-kiosk`. One name everywhere |
 | D11 | Theme | ANSI-16 + terminal default fg/bg so the picker visually matches everything else rendered in the user's terminal/herdr (see §6). Slim `[theme]` override section kept |
 | D12 | Windows | Added before release after an initial Unix-only scope; full parity is maintained |
-| D13 | Crate layout | Single binary crate. Kiosk's three-crate split served its CLI surface, which herdr replaces |
+| D13 | Crate layout | The picker lives in the kiosk repo's shared `kiosk-core` and `kiosk-tui` crates, generic over a multiplexer backend, so the tmux and Rex pickers share it. This repo is one binary crate holding the two herdr backends (see §4) |
 | D14 | Collision display | Repos sharing a name are disambiguated with the shortest distinguishing parent-path suffix (see §5) |
 | D15 | Process | Claude orchestrates/plans/verifies, Codex (gpt-5.6 sol, high reasoning) implements, Tom decides product questions and hand-tests (see §7) |
 | D16 | Version control | Commit each verified chunk and push to `origin main` (github.com/thomasschafer/herdr-kiosk) as we go; no co-author lines. Pause for Tom only when something genuinely needs review |
@@ -70,22 +70,22 @@ These decisions shaped v1:
 
 ## 4. Architecture
 
-Single Rust binary crate. Stack matches kiosk: ratatui 0.30, crossterm 0.29,
-fuzzy-matcher (SkimMatcherV2), rayon, unicode-width/segmentation, serde + toml.
+The picker (repository discovery, git, config, the picker state machine, the ratatui UI
+and the setup wizard) comes from the kiosk repo's `kiosk-core` and `kiosk-tui` crates,
+pinned by git revision in `Cargo.toml`. kiosk-core defines the `Backend` trait a
+multiplexer implements: open-state queries, opening a checkout or folder, notifications,
+and worktree support, which is either native (the backend creates and removes worktrees)
+or managed (kiosk does it with git and the backend only shows and closes sessions). The
+shared schema is extended per product, so `[on_open]` is defined here.
 
-### Module map (ported from kiosk unless marked new)
-
-| Module | Source | Notes |
-|---|---|---|
-| `git/` | kiosk-core `git/` | `scan_repos_streaming`, `walk_repos`, branch/remote/worktree listing, porcelain parsing, linked-worktree dedup (load-bearing: never hand a linked worktree path to herdr — `linked_worktree_source` error). Drop tmux-session helpers |
-| `event.rs` | kiosk-core | Keep `ReposFound`, `RepoEnriched`, `ScanComplete`, `BranchesLoaded`, `RemoteBranchesLoaded`, `GitFetchCompleted`, `WorktreeCreated`, `WorktreeRemoved`, `WorktreeRemoveFailed`, `GitError`. Drop all session/agent variants. Add open-state events (D7) |
-| `spawn.rs` | kiosk-tui | `spawn_repo_discovery`, `spawn_branch_loading`, `spawn_remote_branch_loading`, `spawn_git_fetch`, `spawn_work_parallel`; keep bounded pools (`ENRICHMENT_POOL_SIZE = 8`, `FETCH_POOL_SIZE = 4`) |
-| `state.rs` | kiosk-core | Slimmed. `BranchEntry` keeps `name`, `worktree_path`, `is_current`, `is_default`, `remote`; drops `has_session`/`session_activity_ts`/`agent_statuses`; gains `open_workspace_id: Option<String>` (D7) |
-| `herdr.rs` | new | `HerdrProvider` trait + CLI impl (via `HERDR_BIN_PATH`) + mock, in the same seam style as kiosk's `GitProvider`/`TmuxProvider`. Surface: `worktree_open`, `worktree_create`, `worktree_remove`, `worktree_list`, `workspace_list`. Parse `--json` responses; surface herdr error codes as typed errors |
-| `context.rs` | new | Parse `HERDR_PLUGIN_CONTEXT_JSON` (cwd for current-repo/branch highlighting — never `std::env::current_dir()`, which is the plugin dir) |
-| `config/` | kiosk-core | `search_dirs` (+depth, `~` expansion), `[keys]` (in-TUI only), slim `[theme]`. Env/fs access via injected getters for testability. Trust only absolute config paths. Drop `[session]`, `[agent]`, worktree-dir |
-| `keyboard.rs`, `keymap` | kiosk-core/tui | Slimmed to surviving actions |
-| components | kiosk-tui | `repo_list`, `branch_picker`, `search_bar`, `list_row`, `new_branch`, `dialog`, `error_toast`, `path_input`, `help`, `setup`, `theme` (slimmed per D11). Drop `sessions_view` |
+| Module | Notes |
+|---|---|
+| `herdr.rs` | The herdr TUI CLI (via `HERDR_BIN_PATH`) behind the `HerdrCli` seam, with a mock. Parses `--json` responses and surfaces herdr error codes as typed errors |
+| `herdr/tui.rs` | The herdr TUI backend: native worktrees through `worktree open/create/remove`, identity by herdr's own matching, the stale-route retry, and `[on_open]` |
+| `herdr/app.rs` | The Herdr app backend: managed worktrees in `~/.herdr/worktrees`, spaces matched to checkouts by their first terminal's live folder, notifications through the mod's notice file |
+| `herdr/on_open.rs` | Running `[on_open]` panes after either backend opens a new workspace |
+| `config.rs` | The `[on_open]` section, read beside kiosk's shared sections |
+| `context.rs`, `launch.rs` | Which host started kiosk, and the current folder from its context (`HERDR_PLUGIN_CONTEXT_JSON`, never `std::env::current_dir()`, which is the plugin dir) |
 
 ### Herdr interaction map (exact calls)
 
