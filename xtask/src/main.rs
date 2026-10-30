@@ -1,8 +1,18 @@
-mod readme;
-
 use std::{env, path::Path};
 
 use anyhow::{Result, bail};
+use herdr_kiosk::config::{Config, SOURCE};
+use kiosk_docgen::ProductDocs;
+
+const DOCS: ProductDocs<'static> = ProductDocs {
+    sources: &[SOURCE],
+    extension: "Config",
+    order: &["search_dirs", "include_non_git", "theme", "on_open", "keys"],
+    examples: &[(
+        "on_open",
+        "[on_open]\npanes = [\n  { command = \"hx\", direction = \"right\" },\n]",
+    )],
+};
 
 fn main() -> Result<()> {
     let mut args = env::args().skip(1);
@@ -25,9 +35,5 @@ fn main() -> Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("xtask has a workspace parent");
-    readme::generate(
-        &root.join("README.md"),
-        &root.join("src/config/mod.rs"),
-        check,
-    )
+    kiosk_docgen::generate::<Config>(&root.join("README.md"), &DOCS, check)
 }

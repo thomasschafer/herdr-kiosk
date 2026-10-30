@@ -1,9 +1,8 @@
-//! The Herdr desktop app as a backend. The app has no worktree API, so this
-//! provider does the Git work itself and drives the window through the
-//! `herdr-app` CLI (spaces, splits, focus) and herdr-core's `hc` (terminal
-//! folders). Kiosk workspaces map to app spaces: a space counts as showing a
-//! checkout when its first terminal's live folder is inside it, the rule the
-//! app's own `worktree` mod uses.
+//! The Herdr desktop app as a backend. The app has no worktree API, so kiosk does the
+//! Git work and this backend drives the window through the `herdr-app` CLI (spaces,
+//! splits, focus) and herdr-core's `hc` (terminal folders). Kiosk sessions are app
+//! spaces: a space counts as showing a checkout when its first terminal's live folder is
+//! inside it, the rule the app's own `worktree` mod uses.
 
 use std::{
     fs::{self, OpenOptions},
@@ -16,19 +15,23 @@ use std::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
-use super::{
-    HerdrError, HerdrProvider, OpenedWorktree, PaneInfo, PaneOpenError, PaneSplitRequest,
-    PaneSplitResponse, WorkspaceCreateResponse, WorkspaceInfo, WorkspaceWorktreeInfo,
-    WorktreeCreateRequest, WorktreeCreateResponse, WorktreeInfo, WorktreeListResponse,
-    WorktreeOpenResponse, WorktreeOpenTarget, WorktreeRemoveResponse, path_arg, require_absolute,
-    require_nonempty,
+use kiosk_core::{
+    backend::{
+        Backend, CheckoutState, ManagedWorktrees, Opened, WorktreePlacement, Worktrees,
+        identity::{LiveFolder, session_showing_checkout},
+    },
+    git::GitProvider,
 };
-use crate::git::{GitProvider, Worktree, is_dirty_worktree_requires_force};
+
+use super::{
+    HerdrError, PaneOpenError, PaneSplitRequest, PaneSplitResponse, focus_or_create_folder,
+    on_open, path_arg, require_absolute, require_nonempty,
+};
+use crate::config::OnOpenConfig;
 
 /// Where new checkouts go, below the user's home: the same place as the herdr
 /// TUI's default `worktrees.directory` and the app's `worktree` mod.
 pub const WORKTREE_ROOT: &str = ".herdr/worktrees";
-const DEFAULT_WORKTREE_SLUG: &str = "worktree";
 
 /// The two programs the app backend runs.
 pub trait AppHost: Send + Sync {
@@ -171,54 +174,66 @@ struct Notice<'a> {
     body: &'a str,
 }
 
-/// A space on this machine, with its panes in the app's order.
+/// A space on this machine, with the live folder of each of its panes' terminals in the
+/// app's order.
 #[derive(Debug, Clone)]
 struct Space {
     id: String,
-    panes: Vec<Pane>,
-}
-
-#[derive(Debug, Clone)]
-struct Pane {
-    id: String,
-    /// The terminal's live folder.
-    cwd: Option<PathBuf>,
+    folders: Vec<Option<PathBuf>>,
 }
 
 impl Space {
-    /// The pane that decides where the space is: its first one with a known folder.
-    fn first_pane(&self) -> Option<&Pane> {
-        self.panes.iter().find(|pane| pane.cwd.is_some())
-    }
-
+    /// Where the space is: the folder of its first pane with a known one.
     fn place(&self) -> Option<PathBuf> {
-        self.first_pane()
-            .and_then(|pane| pane.cwd.as_deref())
-            .map(crate::path::canonical_or_original)
+        self.folders
+            .iter()
+            .flatten()
+            .next()
+            .map(|folder| kiosk_core::path::canonical_or_original(folder))
     }
 }
 
-pub struct AppHerdrProvider {
+/// An app space id.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SpaceId(pub String);
+
+/// Each space with a known folder and where it is.
+fn space_places(spaces: &[Space]) -> Vec<LiveFolder<SpaceId>> {
+    spaces
+        .iter()
+        .filter_map(|space| {
+            Some(LiveFolder {
+                session: SpaceId(space.id.clone()),
+                folder: space.place()?,
+            })
+        })
+        .collect()
+}
+
+pub struct HerdrApp {
     host: Arc<dyn AppHost>,
     git: Arc<dyn GitProvider>,
-    worktree_root: PathBuf,
+    placement: WorktreePlacement,
     notice_file: PathBuf,
+    on_open: OnOpenConfig,
 }
 
-impl AppHerdrProvider {
-    /// `worktree_root` holds new checkouts (`<root>/<repo>/<branch slug>`), and
-    /// notifications are appended to `notice_file` as JSON lines for the app mod to show.
+impl HerdrApp {
+    /// New checkouts go in `placement`, and notifications are appended to `notice_file` as
+    /// JSON lines for the app mod to show.
     pub fn new(
         host: Arc<dyn AppHost>,
         git: Arc<dyn GitProvider>,
-        worktree_root: PathBuf,
+        placement: WorktreePlacement,
         notice_file: PathBuf,
+        on_open: OnOpenConfig,
     ) -> Self {
         Self {
             host,
             git,
-            worktree_root,
+            placement,
             notice_file,
+            on_open,
         }
     }
 
@@ -247,36 +262,34 @@ impl AppHerdrProvider {
     /// The spaces on this machine. Spaces on other machines are left out: their
     /// folders are not paths here.
     fn spaces(&self) -> Result<Vec<Space>, HerdrError> {
-        let spaces: Vec<(String, Vec<(String, String)>)> = self
+        let spaces: Vec<(String, Vec<String>)> = self
             .list()?
             .spaces
             .into_iter()
             .filter(|space| space.machine.is_none())
             .map(|space| {
-                let panes = space
+                let terminals = space
                     .tabs
                     .into_iter()
                     .flat_map(|tab| tab.terminals)
-                    .filter_map(|terminal| Some((terminal.pane?, terminal.terminal)))
+                    .filter(|terminal| terminal.pane.is_some())
+                    .map(|terminal| terminal.terminal)
                     .collect();
-                (space.id, panes)
+                (space.id, terminals)
             })
             .collect();
         let terminals: Vec<&str> = spaces
             .iter()
-            .flat_map(|(_, panes)| panes.iter().map(|(_, terminal)| terminal.as_str()))
+            .flat_map(|(_, terminals)| terminals.iter().map(String::as_str))
             .collect();
         let mut folders = self.live_folders(&terminals)?.into_iter();
         Ok(spaces
             .into_iter()
-            .map(|(id, panes)| Space {
+            .map(|(id, terminals)| Space {
                 id,
-                panes: panes
-                    .into_iter()
-                    .map(|(id, _)| Pane {
-                        id,
-                        cwd: folders.next().expect("a folder for every terminal"),
-                    })
+                folders: terminals
+                    .iter()
+                    .map(|_| folders.next().expect("a folder for every terminal"))
                     .collect(),
             })
             .collect())
@@ -309,6 +322,7 @@ impl AppHerdrProvider {
     /// Makes a space whose first terminal starts in `folder`, shown at once. It is
     /// left unnamed so the app names it after its live folder, as its own
     /// `worktree` mod does (which also nests worktree spaces under their repo).
+    /// Returns the space and its first pane.
     fn open_space(&self, folder: &Path) -> Result<(String, String), HerdrError> {
         let folder = path_arg("folder", folder)?;
         let created: SpaceCreated = self.command_json("space.new", &json!({ "folder": folder }))?;
@@ -334,6 +348,17 @@ impl AppHerdrProvider {
         require_nonempty("space id", id)?;
         self.command("space.select", &json!({ "id": id }))?;
         Ok(())
+    }
+
+    /// One `pane.split` that starts the new terminal in the checkout with the
+    /// command typed ahead into its shell: the shell runs it as soon as it is
+    /// ready, keeps it in its history, and stays when it ends.
+    fn pane_open(
+        &self,
+        request: &PaneSplitRequest,
+        command: &str,
+    ) -> Result<PaneSplitResponse, PaneOpenError> {
+        self.split(request, command).map_err(PaneOpenError::Split)
     }
 
     fn split(
@@ -368,313 +393,112 @@ impl AppHerdrProvider {
         })
     }
 
-    fn worktrees(&self, cwd: &Path) -> Result<Vec<Worktree>, HerdrError> {
+    fn checkout_paths(&self, repo: &Path) -> Result<Vec<PathBuf>, HerdrError> {
         self.git
-            .list_worktrees(cwd)
-            .map(|listed| listed.items)
+            .list_worktrees(repo)
+            .map(|listed| {
+                listed
+                    .items
+                    .into_iter()
+                    .map(|worktree| worktree.path)
+                    .collect()
+            })
             .map_err(|error| git_error(&error))
     }
 }
 
-/// The space showing `checkout`: its first terminal is inside it, and not inside a
-/// deeper checkout of the same repository.
-fn space_showing<'a>(spaces: &'a [Space], checkout: &Path, all: &[Worktree]) -> Option<&'a Space> {
-    let checkout = crate::path::canonical_or_original(checkout);
-    let deeper: Vec<PathBuf> = all
-        .iter()
-        .map(|worktree| crate::path::canonical_or_original(&worktree.path))
-        .filter(|path| path != &checkout && crate::path::starts_with(path, &checkout))
-        .collect();
-    spaces.iter().find(|space| {
-        space.place().is_some_and(|place| {
-            crate::path::starts_with(&place, &checkout)
-                && !deeper
-                    .iter()
-                    .any(|path| crate::path::starts_with(&place, path))
-        })
-    })
-}
+impl Backend for HerdrApp {
+    type SessionId = SpaceId;
+    type Error = HerdrError;
 
-fn opened(root_pane_id: String, path: &Path) -> Result<OpenedWorktree, HerdrError> {
-    Ok(OpenedWorktree {
-        root_pane_id,
-        path: path_arg("worktree path", path)?,
-    })
-}
-
-/// The checkout of `worktrees` that contains `place`, the deepest one if they nest.
-fn checkout_containing<'a>(worktrees: &'a [Worktree], place: &Path) -> Option<&'a Worktree> {
-    worktrees
-        .iter()
-        .filter(|worktree| {
-            crate::path::starts_with(place, &crate::path::canonical_or_original(&worktree.path))
-        })
-        .max_by_key(|worktree| worktree.path.components().count())
-}
-
-/// The folder name for a branch's checkout, as the herdr TUI makes it.
-pub fn branch_slug(branch: &str) -> String {
-    let mut slug = String::new();
-    let mut last_was_dash = false;
-    for character in branch.chars() {
-        if character.is_ascii_alphanumeric() {
-            slug.push(character.to_ascii_lowercase());
-            last_was_dash = false;
-        } else if !last_was_dash {
-            slug.push('-');
-            last_was_dash = true;
-        }
-    }
-    let slug = slug.trim_matches('-');
-    if slug.is_empty() {
-        DEFAULT_WORKTREE_SLUG.into()
-    } else {
-        slug.into()
-    }
-}
-
-impl HerdrProvider for AppHerdrProvider {
-    fn worktree_open(
-        &self,
-        cwd: &Path,
-        target: &WorktreeOpenTarget,
-        focus: bool,
-    ) -> Result<WorktreeOpenResponse, HerdrError> {
-        require_absolute("cwd", cwd)?;
-        require_focus(focus)?;
-        let worktrees = self.worktrees(cwd)?;
-        let checkout = match target {
-            WorktreeOpenTarget::Path(path) => {
-                require_absolute("worktree path", path)?;
-                let path = crate::path::canonical_or_original(path);
-                worktrees.iter().find(|worktree| {
-                    crate::path::equivalent(
-                        &crate::path::canonical_or_original(&worktree.path),
-                        &path,
-                    )
-                })
-            }
-            WorktreeOpenTarget::Branch(branch) => {
-                require_nonempty("branch", branch)?;
-                worktrees
-                    .iter()
-                    .find(|worktree| worktree.branch.as_deref() == Some(branch.as_str()))
-            }
-        }
-        .ok_or_else(|| {
-            HerdrError::WorktreeNotFound(match target {
-                WorktreeOpenTarget::Path(path) => format!(
-                    "{} is not a checkout of this repository",
-                    crate::path::display(path)
-                ),
-                WorktreeOpenTarget::Branch(branch) => format!("no checkout has {branch}"),
-            })
-        })?;
-
-        let spaces = self.spaces()?;
-        if let Some(space) = space_showing(&spaces, &checkout.path, &worktrees) {
-            self.select_space(&space.id)?;
-            let root = space
-                .first_pane()
-                .expect("a space showing a checkout has a pane with a folder");
-            return Ok(WorktreeOpenResponse {
-                opened: Some(opened(root.id.clone(), &checkout.path)?),
-                already_open: Some(true),
-                warning: None,
-            });
-        }
-        let (_, pane) = self.open_space(&checkout.path)?;
-        Ok(WorktreeOpenResponse {
-            opened: Some(opened(pane, &checkout.path)?),
-            already_open: Some(false),
-            warning: None,
-        })
-    }
-
-    fn worktree_create(
-        &self,
-        request: &WorktreeCreateRequest,
-    ) -> Result<WorktreeCreateResponse, HerdrError> {
-        require_absolute("cwd", &request.cwd)?;
-        require_nonempty("branch", &request.branch)?;
-        require_focus(request.focus)?;
-        let repo = self
-            .git
-            .main_checkout(&request.cwd)
-            .map_err(|error| git_error(&error))?
-            .ok_or_else(|| {
-                HerdrError::NotGitWorktree(format!(
-                    "{} is not in a Git repository",
-                    crate::path::display(&request.cwd)
-                ))
-            })?;
-        let path = if let Some(path) = &request.path {
-            require_absolute("worktree path", path)?;
-            path.clone()
-        } else {
-            let repo_name = repo.file_name().ok_or_else(|| {
-                HerdrError::InvalidArgument(format!(
-                    "repository {} has no folder name",
-                    crate::path::display(&repo)
-                ))
-            })?;
-            self.worktree_root
-                .join(repo_name)
-                .join(branch_slug(&request.branch))
-        };
-        if let Some(base) = &request.base {
-            require_nonempty("base", base)?;
-        }
-        self.git
-            .add_worktree(&repo, &path, &request.branch, request.base.as_deref())
-            .map_err(|error| HerdrError::WorktreeCreateFailed(format!("{error:#}")))?;
-        let (_, pane) = self.open_space(&path)?;
-        Ok(WorktreeCreateResponse {
-            opened: Some(opened(pane, &path)?),
-            warning: None,
-        })
-    }
-
-    fn worktree_remove(
-        &self,
-        workspace_id: &str,
-        force: bool,
-    ) -> Result<WorktreeRemoveResponse, HerdrError> {
-        require_nonempty("space id", workspace_id)?;
-        let spaces = self.spaces()?;
-        let space = spaces
-            .iter()
-            .find(|space| space.id == workspace_id)
-            .ok_or_else(|| HerdrError::Other {
-                code: "space_not_found".into(),
-                message: format!("no space {workspace_id} on this machine"),
-            })?;
-        let place = space.place().ok_or_else(|| {
-            HerdrError::NotGitWorktree(format!("space {workspace_id} has no known folder"))
-        })?;
-        let worktrees = self.worktrees(&place)?;
-        let (main, linked) = worktrees.split_first().ok_or_else(|| {
-            HerdrError::InvalidResponse("git listed no worktrees for the space".into())
-        })?;
-        let checkout = checkout_containing(linked, &place).ok_or_else(|| {
-            HerdrError::NotGitWorktree(format!(
-                "{} is the repository's main checkout, not a linked worktree",
-                crate::path::display(&main.path)
-            ))
-        })?;
-        // The checkout goes first: a refusal (uncommitted changes) leaves the space as it was.
-        self.git
-            .remove_worktree(&main.path, &checkout.path, force)
-            .map_err(|error| {
-                if is_dirty_worktree_requires_force(&error) {
-                    HerdrError::DirtyWorktreeRequiresForce(error.to_string())
-                } else {
-                    HerdrError::Other {
-                        code: "worktree_remove_failed".into(),
-                        message: format!("{error:#}"),
-                    }
-                }
-            })?;
-        let warning = self
-            .command(
-                "space.close",
-                &json!({ "id": workspace_id, "confirmed": true }),
-            )
-            .err()
-            .map(|error| format!("checkout was removed, but its space did not close: {error}"));
-        Ok(WorktreeRemoveResponse { warning })
-    }
-
-    fn worktree_list(&self, cwd: &Path) -> Result<WorktreeListResponse, HerdrError> {
-        require_absolute("cwd", cwd)?;
-        let worktrees = self.worktrees(cwd)?;
-        let spaces = self.spaces()?;
-        let worktrees = worktrees
-            .iter()
-            .map(|worktree| {
-                Ok(WorktreeInfo {
-                    path: path_arg("worktree path", &worktree.path)?,
-                    branch: worktree.branch.clone(),
-                    open_workspace_id: space_showing(&spaces, &worktree.path, &worktrees)
-                        .map(|space| space.id.clone()),
-                })
-            })
-            .collect::<Result<_, HerdrError>>()?;
-        Ok(WorktreeListResponse { worktrees })
-    }
-
-    fn workspace_list(&self) -> Result<Vec<WorkspaceInfo>, HerdrError> {
+    fn open_repos(&self) -> Result<Vec<PathBuf>, HerdrError> {
         self.spaces()?
             .iter()
-            .map(|space| {
-                let repo = match space.place() {
-                    Some(place) => self
-                        .git
-                        .main_checkout(&place)
-                        .map_err(|error| git_error(&error))?,
-                    None => None,
-                };
-                let worktree = repo
-                    .map(|repo| {
-                        Ok::<_, HerdrError>(WorkspaceWorktreeInfo {
-                            repo_root: path_arg("repository root", &repo)?,
-                        })
-                    })
-                    .transpose()?;
-                Ok(WorkspaceInfo { worktree })
+            .filter_map(Space::place)
+            .filter_map(|place| {
+                self.git
+                    .main_checkout(&place)
+                    .map_err(|error| git_error(&error))
+                    .transpose()
             })
             .collect()
     }
 
-    fn pane_list(&self) -> Result<Vec<PaneInfo>, HerdrError> {
-        self.spaces()?
+    fn open_folders(&self) -> Result<Vec<PathBuf>, HerdrError> {
+        Ok(self
+            .spaces()?
+            .into_iter()
+            .flat_map(|space| space.folders)
+            .flatten()
+            .collect())
+    }
+
+    fn checkouts(&self, repo: &Path) -> Result<Vec<CheckoutState<SpaceId>>, HerdrError> {
+        require_absolute("repository", repo)?;
+        let checkouts = self.checkout_paths(repo)?;
+        let places = space_places(&self.spaces()?);
+        Ok(checkouts
+            .iter()
+            .map(|path| CheckoutState {
+                path: path.clone(),
+                session: session_showing_checkout(&places, path, &checkouts).cloned(),
+            })
+            .collect())
+    }
+
+    fn open_checkout(&self, repo: &Path, checkout: &Path) -> Result<Opened, HerdrError> {
+        require_absolute("checkout", checkout)?;
+        let checkouts = self.checkout_paths(repo)?;
+        let places = space_places(&self.spaces()?);
+        if let Some(space) = session_showing_checkout(&places, checkout, &checkouts) {
+            self.select_space(&space.0)?;
+            return Ok(Opened::default());
+        }
+        // Git's spelling of the path, which the app names the space after.
+        let canonical = kiosk_core::path::canonical_or_original(checkout);
+        let checkout = checkouts
+            .iter()
+            .find(|path| {
+                kiosk_core::path::equivalent(
+                    &kiosk_core::path::canonical_or_original(path),
+                    &canonical,
+                )
+            })
+            .map_or(checkout, PathBuf::as_path);
+        let (_, pane) = self.open_space(checkout)?;
+        Ok(Opened {
+            warning: on_open::apply(&self.on_open, &pane, checkout, |request, command| {
+                self.pane_open(request, command)
+            }),
+        })
+    }
+
+    fn open_folder(&self, folder: &Path) -> Result<Opened, HerdrError> {
+        require_absolute("folder", folder)?;
+        let panes: Vec<_> = self
+            .spaces()?
             .into_iter()
             .flat_map(|space| {
-                space.panes.into_iter().map(move |pane| {
-                    Ok(PaneInfo {
-                        workspace_id: space.id.clone(),
-                        cwd: pane
-                            .cwd
-                            .as_deref()
-                            .map(|cwd| path_arg("terminal folder", cwd))
-                            .transpose()?,
-                        foreground_cwd: None,
+                space
+                    .folders
+                    .into_iter()
+                    .flatten()
+                    .map(move |folder| LiveFolder {
+                        session: space.id.clone(),
+                        folder,
                     })
-                })
             })
-            .collect()
+            .collect();
+        let warning = focus_or_create_folder(
+            &panes,
+            folder,
+            |space| self.select_space(space),
+            || self.open_space(folder).map(|_| None),
+        )?;
+        Ok(Opened { warning })
     }
 
-    fn workspace_create(
-        &self,
-        cwd: &Path,
-        focus: bool,
-    ) -> Result<WorkspaceCreateResponse, HerdrError> {
-        require_absolute("cwd", cwd)?;
-        require_focus(focus)?;
-        let (space, _) = self.open_space(cwd)?;
-        Ok(WorkspaceCreateResponse {
-            workspace_id: Some(space),
-            warning: None,
-        })
-    }
-
-    fn workspace_focus(&self, workspace_id: &str) -> Result<(), HerdrError> {
-        self.select_space(workspace_id)
-    }
-
-    /// One `pane.split` that starts the new terminal in the checkout with the
-    /// command typed ahead into its shell: the shell runs it as soon as it is
-    /// ready, keeps it in its history, and stays when it ends.
-    fn pane_open(
-        &self,
-        request: &PaneSplitRequest,
-        command: &str,
-    ) -> Result<PaneSplitResponse, PaneOpenError> {
-        self.split(request, command).map_err(PaneOpenError::Split)
-    }
-
-    fn notification_show(&self, title: &str, body: &str) -> Result<(), HerdrError> {
+    fn notify(&self, title: &str, body: &str) -> Result<(), HerdrError> {
         require_nonempty("notification title", title)?;
         require_nonempty("notification body", body)?;
         let notice_error = |error: std::io::Error| {
@@ -696,6 +520,22 @@ impl HerdrProvider for AppHerdrProvider {
             .and_then(|mut file| file.write_all(line.as_bytes()))
             .map_err(notice_error)
     }
+
+    fn worktrees(&self) -> Worktrees<'_, Self> {
+        Worktrees::Managed(self)
+    }
+}
+
+impl ManagedWorktrees<Self> for HerdrApp {
+    fn placement(&self) -> &WorktreePlacement {
+        &self.placement
+    }
+
+    fn close(&self, space: &SpaceId) -> Result<(), HerdrError> {
+        require_nonempty("space id", &space.0)?;
+        self.command("space.close", &json!({ "id": space.0, "confirmed": true }))?;
+        Ok(())
+    }
 }
 
 fn parse<T: DeserializeOwned>(output: &[u8], what: &str) -> Result<T, HerdrError> {
@@ -711,17 +551,6 @@ fn git_error(error: &anyhow::Error) -> HerdrError {
     HerdrError::Other {
         code: "git".into(),
         message: format!("{error:#}"),
-    }
-}
-
-/// Kiosk always shows what it opens, and the app has no way not to.
-fn require_focus(focus: bool) -> Result<(), HerdrError> {
-    if focus {
-        Ok(())
-    } else {
-        Err(HerdrError::InvalidArgument(
-            "the Herdr app always shows a space it opens".into(),
-        ))
     }
 }
 

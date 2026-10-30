@@ -6,10 +6,17 @@ use std::{
 
 use serde::{Deserialize, de::DeserializeOwned};
 
+use kiosk_core::backend::identity::{LiveFolder, session_in_folder};
+
 use crate::config::OnOpenPaneDirection;
 
 pub mod app;
+#[cfg(test)]
 pub mod mock;
+mod on_open;
+pub mod tui;
+
+pub use tui::HerdrTui;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct WorkspaceWorktreeInfo {
@@ -141,9 +148,9 @@ impl fmt::Display for HerdrError {
             Self::PluginPaneOpenFailed(message) => {
                 write!(formatter, "plugin_pane_open_failed: {message}")
             }
-            Self::WorktreeOperationInProgress(message) => {
-                write!(formatter, "worktree_operation_in_progress: {message}")
-            }
+            Self::WorktreeOperationInProgress(_) => formatter.write_str(
+                "Another worktree operation is already in progress; wait for it to finish and try again.",
+            ),
             Self::StaleWorktreeOperation(message) => {
                 write!(formatter, "stale_worktree_operation: {message}")
             }
@@ -175,7 +182,8 @@ impl fmt::Display for HerdrError {
 
 impl std::error::Error for HerdrError {}
 
-pub trait HerdrProvider: Send + Sync {
+/// The herdr TUI's CLI, as [`HerdrTui`] uses it.
+pub trait HerdrCli: Send + Sync + 'static {
     fn worktree_open(
         &self,
         cwd: &Path,
@@ -211,11 +219,11 @@ pub trait HerdrProvider: Send + Sync {
 }
 
 #[derive(Debug, Clone)]
-pub struct CliHerdrProvider {
+pub struct CliHerdr {
     binary_path: PathBuf,
 }
 
-impl CliHerdrProvider {
+impl CliHerdr {
     pub fn new(binary_path: impl Into<PathBuf>) -> Self {
         Self {
             binary_path: binary_path.into(),
@@ -276,7 +284,7 @@ impl CliHerdrProvider {
     }
 }
 
-impl CliHerdrProvider {
+impl CliHerdr {
     pub fn pane_split(&self, request: &PaneSplitRequest) -> Result<PaneSplitResponse, HerdrError> {
         require_nonempty("pane id", &request.pane_id)?;
         require_absolute("cwd", &request.cwd)?;
@@ -324,7 +332,7 @@ impl CliHerdrProvider {
     }
 }
 
-impl HerdrProvider for CliHerdrProvider {
+impl HerdrCli for CliHerdr {
     fn worktree_open(
         &self,
         cwd: &Path,
@@ -515,6 +523,20 @@ impl HerdrProvider for CliHerdrProvider {
             body.into(),
         ])?;
         Ok(())
+    }
+}
+
+/// Focuses the session whose folder is `folder`, or creates one there. Returns the
+/// creation's warning.
+pub(crate) fn focus_or_create_folder<S, E>(
+    sessions: &[LiveFolder<S>],
+    folder: &Path,
+    focus: impl FnOnce(&S) -> Result<(), E>,
+    create: impl FnOnce() -> Result<Option<String>, E>,
+) -> Result<Option<String>, E> {
+    match session_in_folder(sessions, folder) {
+        Some(session) => focus(session).map(|()| None),
+        None => create(),
     }
 }
 
@@ -856,7 +878,7 @@ mod tests {
             r#"{{"id":"list","result":{{"type":"workspace_list","workspaces":[{WORKSPACE}]}}}}"#
         );
         let (binary, args_file) = fake_herdr(&temp, &response);
-        let provider = CliHerdrProvider::new(binary);
+        let provider = CliHerdr::new(binary);
         assert_eq!(retry_fake_herdr(|| provider.workspace_list()).len(), 1);
         assert_eq!(
             fs::read_to_string(args_file).unwrap().trim(),
@@ -871,7 +893,7 @@ mod tests {
         let response =
             r#"{"result":{"type":"pane_list","panes":[{"workspace_id":"w_1","cwd":"/folder"}]}}"#;
         let (binary, args_file) = fake_herdr(&temp, response);
-        let provider = CliHerdrProvider::new(binary);
+        let provider = CliHerdr::new(binary);
         let panes = retry_fake_herdr(|| provider.pane_list());
         assert_eq!(panes[0].cwd.as_deref(), Some("/folder"));
         assert_eq!(fs::read_to_string(args_file).unwrap().trim(), "pane list");
@@ -885,7 +907,7 @@ mod tests {
             r#"{{"id":"list","result":{{"type":"worktree_list","source":{{"repo_key":"/repo/.git","repo_name":"repo","repo_root":"/repo","source_checkout_path":"/repo"}},"worktrees":[{WORKTREE_CLOSED}]}}}}"#
         );
         let (binary, args_file) = fake_herdr(&temp, &response);
-        let provider = CliHerdrProvider::new(binary);
+        let provider = CliHerdr::new(binary);
         retry_fake_herdr(|| provider.worktree_list(Path::new("/repo")));
         assert_eq!(
             fs::read_to_string(args_file).unwrap().trim(),
@@ -902,7 +924,7 @@ mod tests {
 
         let path_temp = TempDir::new().unwrap();
         let (binary, args_file) = fake_herdr(&path_temp, &response);
-        let provider = CliHerdrProvider::new(binary);
+        let provider = CliHerdr::new(binary);
         retry_fake_herdr(|| {
             provider.worktree_open(
                 Path::new("/repo"),
@@ -917,7 +939,7 @@ mod tests {
 
         let branch_temp = TempDir::new().unwrap();
         let (binary, args_file) = fake_herdr(&branch_temp, &response);
-        let provider = CliHerdrProvider::new(binary);
+        let provider = CliHerdr::new(binary);
         retry_fake_herdr(|| {
             provider.worktree_open(
                 Path::new("/repo"),
@@ -939,7 +961,7 @@ mod tests {
         );
         let create_temp = TempDir::new().unwrap();
         let (binary, args_file) = fake_herdr(&create_temp, &create_response);
-        let provider = CliHerdrProvider::new(binary);
+        let provider = CliHerdr::new(binary);
         retry_fake_herdr(|| {
             provider.worktree_create(&WorktreeCreateRequest {
                 cwd: "/repo".into(),
@@ -957,7 +979,7 @@ mod tests {
         let remove_response = r#"{"id":"remove","result":{"type":"worktree_removed","workspace_id":"w_2","path":"/worktrees/repo/feature","forced":true}}"#;
         let remove_temp = TempDir::new().unwrap();
         let (binary, args_file) = fake_herdr(&remove_temp, remove_response);
-        let provider = CliHerdrProvider::new(binary);
+        let provider = CliHerdr::new(binary);
         retry_fake_herdr(|| provider.worktree_remove("w_2", true));
         assert_eq!(
             fs::read_to_string(args_file).unwrap().trim(),
@@ -973,7 +995,7 @@ mod tests {
             r#"{{"result":{{"type":"workspace_created","workspace":{WORKSPACE},"tab":{{}},"root_pane":{ROOT_PANE}}}}}"#
         );
         let (binary, args_file) = fake_herdr(&create_temp, &create_response);
-        let provider = CliHerdrProvider::new(binary);
+        let provider = CliHerdr::new(binary);
         let response =
             retry_fake_herdr(|| provider.workspace_create(Path::new("/plain folder"), true));
         assert_eq!(response.workspace_id.as_deref(), Some("w_1"));
@@ -987,7 +1009,7 @@ mod tests {
             &focus_temp,
             r#"{"result":{"type":"workspace_info","workspace":{"workspace_id":"w_1"}}}"#,
         );
-        let provider = CliHerdrProvider::new(binary);
+        let provider = CliHerdr::new(binary);
         retry_fake_herdr(|| provider.workspace_focus("w_1"));
         assert_eq!(
             fs::read_to_string(args_file).unwrap().trim(),
@@ -1001,7 +1023,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let response = r#"{"result":{"type":"worktree_opened","root_pane":{"pane_id":"p_root","future_pane_field":1},"worktree":{"path":"/repo","renamed_label":"repo"},"already_open":false,"future_result_field":true}}"#;
         let (binary, _) = fake_herdr(&temp, response);
-        let provider = CliHerdrProvider::new(binary);
+        let provider = CliHerdr::new(binary);
 
         let opened = retry_fake_herdr(|| {
             provider.worktree_open(
@@ -1024,7 +1046,7 @@ mod tests {
             &success_temp,
             r#"{"result":{"type":"worktree_created","workspace_id":"w_1"}}"#,
         );
-        let provider = CliHerdrProvider::new(binary);
+        let provider = CliHerdr::new(binary);
         let response = retry_fake_herdr(|| {
             provider.worktree_create(&WorktreeCreateRequest {
                 cwd: "/repo".into(),
@@ -1044,7 +1066,7 @@ mod tests {
             &error_temp,
             r#"{"error":{"code":"worktree_create_failed","message":"disk full"}}"#,
         );
-        let provider = CliHerdrProvider::new(binary);
+        let provider = CliHerdr::new(binary);
         let error = provider
             .worktree_create(&WorktreeCreateRequest {
                 cwd: "/repo".into(),
@@ -1065,7 +1087,7 @@ mod tests {
             &temp,
             r#"{"result":{"type":"worktree_removed","future_field":true}}"#,
         );
-        let provider = CliHerdrProvider::new(binary);
+        let provider = CliHerdr::new(binary);
 
         let response = retry_fake_herdr(|| provider.worktree_remove("w_1", false));
         assert!(response.warning.is_none());
@@ -1076,7 +1098,7 @@ mod tests {
     fn cli_builds_exact_notification_call_without_decoding_its_response() {
         let temp = TempDir::new().unwrap();
         let (binary, args_file) = fake_herdr(&temp, "future non-json response");
-        let provider = CliHerdrProvider::new(binary);
+        let provider = CliHerdr::new(binary);
 
         retry_fake_herdr(|| provider.notification_show("herdr-kiosk", "on_open failed"));
         assert_eq!(
@@ -1093,7 +1115,7 @@ mod tests {
             &split_temp,
             r#"{"id":"split","result":{"type":"pane_info","pane":{"pane_id":"p_2"}}}"#,
         );
-        let provider = CliHerdrProvider::new(binary);
+        let provider = CliHerdr::new(binary);
         let response = retry_fake_herdr(|| {
             provider.pane_split(&PaneSplitRequest {
                 pane_id: "p_root".into(),
@@ -1118,7 +1140,7 @@ mod tests {
             &temp,
             r#"{"id":"split","result":{"type":"pane_info","pane":{"pane_id":"p_2"}}}"#,
         );
-        let provider = CliHerdrProvider::new(binary);
+        let provider = CliHerdr::new(binary);
         let request = PaneSplitRequest {
             pane_id: "p_root".into(),
             direction: OnOpenPaneDirection::Down,
@@ -1152,7 +1174,7 @@ mod tests {
             r#"{"error":{"code":"pane_split_failed","message":"too small"}}"#,
             1,
         );
-        let provider = CliHerdrProvider::new(binary);
+        let provider = CliHerdr::new(binary);
         assert_eq!(
             provider.pane_open(&request, "hx ."),
             Err(PaneOpenError::Split(HerdrError::Other {
@@ -1167,7 +1189,7 @@ mod tests {
     fn cli_pane_run_accepts_empty_stdout_and_surfaces_error_envelopes() {
         let run_temp = TempDir::new().unwrap();
         let (binary, args_file) = fake_herdr_with_output(&run_temp, "", "", 0);
-        let provider = CliHerdrProvider::new(binary);
+        let provider = CliHerdr::new(binary);
         retry_fake_herdr(|| provider.pane_run("p_2", "printf ONOPEN_OK"));
         assert_eq!(
             fs::read_to_string(args_file).unwrap().trim(),
@@ -1181,7 +1203,7 @@ mod tests {
             r#"{"error":{"code":"pane_run_failed","message":"pane unavailable"}}"#,
             1,
         );
-        let provider = CliHerdrProvider::new(binary);
+        let provider = CliHerdr::new(binary);
         assert_eq!(
             provider.pane_run("p_2", "printf ONOPEN_OK"),
             Err(HerdrError::Other {
@@ -1193,7 +1215,7 @@ mod tests {
 
     #[test]
     fn cli_rejects_relative_paths_before_invocation() {
-        let provider = CliHerdrProvider::new("/does/not/exist");
+        let provider = CliHerdr::new("/does/not/exist");
         assert!(matches!(
             provider.worktree_list(Path::new("relative")),
             Err(HerdrError::InvalidArgument(_))
@@ -1214,7 +1236,7 @@ mod tests {
             r#"{{"id":"open","result":{{"type":"worktree_opened","workspace":{WORKSPACE_WITH_WORKTREE},"root_pane":{ROOT_PANE},"worktree":{WORKTREE_OPEN},"already_open":false}}}}"#
         );
         let (binary, args_file) = fake_herdr(&temp, &response);
-        let provider = CliHerdrProvider::new(binary);
+        let provider = CliHerdr::new(binary);
         let path = PathBuf::from(OsString::from_vec(b"/repo/invalid-\xff".to_vec()));
 
         let error = provider

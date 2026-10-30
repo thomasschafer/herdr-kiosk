@@ -5,19 +5,20 @@ use std::{
     time::Duration,
 };
 
-use serde_json::{Value, json};
-use tempfile::TempDir;
-
-use super::*;
-use crate::{
-    config::{OnOpenConfig, OnOpenPaneConfig, OnOpenPaneDirection},
-    event::AppEvent,
+use kiosk_core::{
+    backend::KnownCheckout,
+    event::{AppEvent, WorktreeRemovalOutcome},
     git::{
         CliGitProvider,
         test_fixtures::{repo_fixture, run_test_git},
     },
-    spawn::{EventSender, spawn_open_repo},
+    spawn::{EventSender, spawn_create_new_branch, spawn_open_branch, spawn_worktree_removal},
 };
+use serde_json::{Value, json};
+use tempfile::TempDir;
+
+use super::*;
+use crate::config::{OnOpenConfig, OnOpenPaneConfig, OnOpenPaneDirection};
 
 #[derive(Debug, Clone)]
 struct FakePane {
@@ -261,25 +262,34 @@ struct Fixture {
     temp: TempDir,
     repo: PathBuf,
     app: Arc<FakeApp>,
-    provider: AppHerdrProvider,
+    backend: Arc<HerdrApp>,
+}
+
+fn backend(app: &Arc<FakeApp>, temp: &Path, on_open: OnOpenConfig) -> HerdrApp {
+    HerdrApp::new(
+        Arc::clone(app) as Arc<dyn AppHost>,
+        Arc::new(CliGitProvider),
+        WorktreePlacement::new(temp.join("worktrees")).unwrap(),
+        temp.join("notices").join("kiosk.jsonl"),
+        on_open,
+    )
 }
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_on_open(OnOpenConfig::default())
+    }
+
+    fn with_on_open(on_open: OnOpenConfig) -> Self {
         let temp = TempDir::new().unwrap();
         let repo = repo_fixture(temp.path(), "repo");
         let app = Arc::new(FakeApp::default());
-        let provider = AppHerdrProvider::new(
-            Arc::clone(&app) as Arc<dyn AppHost>,
-            Arc::new(CliGitProvider),
-            temp.path().join("worktrees"),
-            temp.path().join("notices").join("kiosk.jsonl"),
-        );
+        let backend = Arc::new(backend(&app, temp.path(), on_open));
         Self {
             temp,
             repo,
             app,
-            provider,
+            backend,
         }
     }
 
@@ -295,35 +305,63 @@ impl Fixture {
     fn worktree_root(&self) -> PathBuf {
         self.temp.path().join("worktrees")
     }
+
+    fn checkout_state(&self, path: &Path) -> CheckoutState<SpaceId> {
+        self.backend
+            .checkouts(&self.repo)
+            .unwrap()
+            .into_iter()
+            .find(|state| canonical(&state.path) == canonical(path))
+            .unwrap_or_else(|| panic!("{} is not a checkout", path.display()))
+    }
+
+    /// Runs one of kiosk's branch operations against this backend and returns its event.
+    fn run(
+        &self,
+        start: impl FnOnce(&Arc<dyn GitProvider>, &Arc<HerdrApp>, &EventSender),
+    ) -> AppEvent {
+        let git: Arc<dyn GitProvider> = Arc::new(CliGitProvider);
+        let (tx, rx) = mpsc::channel();
+        let sender = EventSender::new(tx, Arc::new(AtomicBool::new(false)));
+        start(&git, &self.backend, &sender);
+        rx.recv_timeout(Duration::from_secs(10)).unwrap()
+    }
+
+    fn remove(&self, branch: &str, checkout: &Path, force: bool) -> WorktreeRemovalOutcome {
+        let event = self.run(|git, backend, sender| {
+            spawn_worktree_removal(
+                git,
+                backend,
+                sender,
+                crate::PRODUCT.backend_name,
+                self.repo.clone(),
+                branch.into(),
+                checkout.into(),
+                force,
+            );
+        });
+        let AppEvent::WorktreeRemovalFinished { outcome, .. } = event else {
+            panic!("expected a removal, got {event:?}");
+        };
+        outcome
+    }
 }
 
 fn canonical(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap()
 }
 
-fn same_path(left: &str, right: &Path) -> bool {
-    canonical(Path::new(left)) == canonical(right)
-}
-
 #[test]
 fn opening_a_closed_repo_makes_an_unnamed_space_in_it() {
     let fixture = Fixture::new();
 
-    let response = fixture
-        .provider
-        .worktree_open(
-            &fixture.repo,
-            &WorktreeOpenTarget::Path(fixture.repo.clone()),
-            true,
-        )
+    let opened = fixture
+        .backend
+        .open_checkout(&fixture.repo, &fixture.repo)
         .unwrap();
 
-    assert_eq!(response.already_open, Some(false));
-    let spaces = fixture.app.spaces();
-    assert_eq!(spaces.len(), 1);
-    let opened = response.opened.unwrap();
-    assert_eq!(opened.root_pane_id, spaces[0].panes[0].pane);
-    assert!(same_path(&opened.path, &fixture.repo));
+    assert_eq!(opened, Opened::default());
+    assert_eq!(fixture.app.spaces().len(), 1);
     let commands = fixture.app.commands();
     assert_eq!(commands.len(), 1);
     assert_eq!(commands[0].0, "space.new");
@@ -341,26 +379,21 @@ fn opening_a_closed_repo_makes_an_unnamed_space_in_it() {
 
 #[test]
 fn opening_a_repo_already_shown_selects_its_space() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::with_on_open(editor_on_open());
     let subdir = fixture.repo.join("src");
     fs::create_dir(&subdir).unwrap();
     fixture.app.add_space(Path::new("/elsewhere"));
     let shown = fixture.app.add_space(&subdir);
 
-    let response = fixture
-        .provider
-        .worktree_open(
-            &fixture.repo,
-            &WorktreeOpenTarget::Path(fixture.repo.clone()),
-            true,
-        )
+    fixture
+        .backend
+        .open_checkout(&fixture.repo, &fixture.repo)
         .unwrap();
 
-    assert_eq!(response.already_open, Some(true));
-    assert_eq!(response.opened.unwrap().root_pane_id, shown.panes[0].pane);
     assert_eq!(
         fixture.app.commands(),
-        [("space.select".into(), json!({ "id": shown.id }))]
+        [("space.select".into(), json!({ "id": shown.id }))],
+        "an existing space gets no on_open panes"
     );
 }
 
@@ -370,39 +403,10 @@ fn a_space_follows_its_first_terminals_live_folder() {
     let space = fixture.app.add_space(Path::new("/elsewhere"));
     fixture.app.state.lock().unwrap().spaces[0].panes[0].live = fixture.repo.clone();
 
-    let listed = fixture.provider.worktree_list(&fixture.repo).unwrap();
-
     assert_eq!(
-        listed.worktrees[0].open_workspace_id.as_deref(),
-        Some(space.id.as_str())
+        fixture.checkout_state(&fixture.repo).session,
+        Some(SpaceId(space.id))
     );
-}
-
-#[test]
-fn opening_a_branch_uses_its_checkout() {
-    let fixture = Fixture::new();
-    let feature = fixture.linked("feature");
-
-    let response = fixture
-        .provider
-        .worktree_open(
-            &fixture.repo,
-            &WorktreeOpenTarget::Branch("feature".into()),
-            true,
-        )
-        .unwrap();
-
-    assert_eq!(response.already_open, Some(false));
-    assert!(same_path(&response.opened.unwrap().path, &feature));
-    let error = fixture
-        .provider
-        .worktree_open(
-            &fixture.repo,
-            &WorktreeOpenTarget::Branch("missing".into()),
-            true,
-        )
-        .unwrap_err();
-    assert!(matches!(error, HerdrError::WorktreeNotFound(_)), "{error}");
 }
 
 #[test]
@@ -415,80 +419,91 @@ fn a_checkout_nested_in_the_repo_owns_the_spaces_inside_it() {
     );
     let space = fixture.app.add_space(&nested);
 
-    let listed = fixture.provider.worktree_list(&fixture.repo).unwrap();
+    let checkouts = fixture.backend.checkouts(&fixture.repo).unwrap();
 
-    let [main, nested] = listed.worktrees.as_slice() else {
-        panic!("expected two checkouts, got {:?}", listed.worktrees);
+    let [main, nested_state] = checkouts.as_slice() else {
+        panic!("expected two checkouts, got {checkouts:?}");
     };
-    assert!(same_path(&main.path, &fixture.repo));
-    assert_eq!(main.open_workspace_id, None);
-    assert_eq!(nested.branch.as_deref(), Some("nested"));
-    assert_eq!(nested.open_workspace_id, Some(space.id));
+    assert_eq!(canonical(&main.path), canonical(&fixture.repo));
+    assert_eq!(main.session, None);
+    assert_eq!(canonical(&nested_state.path), canonical(&nested));
+    assert_eq!(nested_state.session, Some(SpaceId(space.id)));
+}
+
+#[test]
+fn opening_a_branch_uses_its_checkout() {
+    let fixture = Fixture::new();
+    let feature = fixture.linked("feature");
+
+    let event = fixture.run(|git, backend, sender| {
+        spawn_open_branch(
+            git,
+            backend,
+            sender,
+            fixture.repo.clone(),
+            "feature".into(),
+            KnownCheckout::Exists,
+        );
+    });
+
+    assert!(
+        matches!(event, AppEvent::RepoOpened { warning: None }),
+        "{event:?}"
+    );
+    let spaces = fixture.app.spaces();
+    assert_eq!(spaces.len(), 1);
+    assert_eq!(canonical(&spaces[0].panes[0].start), canonical(&feature));
 }
 
 #[test]
 fn creating_a_branch_checks_it_out_beside_the_herdr_checkouts() {
     let fixture = Fixture::new();
 
-    let response = fixture
-        .provider
-        .worktree_create(&WorktreeCreateRequest {
-            cwd: fixture.repo.clone(),
-            branch: "Feature/Login_Page.v2".into(),
-            base: Some("HEAD".into()),
-            path: None,
-            focus: true,
-        })
-        .unwrap();
+    let event = fixture.run(|git, backend, sender| {
+        spawn_create_new_branch(
+            git,
+            backend,
+            sender,
+            fixture.repo.clone(),
+            "Feature/Login_Page.v2".into(),
+            "HEAD".into(),
+        );
+    });
 
+    assert!(
+        matches!(event, AppEvent::RepoOpened { warning: None }),
+        "{event:?}"
+    );
     let expected = fixture
         .worktree_root()
         .join("repo")
         .join("feature-login-page-v2");
-    let opened = response.opened.unwrap();
-    assert!(same_path(&opened.path, &expected));
-    let listed = fixture.provider.worktree_list(&fixture.repo).unwrap();
-    let created = listed
-        .worktrees
-        .iter()
-        .find(|worktree| worktree.branch.as_deref() == Some("Feature/Login_Page.v2"))
-        .unwrap();
-    assert!(same_path(&created.path, &expected));
-    assert!(created.open_workspace_id.is_some());
+    assert!(expected.join("README.md").exists());
+    assert!(fixture.checkout_state(&expected).session.is_some());
 }
 
 #[test]
-fn creating_an_existing_branch_without_a_base_checks_it_out() {
+fn a_branch_without_a_checkout_gets_one_in_the_herdr_worktree_folder() {
     let fixture = Fixture::new();
     run_test_git(&fixture.repo, &["branch", "existing"]);
-    let path = fixture.temp.path().join("custom");
 
-    fixture
-        .provider
-        .worktree_create(&WorktreeCreateRequest {
-            cwd: fixture.repo.clone(),
-            branch: "existing".into(),
-            base: None,
-            path: Some(path.clone()),
-            focus: true,
-        })
-        .unwrap();
+    let event = fixture.run(|git, backend, sender| {
+        spawn_open_branch(
+            git,
+            backend,
+            sender,
+            fixture.repo.clone(),
+            "existing".into(),
+            KnownCheckout::Missing,
+        );
+    });
 
-    assert!(path.join("README.md").exists());
-    let error = fixture
-        .provider
-        .worktree_create(&WorktreeCreateRequest {
-            cwd: fixture.repo.clone(),
-            branch: "existing".into(),
-            base: None,
-            path: Some(fixture.temp.path().join("again")),
-            focus: true,
-        })
-        .unwrap_err();
     assert!(
-        matches!(error, HerdrError::WorktreeCreateFailed(_)),
-        "{error}"
+        matches!(event, AppEvent::RepoOpened { warning: None }),
+        "{event:?}"
     );
+    let checkout = fixture.worktree_root().join("repo").join("existing");
+    assert!(checkout.join("README.md").exists());
     assert_eq!(fixture.app.spaces().len(), 1);
 }
 
@@ -496,11 +511,11 @@ fn creating_an_existing_branch_without_a_base_checks_it_out() {
 fn removing_a_worktree_deletes_the_checkout_then_closes_its_space() {
     let fixture = Fixture::new();
     let feature = fixture.linked("feature");
-    let space = fixture.app.add_space(&feature);
+    fixture.app.add_space(&feature);
 
-    let response = fixture.provider.worktree_remove(&space.id, false).unwrap();
+    let outcome = fixture.remove("feature", &feature, false);
 
-    assert!(response.warning.is_none());
+    assert_eq!(outcome, WorktreeRemovalOutcome::Removed { warning: None });
     assert!(!feature.exists());
     assert!(fixture.app.spaces().is_empty());
     assert_eq!(fixture.app.command_names(), ["space.close"]);
@@ -511,38 +526,21 @@ fn removing_a_dirty_worktree_needs_force_and_keeps_the_space() {
     let fixture = Fixture::new();
     let feature = fixture.linked("feature");
     fs::write(feature.join("scratch.txt"), "unsaved").unwrap();
-    let space = fixture.app.add_space(&feature);
+    fixture.app.add_space(&feature);
 
-    let error = fixture
-        .provider
-        .worktree_remove(&space.id, false)
-        .unwrap_err();
-
-    assert!(
-        matches!(error, HerdrError::DirtyWorktreeRequiresForce(_)),
-        "{error}"
+    assert_eq!(
+        fixture.remove("feature", &feature, false),
+        WorktreeRemovalOutcome::DirtyRequiresForce
     );
     assert!(feature.exists());
     assert_eq!(fixture.app.spaces().len(), 1);
 
-    fixture.provider.worktree_remove(&space.id, true).unwrap();
+    assert_eq!(
+        fixture.remove("feature", &feature, true),
+        WorktreeRemovalOutcome::Removed { warning: None }
+    );
     assert!(!feature.exists());
     assert!(fixture.app.spaces().is_empty());
-}
-
-#[test]
-fn the_main_checkout_is_never_removed() {
-    let fixture = Fixture::new();
-    let space = fixture.app.add_space(&fixture.repo);
-
-    let error = fixture
-        .provider
-        .worktree_remove(&space.id, true)
-        .unwrap_err();
-
-    assert!(matches!(error, HerdrError::NotGitWorktree(_)), "{error}");
-    assert!(fixture.repo.exists());
-    assert_eq!(fixture.app.commands(), []);
 }
 
 #[test]
@@ -556,38 +554,34 @@ fn spaces_report_their_repository_and_other_machines_are_ignored() {
     fixture.app.add_space(&plain);
     fixture.app.add_remote_space(&fixture.repo);
 
-    let workspaces = fixture.provider.workspace_list().unwrap();
-
-    let roots: Vec<_> = workspaces
+    let roots: Vec<_> = fixture
+        .backend
+        .open_repos()
+        .unwrap()
         .iter()
-        .map(|workspace| {
-            workspace
-                .worktree
-                .as_ref()
-                .map(|worktree| canonical(Path::new(&worktree.repo_root)))
-        })
+        .map(|root| canonical(root))
         .collect();
-    let repo = Some(canonical(&fixture.repo));
-    assert_eq!(roots, [repo.clone(), repo, None]);
+    assert_eq!(roots, [canonical(&fixture.repo), canonical(&fixture.repo)]);
 
-    let panes = fixture.provider.pane_list().unwrap();
-    assert_eq!(panes.len(), 3);
-    assert!(same_path(panes[2].cwd.as_deref().unwrap(), &plain));
+    let folders = fixture.backend.open_folders().unwrap();
+    assert_eq!(folders.len(), 3);
+    assert_eq!(canonical(&folders[2]), canonical(&plain));
 }
 
 #[test]
-fn folders_open_as_spaces_and_focus_selects_them() {
-    let fixture = Fixture::new();
+fn folders_open_as_spaces_and_an_open_folder_selects_its_space() {
+    let fixture = Fixture::with_on_open(editor_on_open());
     let plain = fixture.temp.path().join("plain");
     fs::create_dir(&plain).unwrap();
 
-    let created = fixture.provider.workspace_create(&plain, true).unwrap();
-    let id = created.workspace_id.unwrap();
-    fixture.provider.workspace_focus(&id).unwrap();
+    fixture.backend.open_folder(&plain).unwrap();
+    fixture.backend.open_folder(&plain).unwrap();
 
-    assert_eq!(fixture.app.command_names(), ["space.new", "space.select"]);
-    assert!(fixture.provider.workspace_create(&plain, false).is_err());
-    assert!(fixture.provider.workspace_focus("missing").is_err());
+    assert_eq!(
+        fixture.app.command_names(),
+        ["space.new", "space.select"],
+        "folders get no on_open panes"
+    );
 }
 
 fn split_request(pane_id: &str, cwd: &Path) -> PaneSplitRequest {
@@ -607,7 +601,7 @@ fn a_pane_opens_with_its_command_typed_in_one_split_and_gives_focus_back() {
     let root = &space.panes[0].pane;
 
     let split = fixture
-        .provider
+        .backend
         .pane_open(&split_request(root, &fixture.repo), "hx .")
         .unwrap();
 
@@ -640,7 +634,7 @@ fn a_pane_starts_in_the_checkout_wherever_the_split_pane_has_gone() {
     fixture.app.state.lock().unwrap().spaces[0].panes[0].live = "/elsewhere".into();
 
     fixture
-        .provider
+        .backend
         .pane_open(&split_request(&space.panes[0].pane, &fixture.repo), "hx")
         .unwrap();
 
@@ -661,7 +655,7 @@ fn a_pane_that_cannot_open_as_asked_is_refused_before_the_app_is_called() {
         (&relative, "hx", "absolute"),
         (&request, "", "command"),
     ] {
-        let Err(PaneOpenError::Split(error)) = fixture.provider.pane_open(request, command) else {
+        let Err(PaneOpenError::Split(error)) = fixture.backend.pane_open(request, command) else {
             panic!("{why}: expected a refused split");
         };
         assert!(error.to_string().contains(why), "{error}");
@@ -674,7 +668,7 @@ fn a_refused_split_is_reported_as_no_pane_made() {
     let fixture = Fixture::new();
 
     let error = fixture
-        .provider
+        .backend
         .pane_open(&split_request("missing", &fixture.repo), "hx")
         .unwrap_err();
 
@@ -692,28 +686,23 @@ fn every_terminal_folder_is_looked_up_at_once_and_kept_with_its_pane() {
     for folder in &folders {
         app.add_space(folder);
     }
-    let provider = AppHerdrProvider::new(
-        Arc::clone(&app) as Arc<dyn AppHost>,
-        Arc::new(CliGitProvider),
-        temp.path().join("worktrees"),
-        temp.path().join("notices.jsonl"),
-    );
+    let backend = backend(&app, temp.path(), OnOpenConfig::default());
 
-    let panes = provider.pane_list().unwrap();
+    let spaces = backend.spaces().unwrap();
 
     assert_eq!(
         app.gets.0.lock().unwrap().1,
         folders.len(),
         "all in flight together"
     );
-    let listed: Vec<_> = panes
+    let listed: Vec<_> = spaces
         .iter()
-        .map(|pane| (pane.workspace_id.clone(), pane.cwd.clone().unwrap()))
+        .map(|space| (space.id.clone(), space.folders[0].clone().unwrap()))
         .collect();
     let expected: Vec<_> = app
         .spaces()
         .iter()
-        .map(|space| (space.id.clone(), space.panes[0].live.display().to_string()))
+        .map(|space| (space.id.clone(), space.panes[0].live.clone()))
         .collect();
     assert_eq!(listed, expected);
 }
@@ -722,13 +711,10 @@ fn every_terminal_folder_is_looked_up_at_once_and_kept_with_its_pane() {
 fn notifications_are_appended_as_json_lines() {
     let fixture = Fixture::new();
 
+    fixture.backend.notify("herdr-kiosk", "first").unwrap();
     fixture
-        .provider
-        .notification_show("herdr-kiosk", "first")
-        .unwrap();
-    fixture
-        .provider
-        .notification_show("herdr-kiosk", "second \"quoted\"")
+        .backend
+        .notify("herdr-kiosk", "second \"quoted\"")
         .unwrap();
 
     let contents = fs::read_to_string(fixture.temp.path().join("notices/kiosk.jsonl")).unwrap();
@@ -739,26 +725,26 @@ fn notifications_are_appended_as_json_lines() {
     assert_eq!(bodies, [r#""first""#, r#""second \"quoted\"""#]);
 }
 
-#[test]
-fn opening_a_repo_runs_on_open_panes_in_the_new_space() {
-    let fixture = Fixture::new();
-    let provider: Arc<dyn HerdrProvider> = Arc::new(fixture.provider);
-    let (tx, rx) = mpsc::channel();
-    let sender = EventSender::new(tx, Arc::new(AtomicBool::new(false)));
-    let on_open = OnOpenConfig {
+fn editor_on_open() -> OnOpenConfig {
+    OnOpenConfig {
         panes: vec![OnOpenPaneConfig {
             command: "hx".into(),
             direction: OnOpenPaneDirection::Right,
             ratio: None,
         }],
-    };
+    }
+}
 
-    spawn_open_repo(&provider, &sender, fixture.repo.clone(), on_open);
+#[test]
+fn opening_a_repo_runs_on_open_panes_in_the_new_space() {
+    let fixture = Fixture::with_on_open(editor_on_open());
 
-    assert!(matches!(
-        rx.recv_timeout(Duration::from_secs(5)).unwrap(),
-        AppEvent::RepoOpened { warning: None }
-    ));
+    let opened = fixture
+        .backend
+        .open_checkout(&fixture.repo, &fixture.repo)
+        .unwrap();
+
+    assert_eq!(opened, Opened::default());
     let spaces = fixture.app.spaces();
     assert_eq!(spaces.len(), 1);
     let [root, editor] = spaces[0].panes.as_slice() else {
@@ -769,8 +755,8 @@ fn opening_a_repo_runs_on_open_panes_in_the_new_space() {
         [(editor.terminal.clone(), "hx".into())]
     );
     assert_eq!(
-        crate::path::canonical_or_original(&editor.start),
-        crate::path::canonical_or_original(&fixture.repo)
+        kiosk_core::path::canonical_or_original(&editor.start),
+        kiosk_core::path::canonical_or_original(&fixture.repo)
     );
     assert_eq!(
         fixture.app.state.lock().unwrap().focused_pane.as_ref(),
@@ -779,13 +765,19 @@ fn opening_a_repo_runs_on_open_panes_in_the_new_space() {
 }
 
 #[test]
-fn branch_slugs_match_the_herdr_tui() {
-    assert_eq!(branch_slug("worktree/brave-river"), "worktree-brave-river");
-    assert_eq!(
-        branch_slug("issue/137 Worktree Spaces"),
-        "issue-137-worktree-spaces"
-    );
-    assert_eq!(branch_slug("///"), "worktree");
+fn an_on_open_pane_with_a_ratio_is_refused_with_a_warning() {
+    let mut on_open = editor_on_open();
+    on_open.panes[0].ratio = Some(0.3);
+    let fixture = Fixture::with_on_open(on_open);
+
+    let opened = fixture
+        .backend
+        .open_checkout(&fixture.repo, &fixture.repo)
+        .unwrap();
+
+    let warning = opened.warning.unwrap();
+    assert!(warning.contains("always splits panes in half"), "{warning}");
+    assert_eq!(fixture.app.spaces()[0].panes.len(), 1);
 }
 
 #[cfg(unix)]
