@@ -60,38 +60,28 @@ trap cleanup EXIT
 
 cleanup
 rm -rf -- "$HK_ROOT"
-mkdir -p "$HK_HOME_DIR/.config/herdr" "$HK_ROOT/worktrees"
-cat >"$HK_HOME_DIR/.config/herdr/config.toml" <<EOF
-[worktrees]
-directory = "$HK_ROOT/worktrees"
-EOF
+write_herdr_config
 
 make_repo "$HK_ROOT/repos/rehearsal-repo"
 
 printf 'installing released plugin from GitHub...\n'
 h plugin install thomasschafer/herdr-kiosk --yes
-PLUGIN_CONFIG_DIR=$(h plugin config-dir thomasschafer.herdr-kiosk)
+PLUGIN_CONFIG_DIR=$(h plugin config-dir "$PLUGIN_ID")
 mkdir -p "$PLUGIN_CONFIG_DIR"
 cat >"$PLUGIN_CONFIG_DIR/config.toml" <<EOF
 search_dirs = [{ path = "$HK_ROOT/repos", depth = 1 }]
 EOF
 
 printf 'starting herdr...\n'
-t new-session -d -s "$SESSION" -x 160 -y 45 \
-    "env HOME='$HK_HOME_DIR' '$HERDR_BIN'"
-sleep 2
-t send-keys -t "$SESSION" Enter
-sleep 0.5
-t send-keys -t "$SESSION" Escape
-sleep 0.5
+start_herdr 160 45
 
-h plugin action invoke open-picker --plugin thomasschafer.herdr-kiosk >/dev/null
+invoke_picker
 wait_screen_contains "herdr-kiosk — select repo"
 wait_screen_contains "rehearsal-repo"
-t send-keys -t "$SESSION" rehearsal-repo
+type_text rehearsal-repo
 wait_screen_contains "1 of 1 repos"
-t send-keys -t "$SESSION" Enter
-wait_screen_absent "herdr-kiosk — select repo" 120
-assert_focused_checkout "$HK_ROOT/repos/rehearsal-repo"
+press Enter
+wait_screen_absent "herdr-kiosk — select repo"
+wait_focused_checkout "$HK_ROOT/repos/rehearsal-repo"
 
 printf 'real marketplace install, picker render, and repo open: PASS\n'

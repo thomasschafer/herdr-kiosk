@@ -38,12 +38,12 @@ h() { env HOME="$SANDBOX/home" "$HERDR" "$@"; }
 t() { tmux -S "$SANDBOX/tmux.sock" "$@"; }
 
 mkdir -p "$SANDBOX/home/.config/herdr" "$SANDBOX/worktrees"
-printf '[worktrees]\ndirectory = "%s"\n' "$SANDBOX/worktrees" \
+printf 'onboarding = false\n\n[worktrees]\ndirectory = "%s"\n' "$SANDBOX/worktrees" \
   > "$SANDBOX/home/.config/herdr/config.toml"
 
 h plugin link /path/to/plugin                  # works with no server running
 t new-session -d -s e2e -x 200 -y 50 "env HOME=$SANDBOX/home $HERDR"
-sleep 3                                        # wait for herdr UI
+until h workspace list >/dev/null 2>&1; do sleep 0.1; done   # wait for the server
 
 h plugin action invoke <plugin-id>.<action>    # opens the popup
 t send-keys -t e2e <keys>                      # drive the picker
@@ -81,9 +81,9 @@ h server stop 2>/dev/null; t kill-server       # teardown (killing tmux also kil
 7. A fresh sandbox HOME makes herdr show its first-run welcome dialog. Invoking the
    picker action while that or another modal is open fails with `ui_busy: "popup panes
    can only open from the normal workspace view"` — captured in `plugin log list` like
-   every other shim failure. Dismiss first-run onboarding (Enter through welcome,
-   Escape out of Settings) before invoking popup actions, or reuse a sandbox HOME that
-   has already completed onboarding.
+   every other shim failure. Set `onboarding = false` in the sandbox's herdr
+   `config.toml` to skip onboarding, or dismiss it (Enter through welcome, Escape out
+   of Settings) before invoking popup actions.
 
 ## The Herdr app
 

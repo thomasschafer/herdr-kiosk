@@ -251,6 +251,8 @@ herdr plugin link .
 `just link` combines these steps. For the Herdr app, `cargo build --release` is
 enough once the mod folder is linked: the app reloads the mod by itself, and kiosk
 starts fresh each time it opens. `just e2e` runs the popup integration suite; it
-uses a built Herdr checkout next to this repository unless `HERDR` points elsewhere.
+uses a built Herdr checkout next to this repository unless `HERDR` points elsewhere,
+and tmux from `PATH` unless `HK_TMUX` does. It runs everything, Herdr's server
+included, in a sandbox under `/tmp/hk-m7` (or `HK_E2E_HOME`).
 Harness and manual-testing details are in
 [`docs/VERIFYING.md`](docs/VERIFYING.md).
