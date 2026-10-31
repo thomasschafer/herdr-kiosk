@@ -5,10 +5,11 @@
 
 # A harness launched from inside a Herdr pane inherits HERDR_SOCKET_PATH and
 # related variables, which would point sandboxed `herdr` commands (including
-# `server stop` during cleanup) at the caller's live server.
+# `server stop` during cleanup) at the caller's live server. The XDG base
+# directories would likewise take precedence over the sandbox HOME.
 while IFS= read -r name; do
     case "$name" in
-        HERDR_*) unset "$name" ;;
+        HERDR_* | XDG_*_HOME | XDG_RUNTIME_DIR) unset "$name" ;;
     esac
 done < <(compgen -e)
 
