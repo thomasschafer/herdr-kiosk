@@ -1,19 +1,19 @@
 [package]
 name = "herdr-kiosk"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Fuzzy repo and branch picker for Herdr"
 license = "MIT"
 
 [dependencies]
 anyhow = "1"
-kiosk-core = { git = "https://github.com/thomasschafer/kiosk", rev = "b259e6a88bab585811491a0c5c3d63d8db02fac7" }
-kiosk-tui = { git = "https://github.com/thomasschafer/kiosk", rev = "b259e6a88bab585811491a0c5c3d63d8db02fac7" }
+kiosk-core = "0.3"
+kiosk-tui = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [dev-dependencies]
-kiosk-core = { git = "https://github.com/thomasschafer/kiosk", rev = "b259e6a88bab585811491a0c5c3d63d8db02fac7", features = ["test-support"] }
+kiosk-core = { version = "0.3", features = ["test-support"] }
 tempfile = "3"
 
 [workspace]
