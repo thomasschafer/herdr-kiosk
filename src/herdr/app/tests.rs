@@ -481,6 +481,7 @@ fn opening_a_branch_uses_its_checkout() {
 #[test]
 fn creating_a_branch_checks_it_out_beside_the_herdr_checkouts() {
     let fixture = Fixture::new();
+    run_test_git(&fixture.repo, &["branch", "base"]);
 
     let event = fixture.run(|git, backend, sender| {
         spawn_create_new_branch(
@@ -489,7 +490,7 @@ fn creating_a_branch_checks_it_out_beside_the_herdr_checkouts() {
             sender,
             fixture.repo.clone(),
             "Feature/Login_Page.v2".into(),
-            "HEAD".into(),
+            "base".into(),
         );
     });
 
