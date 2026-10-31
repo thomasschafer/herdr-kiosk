@@ -14,6 +14,8 @@ pub mod app;
 #[cfg(test)]
 pub mod mock;
 mod on_open;
+#[cfg(all(test, unix))]
+mod test_support;
 pub mod tui;
 
 pub use tui::HerdrTui;
@@ -707,7 +709,7 @@ fn parse_error_envelope(bytes: &[u8]) -> Option<HerdrError> {
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
-    use std::{fs, os::unix::fs::PermissionsExt};
+    use std::fs;
 
     #[cfg(unix)]
     use tempfile::TempDir;
@@ -866,34 +868,22 @@ mod tests {
     ) -> (PathBuf, PathBuf) {
         let binary = temp.path().join("fake-herdr");
         let args_file = temp.path().join("args");
-        let script = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nprintf '%s' '{}'\nprintf '%s' '{}' >&2\nexit {exit_status}\n",
+        let body = format!(
+            "printf '%s\\n' \"$*\" >> '{}'\nprintf '%s' '{}'\nprintf '%s' '{}' >&2\nexit {exit_status}",
             args_file.display(),
             stdout,
             stderr
         );
-        fs::write(&binary, script).unwrap();
-        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+        test_support::write_script(&binary, &body);
         (binary, args_file)
     }
 
     #[cfg(unix)]
-    fn retry_fake_herdr<T>(mut invoke: impl FnMut() -> Result<T, HerdrError>) -> T {
-        const ATTEMPTS: usize = 100;
-        for attempt in 1..=ATTEMPTS {
-            match invoke() {
-                Ok(value) => return value,
-                Err(HerdrError::Invocation(message))
-                    if attempt < ATTEMPTS
-                        && (message.contains("Text file busy")
-                            || message.contains("os error 26")) =>
-                {
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                }
-                Err(error) => panic!("fake herdr invocation failed: {error}"),
-            }
-        }
-        unreachable!()
+    fn retry_fake_herdr<T, E: test_support::TextFileBusy + fmt::Debug>(
+        invoke: impl FnMut() -> Result<T, E>,
+    ) -> T {
+        test_support::retry_while_text_file_busy(invoke)
+            .unwrap_or_else(|error| panic!("fake herdr invocation failed: {error:?}"))
     }
 
     #[cfg(unix)]
@@ -1110,15 +1100,16 @@ mod tests {
             r#"{"error":{"code":"worktree_create_failed","message":"disk full"}}"#,
         );
         let provider = CliHerdr::new(binary);
-        let error = provider
-            .worktree_create(&WorktreeCreateRequest {
+        let error = test_support::retry_while_text_file_busy(|| {
+            provider.worktree_create(&WorktreeCreateRequest {
                 cwd: "/repo".into(),
                 branch: "feature".into(),
                 base: None,
                 path: None,
                 focus: true,
             })
-            .unwrap_err();
+        })
+        .unwrap_err();
         assert_eq!(error, HerdrError::WorktreeCreateFailed("disk full".into()));
     }
 
@@ -1191,13 +1182,7 @@ mod tests {
             cwd: "/repo".into(),
             focus: false,
         };
-        let response = retry_fake_herdr(|| {
-            provider
-                .pane_open(&request, "hx .")
-                .map_err(|error| match error {
-                    PaneOpenError::Split(error) | PaneOpenError::Run(error) => error,
-                })
-        });
+        let response = retry_fake_herdr(|| provider.pane_open(&request, "hx ."));
         assert_eq!(response.pane_id, "p_2");
         assert_eq!(
             fs::read_to_string(args_file)
@@ -1219,7 +1204,7 @@ mod tests {
         );
         let provider = CliHerdr::new(binary);
         assert_eq!(
-            provider.pane_open(&request, "hx ."),
+            test_support::retry_while_text_file_busy(|| provider.pane_open(&request, "hx .")),
             Err(PaneOpenError::Split(HerdrError::Other {
                 code: "pane_split_failed".into(),
                 message: "too small".into(),
@@ -1248,7 +1233,9 @@ mod tests {
         );
         let provider = CliHerdr::new(binary);
         assert_eq!(
-            provider.pane_run("p_2", "printf ONOPEN_OK"),
+            test_support::retry_while_text_file_busy(
+                || provider.pane_run("p_2", "printf ONOPEN_OK")
+            ),
             Err(HerdrError::Other {
                 code: "pane_run_failed".into(),
                 message: "pane unavailable".into(),
