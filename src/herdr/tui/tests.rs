@@ -4,8 +4,9 @@ use kiosk_core::config::on_open::{OnOpenPaneConfig, OnOpenPaneDirection};
 
 use super::*;
 use crate::herdr::{
-    PaneInfo, PaneSplitResponse, WorkspaceCreateResponse, WorktreeCreateResponse, WorktreeInfo,
-    WorktreeListResponse, WorktreeOpenResponse, WorktreeRemoveResponse,
+    PaneInfo, PaneSplitResponse, WorkspaceCreateResponse, WorkspaceInfo, WorkspaceWorktreeInfo,
+    WorktreeCreateResponse, WorktreeInfo, WorktreeListResponse, WorktreeOpenResponse,
+    WorktreeRemoveResponse,
     mock::{HerdrCall, MockHerdrCli},
 };
 
@@ -40,6 +41,7 @@ fn opened_worktree() -> OpenedWorktree {
 fn open_response(already_open: bool) -> WorktreeOpenResponse {
     WorktreeOpenResponse {
         opened: Some(opened_worktree()),
+        workspace_id: Some("w_1".into()),
         already_open: Some(already_open),
         warning: None,
     }
@@ -70,6 +72,23 @@ fn pane_call_count(cli: &MockHerdrCli) -> usize {
         .iter()
         .filter(|call| matches!(call, HerdrCall::PaneOpen { .. }))
         .count()
+}
+
+fn checkout_workspace(workspace: &str) -> CheckoutWorkspace {
+    CheckoutWorkspace {
+        workspace: WorkspaceId(workspace.into()),
+        repo: "/repo".into(),
+        checkout: "/worktrees/feature".into(),
+    }
+}
+
+fn workspace(workspace_id: &str, worktree: Option<&str>) -> WorkspaceInfo {
+    WorkspaceInfo {
+        workspace_id: workspace_id.into(),
+        worktree: worktree.map(|repo_root| WorkspaceWorktreeInfo {
+            repo_root: repo_root.into(),
+        }),
+    }
 }
 
 fn worktree(branch: &str, open: Option<&str>) -> WorktreeInfo {
@@ -387,12 +406,8 @@ fn open_state_comes_from_herdrs_workspace_pane_and_worktree_lists() {
         .lock()
         .unwrap()
         .push_back(Ok(vec![
-            crate::herdr::WorkspaceInfo { worktree: None },
-            crate::herdr::WorkspaceInfo {
-                worktree: Some(crate::herdr::WorkspaceWorktreeInfo {
-                    repo_root: "/repo".into(),
-                }),
-            },
+            workspace("w_1", None),
+            workspace("w_2", Some("/repo")),
         ]));
     tui.cli.pane_list_results.lock().unwrap().push_back(Ok(vec![
         PaneInfo {
@@ -421,7 +436,11 @@ fn open_state_comes_from_herdrs_workspace_pane_and_worktree_lists() {
         [
             CheckoutState {
                 path: "/worktrees/open".into(),
-                session: Some(WorkspaceId("w_3".into())),
+                session: Some(CheckoutWorkspace {
+                    workspace: WorkspaceId("w_3".into()),
+                    repo: "/repo".into(),
+                    checkout: "/worktrees/open".into(),
+                }),
             },
             CheckoutState {
                 path: "/worktrees/closed".into(),
@@ -441,7 +460,7 @@ fn removal_asks_for_force_when_herdr_refuses_a_dirty_checkout() {
             warning: Some("note".into()),
         }),
     ]);
-    let workspace = WorkspaceId("w_1".into());
+    let workspace = checkout_workspace("w_1");
 
     assert!(matches!(
         tui.remove(&workspace, false),
@@ -462,4 +481,185 @@ fn removal_asks_for_force_when_herdr_refuses_a_dirty_checkout() {
             force: true,
         }
     );
+}
+
+fn adoption_call() -> HerdrCall {
+    HerdrCall::WorktreeOpen {
+        cwd: "/repo".into(),
+        target: WorktreeOpenTarget::Path("/worktrees/feature".into()),
+        focus: false,
+    }
+}
+
+fn remove_call(force: bool) -> HerdrCall {
+    HerdrCall::WorktreeRemove {
+        workspace_id: "w_1".into(),
+        force,
+    }
+}
+
+fn not_herdr_managed() -> HerdrError {
+    HerdrError::NotLinkedWorktree("workspace is not a Herdr-managed worktree checkout".into())
+}
+
+/// Queues herdr refusing to remove the checkout of plain workspace `w_1`, then taking
+/// it over with `adopted`.
+fn queue_refusal_of_plain_workspace(
+    cli: &MockHerdrCli,
+    adopted: Result<WorktreeOpenResponse, HerdrError>,
+) {
+    cli.worktree_remove_results
+        .lock()
+        .unwrap()
+        .push_back(Err(not_herdr_managed()));
+    cli.workspace_list_results
+        .lock()
+        .unwrap()
+        .push_back(Ok(vec![
+            workspace("w_0", Some("/repo")),
+            workspace("w_1", None),
+        ]));
+    cli.worktree_open_results.lock().unwrap().push_back(adopted);
+}
+
+#[test]
+fn removing_the_checkout_of_a_plain_workspace_has_herdr_take_it_over_first() {
+    for force in [false, true] {
+        let tui = tui();
+        queue_refusal_of_plain_workspace(&tui.cli, Ok(open_response(true)));
+        tui.cli
+            .worktree_remove_results
+            .lock()
+            .unwrap()
+            .push_back(Ok(WorktreeRemoveResponse { warning: None }));
+
+        assert_eq!(
+            tui.remove(&checkout_workspace("w_1"), force),
+            Ok(Removed::default())
+        );
+        assert_eq!(
+            *tui.cli.calls.lock().unwrap(),
+            [
+                remove_call(force),
+                HerdrCall::WorkspaceList,
+                adoption_call(),
+                remove_call(force),
+            ],
+            "force={force}"
+        );
+    }
+}
+
+#[test]
+fn a_taken_over_dirty_checkout_still_needs_force_and_stays_taken_over() {
+    let tui = tui();
+    queue_refusal_of_plain_workspace(&tui.cli, Ok(open_response(true)));
+    tui.cli.worktree_remove_results.lock().unwrap().extend([
+        Err(HerdrError::DirtyWorktreeRequiresForce("dirty".into())),
+        Ok(WorktreeRemoveResponse { warning: None }),
+    ]);
+    let session = checkout_workspace("w_1");
+
+    assert!(matches!(
+        tui.remove(&session, false),
+        Err(RemoveError::DirtyRequiresForce(
+            HerdrError::DirtyWorktreeRequiresForce(_)
+        ))
+    ));
+    assert_eq!(tui.remove(&session, true), Ok(Removed::default()));
+    assert_eq!(
+        *tui.cli.calls.lock().unwrap(),
+        [
+            remove_call(false),
+            HerdrCall::WorkspaceList,
+            adoption_call(),
+            remove_call(false),
+            remove_call(true),
+        ]
+    );
+}
+
+#[test]
+fn a_refusal_for_a_herdr_managed_workspace_is_reported_without_taking_it_over() {
+    for listed in [vec![workspace("w_1", Some("/repo"))], Vec::new()] {
+        let tui = tui();
+        tui.cli
+            .worktree_remove_results
+            .lock()
+            .unwrap()
+            .push_back(Err(not_herdr_managed()));
+        tui.cli
+            .workspace_list_results
+            .lock()
+            .unwrap()
+            .push_back(Ok(listed));
+
+        assert_eq!(
+            tui.remove(&checkout_workspace("w_1"), false),
+            Err(RemoveError::Failed(not_herdr_managed()))
+        );
+        assert_eq!(
+            *tui.cli.calls.lock().unwrap(),
+            [remove_call(false), HerdrCall::WorkspaceList]
+        );
+    }
+}
+
+#[test]
+fn removal_stops_when_herdr_does_not_take_over_the_plain_workspace() {
+    let other_workspace = WorktreeOpenResponse {
+        workspace_id: Some("w_2".into()),
+        ..open_response(true)
+    };
+    let unnamed_workspace = WorktreeOpenResponse {
+        workspace_id: None,
+        ..open_response(true)
+    };
+    let undecodable = WorktreeOpenResponse {
+        opened: None,
+        workspace_id: None,
+        already_open: None,
+        warning: Some("unexpected response".into()),
+    };
+    let cases = [
+        (Ok(other_workspace), "took over workspace w_2"),
+        (Ok(open_response(false)), "in a new workspace"),
+        (Ok(unnamed_workspace), "did not say which workspace"),
+        (Ok(undecodable), "unexpected response"),
+        (
+            Err(HerdrError::WorktreeOpenFailed("no tab".into())),
+            "worktree_open_failed: no tab",
+        ),
+    ];
+    for (adopted, expected) in cases {
+        let tui = tui();
+        queue_refusal_of_plain_workspace(&tui.cli, adopted);
+
+        let Err(RemoveError::Failed(error)) = tui.remove(&checkout_workspace("w_1"), true) else {
+            panic!("removal should fail for {expected}");
+        };
+        assert!(error.to_string().contains(expected), "{error}");
+        assert_eq!(
+            *tui.cli.calls.lock().unwrap(),
+            [remove_call(true), HerdrCall::WorkspaceList, adoption_call()],
+            "{expected}"
+        );
+    }
+}
+
+#[test]
+fn removal_is_not_retried_when_herdr_refuses_again_after_taking_over() {
+    let tui = tui();
+    queue_refusal_of_plain_workspace(&tui.cli, Ok(open_response(true)));
+    tui.cli
+        .worktree_remove_results
+        .lock()
+        .unwrap()
+        .push_back(Err(not_herdr_managed()));
+
+    assert_eq!(
+        tui.remove(&checkout_workspace("w_1"), false),
+        Err(RemoveError::Failed(not_herdr_managed()))
+    );
+    assert_eq!(tui.cli.calls.lock().unwrap().len(), 4);
 }
