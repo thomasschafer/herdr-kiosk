@@ -323,15 +323,25 @@ impl Fixture {
         &self,
         start: impl FnOnce(&Arc<dyn GitProvider>, &Arc<HerdrApp>, &EventSender),
     ) -> AppEvent {
+        next(&self.start(start))
+    }
+
+    /// Starts one of kiosk's branch operations and returns the events it sends.
+    fn start(
+        &self,
+        start: impl FnOnce(&Arc<dyn GitProvider>, &Arc<HerdrApp>, &EventSender),
+    ) -> mpsc::Receiver<AppEvent> {
         let git: Arc<dyn GitProvider> = Arc::new(CliGitProvider);
         let (tx, rx) = mpsc::channel();
         let sender = EventSender::new(tx, Arc::new(AtomicBool::new(false)));
         start(&git, &self.backend, &sender);
-        rx.recv_timeout(Duration::from_secs(10)).unwrap()
+        rx
     }
 
+    /// Removes `checkout` as the picker does, which lets the space close once git has
+    /// removed the checkout.
     fn remove(&self, branch: &str, checkout: &Path, force: bool) -> WorktreeRemovalOutcome {
-        let event = self.run(|git, backend, sender| {
+        let events = self.start(|git, backend, sender| {
             spawn_worktree_removal(
                 git,
                 backend,
@@ -343,11 +353,21 @@ impl Fixture {
                 force,
             );
         });
+        let mut event = next(&events);
+        if let AppEvent::CheckoutRemoved { gate, .. } = event {
+            // Dropping the gate lets the removal go on to close the space.
+            drop(gate);
+            event = next(&events);
+        }
         let AppEvent::WorktreeRemovalFinished { outcome, .. } = event else {
             panic!("expected a removal, got {event:?}");
         };
         outcome
     }
+}
+
+fn next(events: &mpsc::Receiver<AppEvent>) -> AppEvent {
+    events.recv_timeout(Duration::from_secs(10)).unwrap()
 }
 
 fn canonical(path: &Path) -> PathBuf {
