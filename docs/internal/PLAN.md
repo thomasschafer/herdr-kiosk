@@ -32,7 +32,7 @@ These decisions shaped v1:
 | D13 | Crate layout | The picker lives in the kiosk repo's shared `kiosk-core` and `kiosk-tui` crates, generic over a multiplexer backend, so the tmux and Rex pickers share it. This repo is one binary crate holding the two herdr backends (see §4) |
 | D14 | Collision display | Repos sharing a name are disambiguated with the shortest distinguishing parent-path suffix (see §5) |
 | D15 | Process | Claude orchestrates/plans/verifies, Codex (gpt-5.6 sol, high reasoning) implements, Tom decides product questions and hand-tests (see §7) |
-| D16 | Version control | Commit each verified chunk and push to `origin main` (github.com/thomasschafer/herdr-kiosk) as we go; no co-author lines. Pause for Tom only when something genuinely needs review |
+| D16 | Version control | Each change goes through a PR on github.com/thomasschafer/herdr-kiosk and is squash-merged once CI passes; commits keep their co-author lines. Pause for Tom only when something genuinely needs review |
 | D17 | Performance | Users may have very large repo/branch counts. Correctness first, but weigh allocation, process-spawn, and traversal costs in reviews as a standing concern; pragmatic, not premature |
 | D18 | Help esc | `esc` always closes the help overlay, even with a non-empty help query; the overlay owns and discards its own query, leaving the underlying picker query untouched |
 | D19 | Editor-on-open | After opening or creating a workspace, optionally split a pane and run a command (e.g. `hx`), configured via `[on_open]`. Uses herdr `pane split --direction` + `pane run` |
