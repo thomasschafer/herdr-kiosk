@@ -19,6 +19,15 @@ use kiosk_core::config::OnOpenConfig;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct WorkspaceId(pub String);
 
+/// The workspace showing a checkout, as kiosk's session for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckoutWorkspace {
+    pub workspace: WorkspaceId,
+    /// The repository the checkout was listed under.
+    pub repo: PathBuf,
+    pub checkout: PathBuf,
+}
+
 pub struct HerdrTui<C: HerdrCli> {
     cli: C,
     on_open: OnOpenConfig,
@@ -103,6 +112,40 @@ impl<C: HerdrCli> HerdrTui<C> {
         }
     }
 
+    /// Has herdr take over `session`'s plain workspace as the worktree workspace of its
+    /// checkout. `refusal` is herdr's refusal to remove the checkout, given back when the
+    /// workspace is herdr-managed after all, as a main checkout's is.
+    fn adopt(&self, session: &CheckoutWorkspace, refusal: HerdrError) -> Result<(), HerdrError> {
+        let workspaces = self.cli.workspace_list()?;
+        let is_plain = workspaces.iter().any(|workspace| {
+            workspace.workspace_id == session.workspace.0 && workspace.worktree.is_none()
+        });
+        if !is_plain {
+            return Err(refusal);
+        }
+        let response = self.cli.worktree_open(
+            &session.repo,
+            &WorktreeOpenTarget::Path(session.checkout.clone()),
+            false,
+        )?;
+        let expected = session.workspace.0.as_str();
+        let checkout = session.checkout.display();
+        match (response.already_open, response.workspace_id.as_deref()) {
+            (Some(true), Some(adopted)) if adopted == expected => Ok(()),
+            (Some(true), Some(adopted)) => Err(HerdrError::WorktreeAdoptFailed(format!(
+                "herdr took over workspace {adopted} for {checkout}, not {expected}"
+            ))),
+            (Some(false), _) => Err(HerdrError::WorktreeAdoptFailed(format!(
+                "herdr opened {checkout} in a new workspace instead of taking over {expected}"
+            ))),
+            _ => Err(HerdrError::WorktreeAdoptFailed(
+                response.warning.unwrap_or_else(|| {
+                    format!("herdr did not say which workspace now shows {checkout}")
+                }),
+            )),
+        }
+    }
+
     fn create(&self, repo: &Path, branch: &str, base: Option<&str>) -> Result<Opened, HerdrError> {
         let response = self.cli.worktree_create(&WorktreeCreateRequest {
             cwd: repo.to_path_buf(),
@@ -130,7 +173,7 @@ fn is_wrong_route_failure(route: KnownCheckout, error: &HerdrError) -> bool {
 }
 
 impl<C: HerdrCli> Backend for HerdrTui<C> {
-    type SessionId = WorkspaceId;
+    type SessionId = CheckoutWorkspace;
     type Error = HerdrError;
 
     fn open_repos(&self) -> Result<Vec<PathBuf>, HerdrError> {
@@ -152,15 +195,24 @@ impl<C: HerdrCli> Backend for HerdrTui<C> {
             .collect())
     }
 
-    fn checkouts(&self, repo: &Path) -> Result<Vec<CheckoutState<WorkspaceId>>, HerdrError> {
+    fn checkouts(&self, repo: &Path) -> Result<Vec<CheckoutState<CheckoutWorkspace>>, HerdrError> {
         Ok(self
             .cli
             .worktree_list(repo)?
             .worktrees
             .into_iter()
-            .map(|worktree| CheckoutState {
-                path: worktree.path.into(),
-                session: worktree.open_workspace_id.map(WorkspaceId),
+            .map(|worktree| {
+                let path = PathBuf::from(worktree.path);
+                CheckoutState {
+                    session: worktree
+                        .open_workspace_id
+                        .map(|workspace| CheckoutWorkspace {
+                            workspace: WorkspaceId(workspace),
+                            repo: repo.to_path_buf(),
+                            checkout: path.clone(),
+                        }),
+                    path,
+                }
             })
             .collect())
     }
@@ -224,20 +276,30 @@ impl<C: HerdrCli> NativeWorktrees<Self> for HerdrTui<C> {
         self.create(repo, branch, Some(base))
     }
 
+    /// herdr only removes checkouts of workspaces it manages as worktrees, so a plain
+    /// workspace showing the checkout is handed to herdr first. The removal still goes
+    /// through herdr, so it still refuses a dirty checkout unless forced; the workspace
+    /// then stays herdr-managed.
     fn remove(
         &self,
-        workspace: &WorkspaceId,
+        session: &CheckoutWorkspace,
         force: bool,
     ) -> Result<Removed, RemoveError<HerdrError>> {
-        self.cli
-            .worktree_remove(&workspace.0, force)
-            .map(|response| Removed {
-                warning: response.warning,
-            })
-            .map_err(|error| match error {
-                HerdrError::DirtyWorktreeRequiresForce(_) => RemoveError::DirtyRequiresForce(error),
-                error => RemoveError::Failed(error),
-            })
+        let workspace = &session.workspace.0;
+        match self.cli.worktree_remove(workspace, force) {
+            Err(refusal @ HerdrError::NotLinkedWorktree(_)) => {
+                self.adopt(session, refusal).map_err(RemoveError::Failed)?;
+                self.cli.worktree_remove(workspace, force)
+            }
+            result => result,
+        }
+        .map(|response| Removed {
+            warning: response.warning,
+        })
+        .map_err(|error| match error {
+            HerdrError::DirtyWorktreeRequiresForce(_) => RemoveError::DirtyRequiresForce(error),
+            error => RemoveError::Failed(error),
+        })
     }
 }
 
