@@ -806,14 +806,12 @@ fn an_on_open_pane_with_a_ratio_is_refused_with_a_warning() {
 
 #[cfg(unix)]
 mod cli {
-    use std::os::unix::fs::PermissionsExt;
-
     use super::*;
+    use crate::herdr::test_support::{retry_while_text_file_busy, write_script};
 
     fn script(temp: &TempDir, name: &str, body: &str) -> PathBuf {
         let path = temp.path().join(name);
-        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&path, body);
         path
     }
 
@@ -833,11 +831,11 @@ mod cli {
         let host = CliAppHost::new(app, hc);
 
         assert_eq!(
-            host.herdr_app(&["do".into()]).unwrap_err(),
+            retry_while_text_file_busy(|| host.herdr_app(&["do".into()])).unwrap_err(),
             refused("no such space")
         );
         assert_eq!(
-            host.hc(&["get".into()]).unwrap_err(),
+            retry_while_text_file_busy(|| host.hc(&["get".into()])).unwrap_err(),
             HerdrError::Other {
                 code: "not_found".into(),
                 message: "no terminal t9".into(),
@@ -851,7 +849,7 @@ mod cli {
         let app = script(&temp, "herdr-app", "echo 'window is gone' >&2; exit 2");
         let host = CliAppHost::new(app, temp.path().join("missing-hc"));
 
-        let error = host.herdr_app(&["ls".into()]).unwrap_err();
+        let error = retry_while_text_file_busy(|| host.herdr_app(&["ls".into()])).unwrap_err();
         assert!(
             matches!(&error, HerdrError::Invocation(message) if message.contains("window is gone")),
             "{error}"
