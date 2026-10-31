@@ -25,6 +25,7 @@ pub struct WorkspaceWorktreeInfo {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct WorkspaceInfo {
+    pub workspace_id: String,
     #[serde(default)]
     pub worktree: Option<WorkspaceWorktreeInfo>,
 }
@@ -52,6 +53,8 @@ pub struct WorktreeCreateResponse {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeOpenResponse {
     pub opened: Option<OpenedWorktree>,
+    /// The workspace that shows the worktree, when herdr says which.
+    pub workspace_id: Option<String>,
     pub already_open: Option<bool>,
     pub warning: Option<String>,
 }
@@ -131,11 +134,18 @@ pub enum HerdrError {
     StaleWorktreeOperation(String),
     LinkedWorktreeSource(String),
     NotGitWorktree(String),
+    /// The workspace is not one herdr manages as a linked worktree checkout.
+    NotLinkedWorktree(String),
     DirtyWorktreeRequiresForce(String),
     WorktreeCreateFailed(String),
     WorktreeOpenFailed(String),
     WorktreeNotFound(String),
-    Other { code: String, message: String },
+    /// herdr did not take over a plain workspace as the worktree workspace kiosk asked for.
+    WorktreeAdoptFailed(String),
+    Other {
+        code: String,
+        message: String,
+    },
     InvalidArgument(String),
     Invocation(String),
     InvalidResponse(String),
@@ -158,6 +168,9 @@ impl fmt::Display for HerdrError {
                 write!(formatter, "linked_worktree_source: {message}")
             }
             Self::NotGitWorktree(message) => write!(formatter, "not_git_worktree: {message}"),
+            Self::NotLinkedWorktree(message) => {
+                write!(formatter, "not_linked_worktree: {message}")
+            }
             Self::DirtyWorktreeRequiresForce(message) => {
                 write!(formatter, "dirty_worktree_requires_force: {message}")
             }
@@ -170,6 +183,10 @@ impl fmt::Display for HerdrError {
             Self::WorktreeNotFound(message) => {
                 write!(formatter, "worktree_not_found: {message}")
             }
+            Self::WorktreeAdoptFailed(message) => write!(
+                formatter,
+                "herdr could not take over the workspace showing this checkout: {message}"
+            ),
             Self::Other { code, message } => write!(formatter, "{code}: {message}"),
             Self::InvalidArgument(message) => write!(formatter, "invalid argument: {message}"),
             Self::Invocation(message) => write!(formatter, "herdr invocation failed: {message}"),
@@ -359,21 +376,25 @@ impl HerdrCli for CliHerdr {
         args.push(if focus { "--focus" } else { "--no-focus" }.into());
 
         let (result, warning) = self.invoke_side_effect::<WorktreeOpenResult>(&args)?;
-        let (opened, already_open) = result.map_or((None, None), |result| match result {
-            WorktreeOpenResult::WorktreeOpened {
-                root_pane,
-                worktree,
-                already_open,
-            } => (
-                Some(OpenedWorktree {
-                    root_pane_id: root_pane.pane_id,
-                    path: worktree.path,
-                }),
-                Some(already_open),
-            ),
-        });
+        let (opened, workspace_id, already_open) =
+            result.map_or((None, None, None), |result| match result {
+                WorktreeOpenResult::WorktreeOpened {
+                    workspace,
+                    root_pane,
+                    worktree,
+                    already_open,
+                } => (
+                    Some(OpenedWorktree {
+                        root_pane_id: root_pane.pane_id,
+                        path: worktree.path,
+                    }),
+                    workspace.map(|workspace| workspace.workspace_id),
+                    Some(already_open),
+                ),
+            });
         Ok(WorktreeOpenResponse {
             opened,
+            workspace_id,
             already_open,
             warning,
         })
@@ -598,6 +619,8 @@ enum WorktreeCreateResult {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum WorktreeOpenResult {
     WorktreeOpened {
+        #[serde(default)]
+        workspace: Option<WorkspaceIdentity>,
         root_pane: RootPaneInfo,
         worktree: WorktreePath,
         already_open: bool,
@@ -672,6 +695,7 @@ fn parse_error_envelope(bytes: &[u8]) -> Option<HerdrError> {
         "stale_worktree_operation" => HerdrError::StaleWorktreeOperation(message),
         "linked_worktree_source" => HerdrError::LinkedWorktreeSource(message),
         "not_git_worktree" => HerdrError::NotGitWorktree(message),
+        "not_linked_worktree" => HerdrError::NotLinkedWorktree(message),
         "dirty_worktree_requires_force" => HerdrError::DirtyWorktreeRequiresForce(message),
         "worktree_create_failed" => HerdrError::WorktreeCreateFailed(message),
         "worktree_open_failed" => HerdrError::WorktreeOpenFailed(message),
@@ -729,6 +753,7 @@ mod tests {
             r#"{{"id":"cli:workspace:list","result":{{"type":"workspace_list","workspaces":[{WORKSPACE},{WORKSPACE_WITH_WORKTREE}]}}}}"#
         );
         let WorkspaceListResult::WorkspaceList { workspaces } = parse_success(&json);
+        assert_eq!(workspaces[0].workspace_id, "w_1");
         assert!(workspaces[0].worktree.is_none());
         assert_eq!(
             workspaces[1]
@@ -795,6 +820,7 @@ mod tests {
             ("stale_worktree_operation", "StaleWorktreeOperation"),
             ("linked_worktree_source", "LinkedWorktreeSource"),
             ("not_git_worktree", "NotGitWorktree"),
+            ("not_linked_worktree", "NotLinkedWorktree"),
             (
                 "dirty_worktree_requires_force",
                 "DirtyWorktreeRequiresForce",
@@ -925,16 +951,32 @@ mod tests {
         let path_temp = TempDir::new().unwrap();
         let (binary, args_file) = fake_herdr(&path_temp, &response);
         let provider = CliHerdr::new(binary);
-        retry_fake_herdr(|| {
+        let opened = retry_fake_herdr(|| {
             provider.worktree_open(
                 Path::new("/repo"),
                 &WorktreeOpenTarget::Path("/repo".into()),
                 true,
             )
         });
+        assert_eq!(opened.workspace_id.as_deref(), Some("w_2"));
         assert_eq!(
             fs::read_to_string(args_file).unwrap().trim(),
             "worktree open --cwd /repo --path /repo --focus"
+        );
+
+        let unfocused_temp = TempDir::new().unwrap();
+        let (binary, args_file) = fake_herdr(&unfocused_temp, &response);
+        let provider = CliHerdr::new(binary);
+        retry_fake_herdr(|| {
+            provider.worktree_open(
+                Path::new("/repo"),
+                &WorktreeOpenTarget::Path("/worktrees/repo/feature".into()),
+                false,
+            )
+        });
+        assert_eq!(
+            fs::read_to_string(args_file).unwrap().trim(),
+            "worktree open --cwd /repo --path /worktrees/repo/feature --no-focus"
         );
 
         let branch_temp = TempDir::new().unwrap();
@@ -1034,6 +1076,7 @@ mod tests {
         });
 
         assert_eq!(opened.opened.unwrap().path, "/repo");
+        assert!(opened.workspace_id.is_none());
         assert_eq!(opened.already_open, Some(false));
         assert!(opened.warning.is_none());
     }
