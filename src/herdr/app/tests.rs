@@ -46,6 +46,10 @@ struct FakeState {
     /// What each new terminal had typed into it as it started (`type`).
     typed: Vec<(String, String)>,
     focused_pane: Option<String>,
+    /// How many times the backend asked for the spaces (`herdr-app ls`) and for a terminal's
+    /// folder (`hc get`).
+    listings: usize,
+    folder_lookups: usize,
 }
 
 /// The parts of `herdr-app` and `hc` the app backend uses, over an in-memory window.
@@ -136,6 +140,7 @@ impl AppHost for FakeApp {
     fn herdr_app(&self, args: &[String]) -> Result<Vec<u8>, HerdrError> {
         let mut state = self.state.lock().unwrap();
         if args == ["ls"] {
+            state.listings += 1;
             let spaces: Vec<Value> = state
                 .spaces
                 .iter()
@@ -232,7 +237,7 @@ impl AppHost for FakeApp {
         if let Some(want) = self.rendezvous {
             self.meet_other_gets(want);
         }
-        let state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
         let pane = |state: &FakeState, terminal: &str| {
             state
                 .spaces
@@ -247,6 +252,7 @@ impl AppHost for FakeApp {
                     !terminal.contains('/'),
                     "asked hc for another machine's terminal {terminal}"
                 );
+                state.folder_lookups += 1;
                 let pane = pane(&state, terminal).expect("hc get of an unknown terminal");
                 Ok(json!({
                     "address": terminal,
@@ -276,6 +282,96 @@ fn backend(app: &Arc<FakeApp>, temp: &Path, on_open: OnOpenConfig) -> HerdrApp {
         temp.join("notices").join("kiosk.jsonl"),
         on_open,
     )
+}
+
+/// The spaces on this machine as the app's `kiosk` mod would pass them.
+fn snapshot(app: &FakeApp) -> Vec<Space> {
+    app.spaces()
+        .into_iter()
+        .filter(|space| space.machine.is_none())
+        .map(|space| Space {
+            id: space.id,
+            folders: space
+                .panes
+                .into_iter()
+                .map(|pane| Some(pane.live))
+                .collect(),
+        })
+        .collect()
+}
+
+/// Real Git that counts how often the backend asks for a folder's main checkout.
+#[derive(Default)]
+struct CountingGit {
+    main_checkouts: Mutex<usize>,
+}
+
+impl GitProvider for CountingGit {
+    fn scan_repos_streaming(
+        &self,
+        dir: &Path,
+        depth: u16,
+        include_non_git: bool,
+        is_cancelled: &dyn Fn() -> bool,
+        on_found: &dyn Fn(kiosk_core::git::Repo),
+    ) -> anyhow::Result<Vec<kiosk_core::git::ScanWarning>> {
+        CliGitProvider.scan_repos_streaming(dir, depth, include_non_git, is_cancelled, on_found)
+    }
+    fn list_branches(&self, repo: &Path) -> anyhow::Result<kiosk_core::git::Listed<String>> {
+        CliGitProvider.list_branches(repo)
+    }
+    fn list_remote_branches_for_remote(
+        &self,
+        repo: &Path,
+        remote: &str,
+    ) -> anyhow::Result<kiosk_core::git::Listed<String>> {
+        CliGitProvider.list_remote_branches_for_remote(repo, remote)
+    }
+    fn list_worktrees(
+        &self,
+        repo: &Path,
+    ) -> anyhow::Result<kiosk_core::git::Listed<kiosk_core::git::Worktree>> {
+        CliGitProvider.list_worktrees(repo)
+    }
+    fn list_remotes(&self, repo: &Path) -> anyhow::Result<Vec<String>> {
+        CliGitProvider.list_remotes(repo)
+    }
+    fn fetch_remote(&self, repo: &Path, remote: &str) -> anyhow::Result<()> {
+        CliGitProvider.fetch_remote(repo, remote)
+    }
+    fn create_tracking_branch(
+        &self,
+        repo: &Path,
+        branch: &str,
+        remote: &str,
+    ) -> anyhow::Result<()> {
+        CliGitProvider.create_tracking_branch(repo, branch, remote)
+    }
+    fn is_valid_branch_name(&self, repo: &Path, branch: &str) -> anyhow::Result<bool> {
+        CliGitProvider.is_valid_branch_name(repo, branch)
+    }
+    fn add_worktree(
+        &self,
+        repo: &Path,
+        worktree: &Path,
+        branch: &str,
+        base: Option<&str>,
+    ) -> anyhow::Result<()> {
+        CliGitProvider.add_worktree(repo, worktree, branch, base)
+    }
+    fn main_checkout(&self, path: &Path) -> anyhow::Result<Option<PathBuf>> {
+        *self.main_checkouts.lock().unwrap() += 1;
+        CliGitProvider.main_checkout(path)
+    }
+    fn remove_worktree(&self, repo: &Path, worktree: &Path, force: bool) -> anyhow::Result<()> {
+        CliGitProvider.remove_worktree(repo, worktree, force)
+    }
+    fn prune_worktrees(&self, repo: &Path) -> anyhow::Result<()> {
+        CliGitProvider.prune_worktrees(repo)
+    }
+    fn default_branch(&self, repo: &Path, local: &[String]) -> anyhow::Result<Option<String>> {
+        CliGitProvider.default_branch(repo, local)
+    }
 }
 
 impl Fixture {
@@ -729,6 +825,81 @@ fn every_terminal_folder_is_looked_up_at_once_and_kept_with_its_pane() {
         .map(|space| (space.id.clone(), space.panes[0].live.clone()))
         .collect();
     assert_eq!(listed, expected);
+}
+
+#[test]
+fn the_spaces_the_mod_saw_are_used_without_asking_the_app() {
+    let fixture = Fixture::new();
+    let subdir = fixture.repo.join("src");
+    fs::create_dir(&subdir).unwrap();
+    fixture.app.add_space(Path::new("/elsewhere"));
+    let shown = fixture.app.add_space(&subdir);
+    let backend = backend(&fixture.app, fixture.temp.path(), OnOpenConfig::default())
+        .with_spaces(snapshot(&fixture.app));
+
+    let roots = backend.open_repos().unwrap();
+    backend.open_checkout(&fixture.repo, &fixture.repo).unwrap();
+
+    assert_eq!(
+        roots.iter().map(|root| canonical(root)).collect::<Vec<_>>(),
+        [canonical(&fixture.repo)]
+    );
+    assert_eq!(
+        fixture.app.commands(),
+        [("space.select".into(), json!({ "id": shown.id }))]
+    );
+    let state = fixture.app.state.lock().unwrap();
+    assert_eq!((state.listings, state.folder_lookups), (0, 0));
+}
+
+#[test]
+fn once_kiosk_changes_the_window_it_asks_the_app_again() {
+    let fixture = Fixture::new();
+    let backend = backend(&fixture.app, fixture.temp.path(), OnOpenConfig::default())
+        .with_spaces(snapshot(&fixture.app));
+    assert!(backend.open_repos().unwrap().is_empty());
+
+    backend.open_checkout(&fixture.repo, &fixture.repo).unwrap();
+
+    assert_eq!(
+        backend
+            .open_repos()
+            .unwrap()
+            .iter()
+            .map(|root| canonical(root))
+            .collect::<Vec<_>>(),
+        [canonical(&fixture.repo)],
+        "the space kiosk made is found"
+    );
+    assert!(fixture.app.state.lock().unwrap().listings > 0);
+}
+
+#[test]
+fn each_space_folders_main_checkout_is_asked_once_until_the_window_changes() {
+    let fixture = Fixture::new();
+    fixture.app.add_space(&fixture.repo);
+    let git = Arc::new(CountingGit::default());
+    let backend = HerdrApp::new(
+        Arc::clone(&fixture.app) as Arc<dyn AppHost>,
+        Arc::clone(&git) as Arc<dyn GitProvider>,
+        WorktreePlacement::new(fixture.worktree_root()).unwrap(),
+        fixture.temp.path().join("notices.jsonl"),
+        OnOpenConfig::default(),
+    );
+
+    backend.open_repos().unwrap();
+    backend.open_repos().unwrap();
+    assert_eq!(*git.main_checkouts.lock().unwrap(), 1);
+
+    let other = fixture.temp.path().join("other");
+    fs::create_dir(&other).unwrap();
+    backend.open_folder(&other).unwrap();
+    backend.open_repos().unwrap();
+    assert_eq!(
+        *git.main_checkouts.lock().unwrap(),
+        3,
+        "asked again for both spaces"
+    );
 }
 
 #[test]

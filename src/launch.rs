@@ -5,7 +5,7 @@ use std::{ffi::OsString, path::PathBuf};
 
 use anyhow::{Result, bail};
 
-use crate::context::PluginContext;
+use crate::{context::PluginContext, herdr::app::Space};
 
 /// Set by the herdr TUI for plugin processes (and every pane it runs).
 pub const HERDR_BIN_PATH: &str = "HERDR_BIN_PATH";
@@ -17,11 +17,14 @@ pub const KIOSK_APP_BIN: &str = "HERDR_KIOSK_APP_BIN";
 pub const KIOSK_HC_BIN: &str = "HERDR_KIOSK_HC_BIN";
 pub const KIOSK_NOTICE_FILE: &str = "HERDR_KIOSK_NOTICE_FILE";
 pub const KIOSK_CONTEXT_JSON: &str = "HERDR_KIOSK_CONTEXT_JSON";
-const KIOSK_APP_VARS: [&str; 4] = [
+/// The app's spaces when the mod started kiosk (see `herdr::app::Space`).
+pub const KIOSK_SPACES_JSON: &str = "HERDR_KIOSK_SPACES_JSON";
+const KIOSK_APP_VARS: [&str; 5] = [
     KIOSK_APP_BIN,
     KIOSK_HC_BIN,
     KIOSK_NOTICE_FILE,
     KIOSK_CONTEXT_JSON,
+    KIOSK_SPACES_JSON,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +41,8 @@ pub enum Host {
         /// Where notifications go for the mod to show once kiosk exits.
         notice_file: PathBuf,
         context: PluginContext,
+        /// The app's spaces when the mod started kiosk, if it passed them.
+        spaces: Option<Vec<Space>>,
     },
 }
 
@@ -95,6 +100,9 @@ pub fn detect_host_with(get_env: impl Fn(&str) -> Option<OsString>) -> Result<Ho
                 hc_binary: absolute(KIOSK_HC_BIN, get(KIOSK_HC_BIN))?,
                 notice_file: absolute(KIOSK_NOTICE_FILE, get(KIOSK_NOTICE_FILE))?,
                 context: context_from(get(KIOSK_CONTEXT_JSON), KIOSK_CONTEXT_JSON)?,
+                spaces: get(KIOSK_SPACES_JSON)
+                    .map(|json| json_from(&json, KIOSK_SPACES_JSON))
+                    .transpose()?,
             })
         }
         (None, None) => Ok(Host::Standalone),
@@ -102,13 +110,17 @@ pub fn detect_host_with(get_env: impl Fn(&str) -> Option<OsString>) -> Result<Ho
 }
 
 fn context_from(json: Option<OsString>, name: &str) -> Result<PluginContext> {
-    let Some(json) = json else {
-        return Ok(PluginContext::default());
-    };
+    json.map_or_else(
+        || Ok(PluginContext::default()),
+        |json| json_from(&json, name),
+    )
+}
+
+fn json_from<T: serde::de::DeserializeOwned>(json: &OsString, name: &str) -> Result<T> {
     let Some(json) = json.to_str() else {
         bail!("{name} is not valid UTF-8");
     };
-    PluginContext::from_json(json).map_err(|error| anyhow::anyhow!("invalid {name}: {error}"))
+    serde_json::from_str(json).map_err(|error| anyhow::anyhow!("invalid {name}: {error}"))
 }
 
 #[cfg(test)]
@@ -175,12 +187,46 @@ mod tests {
                     focused_pane_cwd: Some("/repo/src".into()),
                     workspace_cwd: None,
                 },
+                spaces: None,
             }
         );
         assert_eq!(
             host.context().unwrap().current_cwd(),
             Some(Path::new("/repo/src"))
         );
+    }
+
+    #[test]
+    fn herdr_app_reads_the_spaces_the_mod_saw() {
+        let mut vars = APP.to_vec();
+        vars.push((
+            KIOSK_SPACES_JSON,
+            r#"[{"id":"sp1","folders":["/repo",null]},{"id":"sp2","folders":[]}]"#,
+        ));
+        let Host::HerdrApp { spaces, .. } = detect(&vars).unwrap() else {
+            panic!("not the Herdr app");
+        };
+        assert_eq!(
+            spaces,
+            Some(vec![
+                Space {
+                    id: "sp1".into(),
+                    folders: vec![Some("/repo".into()), None],
+                },
+                Space {
+                    id: "sp2".into(),
+                    folders: vec![],
+                },
+            ])
+        );
+    }
+
+    #[test]
+    fn invalid_spaces_are_reported_with_their_variable() {
+        let mut vars = APP.to_vec();
+        vars.push((KIOSK_SPACES_JSON, r#"[{"id":"sp1"}]"#));
+        let error = detect(&vars).unwrap_err().to_string();
+        assert!(error.contains(KIOSK_SPACES_JSON), "{error}");
     }
 
     #[test]
@@ -193,10 +239,12 @@ mod tests {
 
     #[test]
     fn the_other_hosts_variables_are_rejected() {
-        let error = detect(&[(HERDR_BIN_PATH, "/bin/herdr"), (KIOSK_NOTICE_FILE, "/n")])
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains(KIOSK_NOTICE_FILE), "{error}");
+        for name in [KIOSK_NOTICE_FILE, KIOSK_SPACES_JSON] {
+            let error = detect(&[(HERDR_BIN_PATH, "/bin/herdr"), (name, "[]")])
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(name), "{error}");
+        }
 
         for name in [
             HERDR_PLUGIN_CONTEXT_JSON,

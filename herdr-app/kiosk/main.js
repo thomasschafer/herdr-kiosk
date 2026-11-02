@@ -40,21 +40,42 @@ class LaunchError extends Error {
 
 async function sh(script, ...args) {
   const r = await exec("/bin/sh", ["-c", script, "sh", ...args]);
-  return { ok: r.code === 0, out: r.stdout.trim(), err: r.stderr.trim() };
+  return { code: r.code, out: r.stdout.trim(), err: r.stderr.trim() };
 }
 
-// The repository checkout this mod folder is linked from.
-async function checkout() {
+// Prints the repository checkout this mod folder is linked from, then herdr-app's and hc's
+// paths, exiting with the step that failed. One shell for all of it, as starting a process
+// can be slow and this all happens before kiosk appears.
+const LOCATE = `root=$(cd -P "$1/../.." && pwd) || exit 10
+printf '%s\\n' "$root"
+[ -x "$root/target/release/herdr-kiosk" ] || exit 11
+command -v herdr-app || exit 12
+command -v hc || exit 13`;
+
+async function locate() {
   const dir = `${appHome()}/mods/${NAME}`;
-  const r = await sh('cd -P "$1/../.." && pwd', dir);
-  if (!r.ok || !r.out) throw new LaunchError("Kiosk's checkout is missing", `${dir}/../.. is not a folder: link mods/${NAME} from a herdr-kiosk checkout. ${r.err}`);
-  return r.out;
+  const r = await sh(LOCATE, dir);
+  const [root, herdrApp, hcBinary] = r.out.split("\n");
+  const missing = (name) => new LaunchError(`Kiosk can't find ${name}`, `${name} is not on the app's PATH.`);
+  if (r.code === 10 || (r.code === 0 && !root)) throw new LaunchError("Kiosk's checkout is missing", `${dir}/../.. is not a folder: link mods/${NAME} from a herdr-kiosk checkout. ${r.err}`);
+  if (r.code === 11) throw new LaunchError("Kiosk isn't built", `Run cargo build --release in ${root} (${root}/target/release/herdr-kiosk is missing).`);
+  if (r.code === 12 || (r.code === 0 && !herdrApp?.startsWith("/"))) throw missing("herdr-app");
+  if (r.code === 13 || (r.code === 0 && !hcBinary?.startsWith("/"))) throw missing("hc");
+  if (r.code !== 0) throw new LaunchError("Kiosk didn't start", `Looking for kiosk failed with status ${r.code}: ${r.err}`);
+  return { root, herdrApp, hcBinary };
 }
 
-async function program(name) {
-  const r = await sh('command -v "$1"', name);
-  if (!r.ok || !r.out.startsWith("/")) throw new LaunchError(`Kiosk can't find ${name}`, `${name} is not on the app's PATH.`);
-  return r.out;
+// Each space on this machine with the live folder of each of its terminals, in the app's
+// order. Kiosk uses these instead of asking the app (a process for each terminal) until it
+// changes the window itself.
+function snapshot() {
+  const all = panes();
+  return spaces()
+    .filter((s) => !s.machine)
+    .map((s) => ({
+      id: s.id,
+      folders: s.tabs.flatMap((t) => all.filter((p) => p.tab === t.id && p.terminal).map((p) => p.cwd ?? null)),
+    }));
 }
 
 // Where a space is now: its first terminal's live folder (as the app names it).
@@ -65,12 +86,8 @@ function place(space) {
 }
 
 async function launch() {
-  const root = await checkout();
+  const { root, herdrApp, hcBinary } = await locate();
   const binary = `${root}/target/release/herdr-kiosk`;
-  if (!(await sh('[ -x "$1" ]', binary)).ok) {
-    throw new LaunchError("Kiosk isn't built", `Run cargo build --release in ${root} (${binary} is missing).`);
-  }
-  const [herdrApp, hcBinary] = await Promise.all([program("herdr-app"), program("hc")]);
   const now = focused();
   const space = spaces().find((s) => s.id === now?.space && !s.machine);
   const context = { focused_pane_cwd: space ? now.cwd : null, workspace_cwd: place(space) };
@@ -83,6 +100,7 @@ async function launch() {
     `HERDR_KIOSK_HC_BIN=${hcBinary}`,
     `HERDR_KIOSK_NOTICE_FILE=${notices}`,
     `HERDR_KIOSK_CONTEXT_JSON=${JSON.stringify(context)}`,
+    `HERDR_KIOSK_SPACES_JSON=${JSON.stringify(snapshot())}`,
     "/bin/sh", "-c", WRAPPER, "herdr-kiosk", binary,
   ];
   const cwd = context.focused_pane_cwd || context.workspace_cwd || home();

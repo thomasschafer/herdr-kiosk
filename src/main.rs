@@ -48,6 +48,7 @@ fn start() -> Result<()> {
             herdr_app_binary,
             hc_binary,
             notice_file,
+            spaces,
             ..
         } => {
             let Some(home) = kiosk_core::path::home_dir() else {
@@ -55,13 +56,16 @@ fn start() -> Result<()> {
             };
             let placement =
                 WorktreePlacement::new(home.join(WORKTREE_ROOT)).map_err(anyhow::Error::msg)?;
-            let backend = HerdrApp::new(
+            let mut backend = HerdrApp::new(
                 Arc::new(CliAppHost::new(herdr_app_binary, hc_binary)),
                 Arc::clone(&git),
                 placement,
                 notice_file.clone(),
                 on_open,
             );
+            if let Some(spaces) = spaces {
+                backend = backend.with_spaces(spaces.clone());
+            }
             kiosk_tui::launch::run(&PRODUCT, loaded, git, Some(Arc::new(backend)), current_cwd)?;
         }
     }
