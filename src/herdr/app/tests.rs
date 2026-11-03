@@ -857,7 +857,7 @@ fn once_kiosk_changes_the_window_it_asks_the_app_again() {
     let fixture = Fixture::new();
     let backend = backend(&fixture.app, fixture.temp.path(), OnOpenConfig::default())
         .with_spaces(snapshot(&fixture.app));
-    assert!(backend.open_repos().unwrap().is_empty());
+    assert_eq!(backend.open_repos().unwrap(), Vec::<PathBuf>::new());
 
     backend.open_checkout(&fixture.repo, &fixture.repo).unwrap();
 
