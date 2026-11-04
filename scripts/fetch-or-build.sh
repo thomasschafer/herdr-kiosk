@@ -138,15 +138,17 @@ fi
 # is seen.
 if [ -n "${KIOSK_SKIP_ATTESTATION:-}" ]; then
     printf 'fetch-or-build: verified %s: checksum (KIOSK_SKIP_ATTESTATION skips its build attestation)\n' "$asset"
-elif command -v "$GH" >/dev/null 2>&1; then
+elif ! command -v "$GH" >/dev/null 2>&1; then
+    printf 'fetch-or-build: verified %s: checksum (install the GitHub CLI to check its build attestation too)\n' "$asset"
+elif ! "$GH" auth status >/dev/null 2>&1; then
+    printf 'fetch-or-build: verified %s: checksum (log in to the GitHub CLI to check its build attestation too)\n' "$asset"
+else
     if ! "$GH" attestation verify "$tmp_dir/$asset" --repo "$REPOSITORY" >/dev/null; then
         printf 'fetch-or-build: %s has no valid build attestation from %s; set KIOSK_SKIP_ATTESTATION=1 to install it on its checksum alone\n' \
             "$asset" "$REPOSITORY" >&2
         exit 1
     fi
     printf 'fetch-or-build: verified %s: checksum and build attestation\n' "$asset"
-else
-    printf 'fetch-or-build: verified %s: checksum (install the GitHub CLI to check its build attestation too)\n' "$asset"
 fi
 
 mkdir -p "$(dirname -- "$OUT")"

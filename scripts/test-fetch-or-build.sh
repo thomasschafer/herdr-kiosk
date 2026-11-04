@@ -55,6 +55,10 @@ cp "$source" "$destination"
 EOF
 cat >"$TEST_ROOT/bin/gh" <<'EOF'
 #!/bin/sh
+if [ "$*" = "auth status" ]; then
+    [ -z "${HK_TEST_GH_SIGNED_OUT:-}" ]
+    exit
+fi
 printf 'gh %s\n' "$*" >>"$HK_TEST_GH_LOG"
 if [ -n "${HK_TEST_GH_REFUSES:-}" ]; then
     printf 'verification failed\n' >&2
@@ -149,6 +153,15 @@ cmp "$BASE/$ASSET" "$TEST_ROOT/out/herdr-kiosk"
 [ ! -e "$TEST_ROOT/gh.log" ]
 grep -Fq 'KIOSK_SKIP_ATTESTATION skips its build attestation' "$TEST_ROOT/skipped.out"
 printf 'KIOSK_SKIP_ATTESTATION skips the attestation check: ok\n'
+
+rm -f "$TEST_ROOT/cargo.log" "$TEST_ROOT/gh.log" "$TEST_ROOT/out/herdr-kiosk"
+run_installer HK_GH="$TEST_ROOT/bin/gh" HK_TEST_GH_SIGNED_OUT=1 \
+    >"$TEST_ROOT/signed-out.out" 2>"$TEST_ROOT/signed-out.err"
+cmp "$BASE/$ASSET" "$TEST_ROOT/out/herdr-kiosk"
+[ ! -e "$TEST_ROOT/cargo.log" ]
+[ ! -e "$TEST_ROOT/gh.log" ]
+grep -Fq 'log in to the GitHub CLI to check its build attestation too' "$TEST_ROOT/signed-out.out"
+printf 'a signed-out GitHub CLI falls back to the checksum: ok\n'
 
 assert_target_mapping() {
     os=$1

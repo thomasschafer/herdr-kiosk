@@ -26,6 +26,12 @@ function New-ParentDirectory([string] $Path) {
     }
 }
 
+# `gh attestation verify` needs a login, so a signed-out GitHub CLI can't check anything.
+function Test-GhLoggedIn([string] $Gh) {
+    & $Gh auth status *> $null
+    return $LASTEXITCODE -eq 0
+}
+
 function Save-Download([string] $Url, [string] $Destination) {
     $uri = [Uri] $Url
     if ($uri.Scheme -eq [Uri]::UriSchemeFile) {
@@ -187,7 +193,13 @@ try {
     if ($env:KIOSK_SKIP_ATTESTATION) {
         Write-Output "fetch-or-build: verified ${asset}: checksum (KIOSK_SKIP_ATTESTATION skips its build attestation)"
     }
-    elseif ($null -ne (Get-Command -Name $gh -ErrorAction SilentlyContinue)) {
+    elseif ($null -eq (Get-Command -Name $gh -ErrorAction SilentlyContinue)) {
+        Write-Output "fetch-or-build: verified ${asset}: checksum (install the GitHub CLI to check its build attestation too)"
+    }
+    elseif (-not (Test-GhLoggedIn $gh)) {
+        Write-Output "fetch-or-build: verified ${asset}: checksum (log in to the GitHub CLI to check its build attestation too)"
+    }
+    else {
         & $gh attestation verify $assetPath --repo $repository | Out-Null
         if ($LASTEXITCODE -ne 0) {
             [Console]::Error.WriteLine(
@@ -196,9 +208,6 @@ try {
             exit 1
         }
         Write-Output "fetch-or-build: verified ${asset}: checksum and build attestation"
-    }
-    else {
-        Write-Output "fetch-or-build: verified ${asset}: checksum (install the GitHub CLI to check its build attestation too)"
     }
 
     New-ParentDirectory $out

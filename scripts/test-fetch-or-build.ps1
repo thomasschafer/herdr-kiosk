@@ -80,6 +80,10 @@ New-Item -ItemType Directory -Path (Split-Path -Parent $built) -Force | Out-Null
     $ghStubContents = @'
 param([Parameter(ValueFromRemainingArguments = $true)][string[]] $GhArguments)
 $ErrorActionPreference = "Stop"
+if (($GhArguments -join ' ') -eq "auth status") {
+    if ($env:HK_TEST_GH_SIGNED_OUT) { exit 1 }
+    exit 0
+}
 Add-Content -LiteralPath $env:HK_TEST_GH_LOG -Value "gh $($GhArguments -join ' ')"
 if ($env:HK_TEST_GH_REFUSES) {
     [Console]::Error.WriteLine("verification failed")
@@ -189,6 +193,22 @@ exit 0
     ) "the GitHub CLI ran although KIOSK_SKIP_ATTESTATION was set"
     Assert-Contains $stdout "KIOSK_SKIP_ATTESTATION skips its build attestation"
     Write-Output "KIOSK_SKIP_ATTESTATION skips the attestation check: ok"
+
+    $env:KIOSK_SKIP_ATTESTATION = $null
+    $env:HK_TEST_GH_REFUSES = $null
+    $env:HK_TEST_GH_SIGNED_OUT = "1"
+    Remove-TestFiles @($cargoLog, $ghLog, $out, $stdout, $stderr)
+    & $pwsh -NoLogo -NoProfile -NonInteractive -File $installer 1> $stdout 2> $stderr
+    Assert-True ($LASTEXITCODE -eq 0) "install with a signed-out GitHub CLI failed"
+    Assert-True (
+        Test-Path -LiteralPath $out -PathType Leaf
+    ) "binary was not installed with a signed-out GitHub CLI"
+    Assert-True (
+        -not (Test-Path -LiteralPath $ghLog)
+    ) "a signed-out GitHub CLI was asked to verify"
+    Assert-Contains $stdout "log in to the GitHub CLI to check its build attestation too"
+    $env:HK_TEST_GH_SIGNED_OUT = $null
+    Write-Output "a signed-out GitHub CLI falls back to the checksum: ok"
 
     Write-Output "fetch-or-build ps tests: PASS"
 }
