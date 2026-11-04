@@ -34,7 +34,7 @@ workspace = true
 lto = true
 
 [patch.crates-io]
-kiosk-core = { git = "https://github.com/thomasschafer/kiosk", rev = "64b478545295e54aba289d52b77069c9d1787f6c" }
-kiosk-tui = { git = "https://github.com/thomasschafer/kiosk", rev = "64b478545295e54aba289d52b77069c9d1787f6c" }
-kiosk-serve = { git = "https://github.com/thomasschafer/kiosk", rev = "64b478545295e54aba289d52b77069c9d1787f6c" }
-kiosk-docgen = { git = "https://github.com/thomasschafer/kiosk", rev = "64b478545295e54aba289d52b77069c9d1787f6c" }
+kiosk-core = { git = "https://github.com/thomasschafer/kiosk", rev = "bc65e18cc8e8513a4931126c6f781793b6507d6f" }
+kiosk-tui = { git = "https://github.com/thomasschafer/kiosk", rev = "bc65e18cc8e8513a4931126c6f781793b6507d6f" }
+kiosk-serve = { git = "https://github.com/thomasschafer/kiosk", rev = "bc65e18cc8e8513a4931126c6f781793b6507d6f" }
+kiosk-docgen = { git = "https://github.com/thomasschafer/kiosk", rev = "bc65e18cc8e8513a4931126c6f781793b6507d6f" }
