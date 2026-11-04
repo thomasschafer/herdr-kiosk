@@ -200,10 +200,12 @@ try {
         Write-Output "fetch-or-build: verified ${asset}: checksum (log in to the GitHub CLI to check its build attestation too)"
     }
     else {
-        & $gh attestation verify $assetPath --repo $repository | Out-Null
+        & $gh attestation verify $assetPath --repo $repository `
+            --signer-workflow "$repository/.github/workflows/release.yml" `
+            --source-ref "refs/tags/v$version" --deny-self-hosted-runners | Out-Null
         if ($LASTEXITCODE -ne 0) {
             [Console]::Error.WriteLine(
-                "fetch-or-build: $asset has no valid build attestation from $repository; set KIOSK_SKIP_ATTESTATION=1 to install it on its checksum alone"
+                "fetch-or-build: $asset has no valid build attestation from ${repository}'s release workflow for v$version; set KIOSK_SKIP_ATTESTATION=1 to install it on its checksum alone"
             )
             exit 1
         }

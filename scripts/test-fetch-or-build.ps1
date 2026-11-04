@@ -162,7 +162,7 @@ exit 0
     Assert-True (
         -not (Test-Path -LiteralPath $cargoLog)
     ) "cargo ran for an attested download"
-    Assert-Contains $ghLog "gh attestation verify "
+    Assert-Contains $ghLog "--repo thomasschafer/herdr-kiosk --signer-workflow thomasschafer/herdr-kiosk/.github/workflows/release.yml --source-ref refs/tags/v$version --deny-self-hosted-runners"
     Assert-Contains $ghLog "$asset --repo thomasschafer/herdr-kiosk"
     Assert-Contains $stdout "verified ${asset}: checksum and build attestation"
     Write-Output "attested download with the GitHub CLI: ok"
@@ -178,7 +178,7 @@ exit 0
         -not (Test-Path -LiteralPath $cargoLog)
     ) "cargo ran for a refused download"
     Assert-Contains $stderr "verification failed"
-    Assert-Contains $stderr "$asset has no valid build attestation from thomasschafer/herdr-kiosk"
+    Assert-Contains $stderr "$asset has no valid build attestation from thomasschafer/herdr-kiosk's release workflow for v$version"
     Write-Output "refused attestation fails without installing or building: ok"
 
     $env:KIOSK_SKIP_ATTESTATION = "1"

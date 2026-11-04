@@ -128,7 +128,7 @@ rm -f "$TEST_ROOT/cargo.log" "$TEST_ROOT/gh.log" "$TEST_ROOT/out/herdr-kiosk"
 run_installer HK_GH="$TEST_ROOT/bin/gh" >"$TEST_ROOT/attested.out" 2>"$TEST_ROOT/attested.err"
 cmp "$BASE/$ASSET" "$TEST_ROOT/out/herdr-kiosk"
 [ ! -e "$TEST_ROOT/cargo.log" ]
-grep -Eq "^gh attestation verify .*/$ASSET --repo thomasschafer/herdr-kiosk\$" "$TEST_ROOT/gh.log"
+grep -Eq "^gh attestation verify .*/$ASSET --repo thomasschafer/herdr-kiosk --signer-workflow thomasschafer/herdr-kiosk/\.github/workflows/release\.yml --source-ref refs/tags/v$VERSION --deny-self-hosted-runners\$" "$TEST_ROOT/gh.log"
 grep -Fq "verified $ASSET: checksum and build attestation" "$TEST_ROOT/attested.out"
 printf 'attested download with the GitHub CLI: ok\n'
 
@@ -141,7 +141,7 @@ fi
 [ ! -e "$TEST_ROOT/out/herdr-kiosk" ]
 [ ! -e "$TEST_ROOT/cargo.log" ]
 grep -Fq 'verification failed' "$TEST_ROOT/unattested.err"
-grep -Fq "$ASSET has no valid build attestation from thomasschafer/herdr-kiosk" \
+grep -Fq "$ASSET has no valid build attestation from thomasschafer/herdr-kiosk's release workflow for v$VERSION" \
     "$TEST_ROOT/unattested.err"
 printf 'refused attestation fails without installing or building: ok\n'
 

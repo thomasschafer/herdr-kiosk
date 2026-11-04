@@ -143,9 +143,11 @@ elif ! command -v "$GH" >/dev/null 2>&1; then
 elif ! "$GH" auth status >/dev/null 2>&1; then
     printf 'fetch-or-build: verified %s: checksum (log in to the GitHub CLI to check its build attestation too)\n' "$asset"
 else
-    if ! "$GH" attestation verify "$tmp_dir/$asset" --repo "$REPOSITORY" >/dev/null; then
-        printf 'fetch-or-build: %s has no valid build attestation from %s; set KIOSK_SKIP_ATTESTATION=1 to install it on its checksum alone\n' \
-            "$asset" "$REPOSITORY" >&2
+    if ! "$GH" attestation verify "$tmp_dir/$asset" --repo "$REPOSITORY" \
+        --signer-workflow "$REPOSITORY/.github/workflows/release.yml" \
+        --source-ref "refs/tags/v$VERSION" --deny-self-hosted-runners >/dev/null; then
+        printf "fetch-or-build: %s has no valid build attestation from %s's release workflow for v%s; set KIOSK_SKIP_ATTESTATION=1 to install it on its checksum alone\n" \
+            "$asset" "$REPOSITORY" "$VERSION" >&2
         exit 1
     fi
     printf 'fetch-or-build: verified %s: checksum and build attestation\n' "$asset"
