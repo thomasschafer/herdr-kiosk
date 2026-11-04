@@ -4,10 +4,12 @@ use std::{
     sync::Mutex,
 };
 
+use kiosk_core::backend::on_open::{PaneOpenError, PaneSplitRequest, PaneSplitResponse};
+
 use super::{
-    HerdrCli, HerdrError, PaneInfo, PaneOpenError, PaneSplitRequest, PaneSplitResponse,
-    WorkspaceCreateResponse, WorkspaceInfo, WorktreeCreateRequest, WorktreeCreateResponse,
-    WorktreeListResponse, WorktreeOpenResponse, WorktreeOpenTarget, WorktreeRemoveResponse,
+    HerdrCli, HerdrError, PaneInfo, WorkspaceCreateResponse, WorkspaceInfo, WorktreeCreateRequest,
+    WorktreeCreateResponse, WorktreeListResponse, WorktreeOpenResponse, WorktreeOpenTarget,
+    WorktreeRemoveResponse,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -55,7 +57,7 @@ pub struct MockHerdrCli {
     pub pane_list_results: Mutex<VecDeque<Result<Vec<PaneInfo>, HerdrError>>>,
     pub workspace_create_results: Mutex<VecDeque<Result<WorkspaceCreateResponse, HerdrError>>>,
     pub workspace_focus_results: Mutex<VecDeque<Result<(), HerdrError>>>,
-    pub pane_open_results: Mutex<VecDeque<Result<PaneSplitResponse, PaneOpenError>>>,
+    pub pane_open_results: Mutex<VecDeque<Result<PaneSplitResponse, PaneOpenError<HerdrError>>>>,
     pub notification_show_results: Mutex<VecDeque<Result<(), HerdrError>>>,
 }
 
@@ -145,7 +147,7 @@ impl HerdrCli for MockHerdrCli {
         &self,
         request: &PaneSplitRequest,
         command: &str,
-    ) -> Result<PaneSplitResponse, PaneOpenError> {
+    ) -> Result<PaneSplitResponse, PaneOpenError<HerdrError>> {
         self.calls.lock().unwrap().push(HerdrCall::PaneOpen {
             request: request.clone(),
             command: command.into(),

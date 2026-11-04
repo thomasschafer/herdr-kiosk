@@ -7,6 +7,8 @@ UNAME=${HK_UNAME:-uname}
 CURL=${HK_CURL:-curl}
 WGET=${HK_WGET:-wget}
 CARGO=${HK_CARGO:-cargo}
+GH=${HK_GH:-gh}
+REPOSITORY=thomasschafer/herdr-kiosk
 MANIFEST="$REPO_ROOT/herdr-plugin.toml"
 
 version_lines=$(sed -n 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"\([^"]*\)"[[:space:]]*$/\1/p' "$MANIFEST" 2>/dev/null || true)
@@ -24,7 +26,7 @@ if [ "$version_count" -ne 1 ]; then
     exit 1
 fi
 
-BASE_URL=${HK_BASE_URL:-"https://github.com/thomasschafer/herdr-kiosk/releases/download/v$VERSION"}
+BASE_URL=${HK_BASE_URL:-"https://github.com/$REPOSITORY/releases/download/v$VERSION"}
 
 fallback() {
     reason=$1
@@ -129,6 +131,26 @@ fi
 if [ "$(printf '%s' "$expected" | tr 'A-F' 'a-f')" != "$(printf '%s' "$actual" | tr 'A-F' 'a-f')" ]; then
     fallback "checksum mismatch for $asset"
     exit 0
+fi
+
+# A binary that matches its checksum but that the GitHub CLI says this repository's
+# release workflow didn't build is refused outright rather than rebuilt, so the refusal
+# is seen.
+if [ -n "${KIOSK_SKIP_ATTESTATION:-}" ]; then
+    printf 'fetch-or-build: verified %s: checksum (KIOSK_SKIP_ATTESTATION skips its build attestation)\n' "$asset"
+elif ! command -v "$GH" >/dev/null 2>&1; then
+    printf 'fetch-or-build: verified %s: checksum (install the GitHub CLI to check its build attestation too)\n' "$asset"
+elif ! "$GH" auth status >/dev/null 2>&1; then
+    printf 'fetch-or-build: verified %s: checksum (log in to the GitHub CLI to check its build attestation too)\n' "$asset"
+else
+    if ! "$GH" attestation verify "$tmp_dir/$asset" --repo "$REPOSITORY" \
+        --signer-workflow "$REPOSITORY/.github/workflows/release.yml" \
+        --source-ref "refs/tags/v$VERSION" --deny-self-hosted-runners >/dev/null; then
+        printf "fetch-or-build: %s has no valid build attestation from %s's release workflow for v%s; set KIOSK_SKIP_ATTESTATION=1 to install it on its checksum alone\n" \
+            "$asset" "$REPOSITORY" "$VERSION" >&2
+        exit 1
+    fi
+    printf 'fetch-or-build: verified %s: checksum and build attestation\n' "$asset"
 fi
 
 mkdir -p "$(dirname -- "$OUT")"

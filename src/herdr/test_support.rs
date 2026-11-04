@@ -1,8 +1,10 @@
-//! Fake programs for the tests that drive real `herdr`, `herdr-app` and `hc` invocations.
+//! Fake programs for the tests that drive real `herdr` invocations.
 
 use std::{fs, os::unix::fs::PermissionsExt, path::Path, thread, time::Duration};
 
-use super::{HerdrError, PaneOpenError};
+use kiosk_core::backend::on_open::PaneOpenError;
+
+use super::HerdrError;
 
 /// Writes an executable `/bin/sh` script with `body` to `path`.
 pub fn write_script(path: &Path, body: &str) {
@@ -22,7 +24,7 @@ impl TextFileBusy for HerdrError {
     }
 }
 
-impl TextFileBusy for PaneOpenError {
+impl TextFileBusy for PaneOpenError<HerdrError> {
     fn is_text_file_busy(&self) -> bool {
         match self {
             PaneOpenError::Split(error) | PaneOpenError::Run(error) => error.is_text_file_busy(),

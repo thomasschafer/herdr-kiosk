@@ -117,6 +117,8 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - name: Download release assets
         uses: actions/download-artifact@v8
@@ -129,6 +131,11 @@ jobs:
         working-directory: release-assets
         shell: bash
         run: sha256sum herdr-kiosk-v* >SHA256SUMS
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-checksums: release-assets/SHA256SUMS
 
       - name: Create GitHub release
         env:

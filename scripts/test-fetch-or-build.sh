@@ -53,15 +53,28 @@ source=${url#file://}
 [ -f "$source" ] || exit 22
 cp "$source" "$destination"
 EOF
-chmod +x "$TEST_ROOT/bin/uname" "$TEST_ROOT/bin/cargo" "$TEST_ROOT/bin/curl"
+cat >"$TEST_ROOT/bin/gh" <<'EOF'
+#!/bin/sh
+if [ "$*" = "auth status" ]; then
+    [ -z "${HK_TEST_GH_SIGNED_OUT:-}" ]
+    exit
+fi
+printf 'gh %s\n' "$*" >>"$HK_TEST_GH_LOG"
+if [ -n "${HK_TEST_GH_REFUSES:-}" ]; then
+    printf 'verification failed\n' >&2
+    exit 1
+fi
+EOF
+chmod +x "$TEST_ROOT/bin/uname" "$TEST_ROOT/bin/cargo" "$TEST_ROOT/bin/curl" "$TEST_ROOT/bin/gh"
 
 VERSION=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' "$PROJECT_ROOT/herdr-plugin.toml")
 ASSET="herdr-kiosk-v${VERSION}-x86_64-unknown-linux-gnu"
 BASE="$TEST_ROOT/releases/v$VERSION"
 mkdir -p "$BASE"
 
+# Extra NAME=value arguments are added to the installer's environment.
 run_installer() {
-    env \
+    env -u KIOSK_SKIP_ATTESTATION \
         HOME="$TEST_ROOT/home" \
         HK_REPO_ROOT="$TEST_ROOT/repo" \
         HK_OUT="$TEST_ROOT/out/herdr-kiosk" \
@@ -70,9 +83,12 @@ run_installer() {
         HK_CURL="$TEST_ROOT/bin/curl" \
         HK_WGET="$TEST_ROOT/bin/missing-wget" \
         HK_CARGO="$TEST_ROOT/bin/cargo" \
+        HK_GH="$TEST_ROOT/bin/missing-gh" \
         HK_TEST_LOG="$TEST_ROOT/cargo.log" \
+        HK_TEST_GH_LOG="$TEST_ROOT/gh.log" \
         HK_TEST_OS="${HK_TEST_OS:-Linux}" \
         HK_TEST_ARCH="${HK_TEST_ARCH:-x86_64}" \
+        "$@" \
         "$TEST_ROOT/repo/scripts/fetch-or-build.sh"
 }
 
@@ -105,7 +121,47 @@ run_installer >"$TEST_ROOT/success.out" 2>"$TEST_ROOT/success.err"
 cmp "$BASE/$ASSET" "$TEST_ROOT/out/herdr-kiosk"
 [ ! -e "$TEST_ROOT/cargo.log" ]
 grep -Fq 'installed verified' "$TEST_ROOT/success.out"
+grep -Fq 'install the GitHub CLI to check its build attestation too' "$TEST_ROOT/success.out"
 printf 'successful stubbed download: ok\n'
+
+rm -f "$TEST_ROOT/cargo.log" "$TEST_ROOT/gh.log" "$TEST_ROOT/out/herdr-kiosk"
+run_installer HK_GH="$TEST_ROOT/bin/gh" >"$TEST_ROOT/attested.out" 2>"$TEST_ROOT/attested.err"
+cmp "$BASE/$ASSET" "$TEST_ROOT/out/herdr-kiosk"
+[ ! -e "$TEST_ROOT/cargo.log" ]
+grep -Eq "^gh attestation verify .*/$ASSET --repo thomasschafer/herdr-kiosk --signer-workflow thomasschafer/herdr-kiosk/\.github/workflows/release\.yml --source-ref refs/tags/v$VERSION --deny-self-hosted-runners\$" "$TEST_ROOT/gh.log"
+grep -Fq "verified $ASSET: checksum and build attestation" "$TEST_ROOT/attested.out"
+printf 'attested download with the GitHub CLI: ok\n'
+
+rm -f "$TEST_ROOT/cargo.log" "$TEST_ROOT/gh.log" "$TEST_ROOT/out/herdr-kiosk"
+if run_installer HK_GH="$TEST_ROOT/bin/gh" HK_TEST_GH_REFUSES=1 \
+    >"$TEST_ROOT/unattested.out" 2>"$TEST_ROOT/unattested.err"; then
+    printf 'installed a binary the GitHub CLI refused\n' >&2
+    exit 1
+fi
+[ ! -e "$TEST_ROOT/out/herdr-kiosk" ]
+[ ! -e "$TEST_ROOT/cargo.log" ]
+grep -Fq 'verification failed' "$TEST_ROOT/unattested.err"
+grep -Fq "$ASSET has no valid build attestation from thomasschafer/herdr-kiosk's release workflow for v$VERSION" \
+    "$TEST_ROOT/unattested.err"
+printf 'refused attestation fails without installing or building: ok\n'
+
+rm -f "$TEST_ROOT/cargo.log" "$TEST_ROOT/gh.log" "$TEST_ROOT/out/herdr-kiosk"
+run_installer HK_GH="$TEST_ROOT/bin/gh" HK_TEST_GH_REFUSES=1 KIOSK_SKIP_ATTESTATION=1 \
+    >"$TEST_ROOT/skipped.out" 2>"$TEST_ROOT/skipped.err"
+cmp "$BASE/$ASSET" "$TEST_ROOT/out/herdr-kiosk"
+[ ! -e "$TEST_ROOT/cargo.log" ]
+[ ! -e "$TEST_ROOT/gh.log" ]
+grep -Fq 'KIOSK_SKIP_ATTESTATION skips its build attestation' "$TEST_ROOT/skipped.out"
+printf 'KIOSK_SKIP_ATTESTATION skips the attestation check: ok\n'
+
+rm -f "$TEST_ROOT/cargo.log" "$TEST_ROOT/gh.log" "$TEST_ROOT/out/herdr-kiosk"
+run_installer HK_GH="$TEST_ROOT/bin/gh" HK_TEST_GH_SIGNED_OUT=1 \
+    >"$TEST_ROOT/signed-out.out" 2>"$TEST_ROOT/signed-out.err"
+cmp "$BASE/$ASSET" "$TEST_ROOT/out/herdr-kiosk"
+[ ! -e "$TEST_ROOT/cargo.log" ]
+[ ! -e "$TEST_ROOT/gh.log" ]
+grep -Fq 'log in to the GitHub CLI to check its build attestation too' "$TEST_ROOT/signed-out.out"
+printf 'a signed-out GitHub CLI falls back to the checksum: ok\n'
 
 assert_target_mapping() {
     os=$1

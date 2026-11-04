@@ -1,8 +1,7 @@
 # herdr-kiosk
 
 Fuzzy-find Git repositories (or any folder) and branches, then open them as Herdr
-workspaces and worktrees. It runs in both the herdr TUI (as a plugin) and the Herdr
-desktop app (as a mod), from the same binary.
+workspaces and worktrees, as a plugin for the herdr TUI.
 
 ![Demo of fuzzy-finding a repository and branch, then opening its Herdr worktree](media/preview.gif)
 
@@ -13,6 +12,13 @@ Install from GitHub:
 ```sh
 herdr plugin install thomasschafer/herdr-kiosk
 ```
+
+The install fetches the release's prebuilt binary for your platform and checks it against
+the release's `SHA256SUMS` and, if the [GitHub CLI](https://cli.github.com) is installed and
+logged in, its build attestation, which shows that this repository's release workflow built
+it. It stops if the attestation doesn't check out; set `KIOSK_SKIP_ATTESTATION=1` to rely on the
+checksum alone. Where there is no prebuilt binary, or it doesn't match its checksum, the
+install builds from source, which needs Rust.
 
 Add a keybinding to open the picker (here, `prefix+f`):
 
@@ -40,59 +46,28 @@ herdr plugin config-dir thomasschafer.herdr-kiosk
 At the time of writing, Herdr has no plugin-update command. Reinstall the plugin
 from GitHub to update to a newer version.
 
-## Install in the Herdr app
+## The Herdr desktop app
 
-The app runs kiosk from a checkout of this repository, through the mod in
-[`herdr-app/kiosk`](herdr-app/kiosk). The mod supports macOS and Linux. Build the binary, then link the mod folder into
-the app's `mods/` as `kiosk` (the mod finds the binary through that link, at
-`target/release/herdr-kiosk` in the same checkout):
-
-```sh
-git clone https://github.com/thomasschafer/herdr-kiosk.git
-cd herdr-kiosk
-cargo build --release
-ln -s "$PWD/herdr-app/kiosk" ~/.config/herdr-app/mods/kiosk
-herdr-app check ~/.config/herdr-app/mods/kiosk
-```
-
-Bind a key to open it in `~/.config/herdr-app/keys.json`:
-
-```json
-{ "global": { "cmd-p": "mod.open:kiosk" } }
-```
-
-On macOS this takes `cmd-p` from the app's own tab picker.
-
-Kiosk opens in a large dialog over the window and closes when it exits. Its
-configuration lives in `~/.config/herdr-kiosk/config.toml` (or under
-`$XDG_CONFIG_HOME`), and the setup wizard writes it on first use. To update,
-pull the checkout and rebuild.
-
-In the app, a workspace is a space: opening a repository makes an unnamed space in it,
-which the app names after its folder, and selects the existing space when one is already
-there. A space shows a checkout when its first terminal's folder is inside it. New
-worktrees go in `~/.herdr/worktrees/<repo>/<branch>`, the same place as the herdr TUI's
-default and the app's own worktree menu, and the app's sidebar nests them under their
-repository. `[on_open]` panes split the new space's first pane with their command typed
-into the new shell as it starts, so it runs as soon as the shell is ready and the shell
-stays when it ends; the app always splits in half, so a pane with a `ratio` is refused
-with a notification.
+For the Herdr desktop app, use
+[herdr-app-kiosk](https://github.com/thomasschafer/herdr-app-kiosk), a mod in the app's
+gallery; its README covers installing it.
 
 ## Usage
 
 Type to fuzzy-search repositories and branches (and plain folders, if you enable
 `include_non_git`). `enter` opens the selected checkout or folder, `tab` opens a
-repository's branch view (for Git repositories), and `ctrl+h` shows all active bindings
-for the current view.
+repository's branch view (for Git repositories), and `esc` goes back, or closes the picker
+from the repository list. `ctrl+u` clears the search, which edits like a shell prompt
+(`alt+b` and `alt+f` move by word, `ctrl+a` and `ctrl+e` to either end), and `ctrl+h` (or
+`f1`) shows all active bindings for the current view.
 
 ## Configuration
 
 <!-- CONFIG:START -->
-In the herdr TUI, the plugin reads `config.toml` from its config directory: run
-`herdr plugin config-dir thomasschafer.herdr-kiosk` to locate it. In the Herdr
-app, kiosk reads `$XDG_CONFIG_HOME/herdr-kiosk/config.toml`, which is
-`~/.config/herdr-kiosk/config.toml` when `XDG_CONFIG_HOME` is unset. All sections are optional, and the defaults are shown below alongside curated
-examples for settings that benefit from one.
+The plugin reads `config.toml` from its config directory: run
+`herdr plugin config-dir thomasschafer.herdr-kiosk` to locate it. All sections are
+optional, and the defaults are shown below alongside curated examples for settings
+that benefit from one.
 
 #### `search_dirs`
 
@@ -181,7 +156,7 @@ Each entry is an inline table with:
 
 - `command` — Shell command Herdr runs in the opened checkout. The command must not be empty.
 - `direction` — Split direction: `right` or `down`.
-- `ratio` — Fraction of the resulting split occupied by the new command pane. The value must be greater than 0 and less than 1, and defaults to 0.5 when omitted. The Herdr app always splits in half, so it refuses a pane with a ratio.
+- `ratio` — Fraction of the resulting split occupied by the new command pane. The value must be greater than 0 and less than 1, and defaults to 0.5 when omitted.
 
 ### `[keys]`
 
@@ -196,15 +171,32 @@ Defaults:
 ```toml
 [keys.general]
 "ctrl+c" = "quit"
-"ctrl+e" = "scan_warnings"
 "ctrl+h" = "help"
-"ctrl+x" = "dismiss_toast"
+"ctrl+s" = "scan_warnings"
+"f1" = "help"
 
 [keys.text_edit]
+"alt+b" = "cursor_word_left"
 "alt+backspace" = "delete_word"
+"alt+d" = "delete_word_forward"
+"alt+delete" = "delete_word_forward"
+"alt+f" = "cursor_word_right"
+"alt+left" = "cursor_word_left"
+"alt+right" = "cursor_word_right"
 "backspace" = "backspace"
+"ctrl+a" = "cursor_start"
+"ctrl+b" = "cursor_left"
+"ctrl+d" = "delete_forward"
+"ctrl+e" = "cursor_end"
+"ctrl+f" = "cursor_right"
+"ctrl+k" = "delete_to_end"
+"ctrl+left" = "cursor_word_left"
+"ctrl+right" = "cursor_word_right"
+"ctrl+u" = "clear"
 "ctrl+w" = "delete_word"
-"esc" = "clear"
+"delete" = "delete_forward"
+"end" = "cursor_end"
+"home" = "cursor_start"
 "left" = "cursor_left"
 "right" = "cursor_right"
 
@@ -220,7 +212,7 @@ Defaults:
 
 [keys.repo_select]
 "enter" = "open"
-"q" = "quit"
+"esc" = "quit"
 "tab" = "branches_view"
 
 [keys.branch_select]
@@ -248,9 +240,7 @@ cargo build --release
 herdr plugin link .
 ```
 
-`just link` combines these steps. For the Herdr app, `cargo build --release` is
-enough once the mod folder is linked: the app reloads the mod by itself, and kiosk
-starts fresh each time it opens. `just e2e` runs the popup integration suite; it
+`just link` combines these steps. `just e2e` runs the popup integration suite; it
 uses a built Herdr checkout next to this repository unless `HERDR` points elsewhere,
 and tmux from `PATH` unless `HK_TMUX` does. It runs everything, Herdr's server
 included, in a sandbox under `/tmp/hk-m7` (or `HK_E2E_HOME`).

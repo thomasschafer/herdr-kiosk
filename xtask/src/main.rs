@@ -30,8 +30,7 @@ const DOCS: ProductDocs<'static> = ProductDocs {
         (
             "OnOpenPaneConfig::ratio",
             "Fraction of the resulting split occupied by the new command pane. The value must be \
-             greater than 0 and less than 1, and defaults to 0.5 when omitted. The Herdr app \
-             always splits in half, so it refuses a pane with a ratio.",
+             greater than 0 and less than 1, and defaults to 0.5 when omitted.",
         ),
     ],
 };

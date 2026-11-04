@@ -1,7 +1,6 @@
-//! herdr-kiosk: kiosk's repository and branch picker for the herdr TUI (as a plugin) and
-//! the Herdr desktop app (through its `kiosk` mod). The picker itself comes from
-//! `kiosk-core` and `kiosk-tui`; this crate holds the two herdr backends, the config they
-//! add and how kiosk finds out which herdr started it.
+//! herdr-kiosk: kiosk's repository and branch picker as a herdr TUI plugin. The picker
+//! itself comes from `kiosk-core` and `kiosk-tui`; this crate holds the herdr backend, the
+//! config it adds and how kiosk finds out whether herdr started it.
 
 pub mod config;
 pub mod context;

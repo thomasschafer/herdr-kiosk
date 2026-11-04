@@ -5,13 +5,12 @@ use std::path::{Path, PathBuf};
 
 use kiosk_core::backend::{
     Backend, CheckoutState, KnownCheckout, NativeWorktrees, Opened, RemoveError, Removed,
-    Worktrees, identity::LiveFolder,
+    Worktrees,
+    identity::{LiveFolder, focus_or_create_folder},
+    on_open,
 };
 
-use super::{
-    HerdrCli, HerdrError, OpenedWorktree, WorktreeCreateRequest, WorktreeOpenTarget,
-    focus_or_create_folder, on_open,
-};
+use super::{HerdrCli, HerdrError, OpenedWorktree, WorktreeCreateRequest, WorktreeOpenTarget};
 use kiosk_core::config::OnOpenConfig;
 
 /// A herdr workspace id. herdr recycles ids, so one only identifies a workspace for as

@@ -6,14 +6,13 @@ use std::{
 
 use serde::{Deserialize, de::DeserializeOwned};
 
-use kiosk_core::backend::identity::{LiveFolder, session_in_folder};
+use kiosk_core::backend::{
+    args,
+    on_open::{PaneOpenError, PaneSplitRequest, PaneSplitResponse},
+};
 
-use kiosk_core::config::on_open::OnOpenPaneDirection;
-
-pub mod app;
 #[cfg(test)]
 pub mod mock;
-mod on_open;
 #[cfg(all(test, unix))]
 mod test_support;
 pub mod tui;
@@ -82,31 +81,8 @@ pub struct WorkspaceCreateResponse {
     pub warning: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct PaneSplitRequest {
-    pub pane_id: String,
-    pub direction: OnOpenPaneDirection,
-    pub ratio: Option<f64>,
-    pub cwd: PathBuf,
-    pub focus: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PaneSplitResponse {
-    pub pane_id: String,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PaneRunResponse;
-
-/// Why an `[on_open]` pane didn't open with its command.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PaneOpenError {
-    /// No pane was made.
-    Split(HerdrError),
-    /// The pane was made, but its command didn't reach it.
-    Run(HerdrError),
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeRemoveResponse {
@@ -233,7 +209,7 @@ pub trait HerdrCli: Send + Sync + 'static {
         &self,
         request: &PaneSplitRequest,
         command: &str,
-    ) -> Result<PaneSplitResponse, PaneOpenError>;
+    ) -> Result<PaneSplitResponse, PaneOpenError<HerdrError>>;
     fn notification_show(&self, title: &str, body: &str) -> Result<(), HerdrError>;
 }
 
@@ -528,7 +504,7 @@ impl HerdrCli for CliHerdr {
         &self,
         request: &PaneSplitRequest,
         command: &str,
-    ) -> Result<PaneSplitResponse, PaneOpenError> {
+    ) -> Result<PaneSplitResponse, PaneOpenError<HerdrError>> {
         let split = self.pane_split(request).map_err(PaneOpenError::Split)?;
         self.pane_run(&split.pane_id, command)
             .map_err(PaneOpenError::Run)?;
@@ -546,20 +522,6 @@ impl HerdrCli for CliHerdr {
             body.into(),
         ])?;
         Ok(())
-    }
-}
-
-/// Focuses the session whose folder is `folder`, or creates one there. Returns the
-/// creation's warning.
-pub(crate) fn focus_or_create_folder<S, E>(
-    sessions: &[LiveFolder<S>],
-    folder: &Path,
-    focus: impl FnOnce(&S) -> Result<(), E>,
-    create: impl FnOnce() -> Result<Option<String>, E>,
-) -> Result<Option<String>, E> {
-    match session_in_folder(sessions, folder) {
-        Some(session) => focus(session).map(|()| None),
-        None => create(),
     }
 }
 
@@ -652,32 +614,15 @@ struct RootPaneInfo {
 }
 
 fn require_absolute(name: &str, path: &Path) -> Result<(), HerdrError> {
-    if path.is_absolute() {
-        Ok(())
-    } else {
-        Err(HerdrError::InvalidArgument(format!(
-            "{name} must be absolute: {}",
-            path.display()
-        )))
-    }
+    args::absolute(name, path).map_err(HerdrError::InvalidArgument)
 }
 
 fn require_nonempty(name: &str, value: &str) -> Result<(), HerdrError> {
-    if value.trim().is_empty() {
-        Err(HerdrError::InvalidArgument(format!(
-            "{name} must not be empty"
-        )))
-    } else {
-        Ok(())
-    }
+    args::nonempty(name, value).map_err(HerdrError::InvalidArgument)
 }
 
 fn path_arg(name: &str, path: &Path) -> Result<String, HerdrError> {
-    path.to_str().map(str::to_owned).ok_or_else(|| {
-        HerdrError::InvalidArgument(format!(
-            "{name} is not valid UTF-8 and cannot be passed to herdr"
-        ))
-    })
+    args::utf8_path(name, path).map_err(HerdrError::InvalidArgument)
 }
 
 fn invalid_response(error: &serde_json::Error, output: &[u8]) -> HerdrError {
@@ -711,6 +656,8 @@ mod tests {
     #[cfg(unix)]
     use std::fs;
 
+    #[cfg(unix)]
+    use kiosk_core::config::on_open::OnOpenPaneDirection;
     #[cfg(unix)]
     use tempfile::TempDir;
 

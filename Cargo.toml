@@ -1,19 +1,19 @@
 [package]
 name = "herdr-kiosk"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Fuzzy repo and branch picker for Herdr"
 license = "MIT"
 
 [dependencies]
 anyhow = "1"
-kiosk-core = "0.3"
-kiosk-tui = "0.3"
+kiosk-core = "0.4"
+kiosk-tui = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [dev-dependencies]
-kiosk-core = { version = "0.3", features = ["test-support"] }
+kiosk-core = { version = "0.4", features = ["test-support"] }
 tempfile = "3"
 
 [workspace]
