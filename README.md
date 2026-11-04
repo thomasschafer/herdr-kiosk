@@ -50,11 +50,7 @@ from GitHub to update to a newer version.
 
 For the Herdr desktop app, use
 [herdr-app-kiosk](https://github.com/thomasschafer/herdr-app-kiosk), a mod in the app's
-gallery; its README covers installing it. It replaces the `herdr-app/kiosk` mod this
-repository used to ship. That mod read its config from `~/.config/herdr-kiosk/config.toml`
-(or `$XDG_CONFIG_HOME/herdr-kiosk/config.toml`). herdr-app-kiosk keeps its own in
-`~/.config/herdr-app-kiosk/config.toml` and, the first time it runs without one, copies the
-old file there, leaving the original in place.
+gallery; its README covers installing it.
 
 ## Usage
 
