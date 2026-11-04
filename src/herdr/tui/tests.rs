@@ -1,10 +1,13 @@
 use std::path::PathBuf;
 
-use kiosk_core::config::on_open::{OnOpenPaneConfig, OnOpenPaneDirection};
+use kiosk_core::{
+    backend::on_open::{PaneOpenError, PaneSplitResponse},
+    config::on_open::{OnOpenPaneConfig, OnOpenPaneDirection},
+};
 
 use super::*;
 use crate::herdr::{
-    PaneInfo, PaneSplitResponse, WorkspaceCreateResponse, WorkspaceInfo, WorkspaceWorktreeInfo,
+    PaneInfo, WorkspaceCreateResponse, WorkspaceInfo, WorkspaceWorktreeInfo,
     WorktreeCreateResponse, WorktreeInfo, WorktreeListResponse, WorktreeOpenResponse,
     WorktreeRemoveResponse,
     mock::{HerdrCall, MockHerdrCli},
@@ -224,11 +227,11 @@ fn on_open_failures_warn_without_replacing_open_success() {
         .unwrap()
         .push_back(Ok(open_response(false)));
     tui.cli.pane_open_results.lock().unwrap().extend([
-        Err(super::super::PaneOpenError::Split(HerdrError::Other {
+        Err(PaneOpenError::Split(HerdrError::Other {
             code: "pane_split_failed".into(),
             message: "too small".into(),
         })),
-        Err(super::super::PaneOpenError::Run(HerdrError::Other {
+        Err(PaneOpenError::Run(HerdrError::Other {
             code: "pane_run_failed".into(),
             message: "shell closed".into(),
         })),

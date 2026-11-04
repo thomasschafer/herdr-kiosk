@@ -29,7 +29,7 @@ These decisions shaped v1:
 | D10 | Naming | Repo/dir/binary: `herdr-kiosk`. Plugin id: `thomasschafer.herdr-kiosk`. One name everywhere |
 | D11 | Theme | ANSI-16 + terminal default fg/bg so the picker visually matches everything else rendered in the user's terminal/herdr (see §6). Slim `[theme]` override section kept |
 | D12 | Windows | Added before release after an initial Unix-only scope; full parity is maintained |
-| D13 | Crate layout | The picker lives in the kiosk repo's shared `kiosk-core` and `kiosk-tui` crates, generic over a multiplexer backend, so the tmux and Rex pickers share it. This repo is one binary crate holding the two herdr backends (see §4) |
+| D13 | Crate layout | The picker lives in the kiosk repo's shared `kiosk-core` and `kiosk-tui` crates, generic over a multiplexer backend, so the tmux and Rex pickers share it. This repo is one binary crate holding the herdr TUI backend (see §4) |
 | D14 | Collision display | Repos sharing a name are disambiguated with the shortest distinguishing parent-path suffix (see §5) |
 | D15 | Process | Claude orchestrates/plans/verifies, Codex (gpt-5.6 sol, high reasoning) implements, Tom decides product questions and hand-tests (see §7) |
 | D16 | Version control | Each change goes through a PR on github.com/thomasschafer/herdr-kiosk and is squash-merged once CI passes; commits keep their co-author lines. Pause for Tom only when something genuinely needs review |
@@ -77,18 +77,18 @@ multiplexer implements: open-state queries, opening a checkout or folder, notifi
 and worktree support, which is either native (the backend creates and removes worktrees)
 or managed (kiosk does it with git and the backend only shows and closes sessions). Each
 product extends the shared schema with the sections it uses. `[on_open]` is one kiosk-core
-provides; this repo includes it, words its README entry for herdr in `xtask`, and has the
-Herdr app refuse a pane `ratio` it cannot honour.
+provides, along with the helper that runs its panes once a backend has opened a new
+session; this repo includes it and words its README entry for herdr in `xtask`. The Herdr
+desktop app's picker is a separate product,
+[herdr-app-kiosk](https://github.com/thomasschafer/herdr-app-kiosk), built on the same
+crates.
 
 | Module | Notes |
 |---|---|
 | `herdr.rs` | The herdr TUI CLI (via `HERDR_BIN_PATH`) behind the `HerdrCli` seam, with a mock. Parses `--json` responses and surfaces herdr error codes as typed errors |
 | `herdr/tui.rs` | The herdr TUI backend: native worktrees through `worktree open/create/remove`, identity by herdr's own matching, the stale-route retry, and `[on_open]` |
-| `herdr/app.rs` | The Herdr app backend: managed worktrees in `~/.herdr/worktrees`, spaces matched to checkouts by their first terminal's live folder, notifications sent to the mod as the app's own |
-| `herdr/on_open.rs` | Running `[on_open]` panes after either backend opens a new workspace |
 | `config.rs` | The config extension: kiosk-core's `[on_open]` section, read beside the shared sections |
-| `context.rs`, `launch.rs` | Which host started kiosk: the herdr TUI (`HERDR_BIN_PATH`, with the current folder from `HERDR_PLUGIN_CONTEXT_JSON`, never `std::env::current_dir()`, which is the plugin dir), or the app's mod through `herdr-kiosk app --app-home <home> --context <json>` |
-| `herdr-app/kiosk` | The app's mod. It runs `herdr-kiosk app`, connects to the picker kiosk-serve runs and draws the views it sends with the app's UI kit; the picker's state machine, keymap and wording all stay in kiosk-core |
+| `context.rs`, `launch.rs` | Whether the herdr TUI started kiosk (`HERDR_BIN_PATH`), and the current folder from its context (`HERDR_PLUGIN_CONTEXT_JSON`, never `std::env::current_dir()`, which is the plugin dir) |
 
 ### Herdr interaction map (exact calls)
 
@@ -107,17 +107,6 @@ After a successful open/create call the TUI exits immediately so the popup tears
 the focus change lands (verified: `switch_workspace` has no popup guard; the popup is
 session-modal until its process exits). During the blocking create, show kiosk's Loading
 spinner state.
-
-### The Herdr app
-
-`herdr-kiosk app` is served by kiosk-serve: it starts the picker in the background, prints
-a loopback port and a secret, and exits, since the app's `exec` waits for its program to
-finish. The mod connects with the secret, claims every chord kiosk binds in its own key
-context (so `esc` and chords such as `alt+backspace` reach kiosk ahead of the app's
-shortcuts), sends key presses, pastes, clicks and wheel scrolls, and draws each view. The
-picker exits when the mod's connection closes, however the popup closed. The app has no
-plugin directories, so this product (`APP_PRODUCT`) keeps its config and state in the XDG
-locations.
 
 ### Launch surface
 

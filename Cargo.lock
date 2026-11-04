@@ -513,7 +513,6 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "kiosk-core",
- "kiosk-serve",
  "kiosk-tui",
  "serde",
  "serde_json",
@@ -604,7 +603,7 @@ dependencies = [
 [[package]]
 name = "kiosk-core"
 version = "0.4.0"
-source = "git+https://github.com/thomasschafer/kiosk?rev=6fdbae6f3b1b2eb741e5ac40249b4e4229e3daf7#6fdbae6f3b1b2eb741e5ac40249b4e4229e3daf7"
+source = "git+https://github.com/thomasschafer/kiosk?rev=151f275f04f9fabf445c3d6459800c9a321f9c07#151f275f04f9fabf445c3d6459800c9a321f9c07"
 dependencies = [
  "anyhow",
  "crossterm",
@@ -621,7 +620,7 @@ dependencies = [
 [[package]]
 name = "kiosk-docgen"
 version = "0.4.0"
-source = "git+https://github.com/thomasschafer/kiosk?rev=6fdbae6f3b1b2eb741e5ac40249b4e4229e3daf7#6fdbae6f3b1b2eb741e5ac40249b4e4229e3daf7"
+source = "git+https://github.com/thomasschafer/kiosk?rev=151f275f04f9fabf445c3d6459800c9a321f9c07#151f275f04f9fabf445c3d6459800c9a321f9c07"
 dependencies = [
  "anyhow",
  "kiosk-core",
@@ -630,23 +629,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "kiosk-serve"
-version = "0.4.0"
-source = "git+https://github.com/thomasschafer/kiosk?rev=6fdbae6f3b1b2eb741e5ac40249b4e4229e3daf7#6fdbae6f3b1b2eb741e5ac40249b4e4229e3daf7"
-dependencies = [
- "anyhow",
- "crossterm",
- "getrandom 0.3.4",
- "kiosk-core",
- "serde",
- "serde_json",
- "windows-sys",
-]
-
-[[package]]
 name = "kiosk-tui"
 version = "0.4.0"
-source = "git+https://github.com/thomasschafer/kiosk?rev=6fdbae6f3b1b2eb741e5ac40249b4e4229e3daf7#6fdbae6f3b1b2eb741e5ac40249b4e4229e3daf7"
+source = "git+https://github.com/thomasschafer/kiosk?rev=151f275f04f9fabf445c3d6459800c9a321f9c07#151f275f04f9fabf445c3d6459800c9a321f9c07"
 dependencies = [
  "anyhow",
  "crossterm",

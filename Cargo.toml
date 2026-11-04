@@ -9,7 +9,6 @@ license = "MIT"
 anyhow = "1"
 kiosk-core = "0.4"
 kiosk-tui = "0.4"
-kiosk-serve = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
@@ -34,7 +33,6 @@ workspace = true
 lto = true
 
 [patch.crates-io]
-kiosk-core = { git = "https://github.com/thomasschafer/kiosk", rev = "6fdbae6f3b1b2eb741e5ac40249b4e4229e3daf7" }
-kiosk-tui = { git = "https://github.com/thomasschafer/kiosk", rev = "6fdbae6f3b1b2eb741e5ac40249b4e4229e3daf7" }
-kiosk-serve = { git = "https://github.com/thomasschafer/kiosk", rev = "6fdbae6f3b1b2eb741e5ac40249b4e4229e3daf7" }
-kiosk-docgen = { git = "https://github.com/thomasschafer/kiosk", rev = "6fdbae6f3b1b2eb741e5ac40249b4e4229e3daf7" }
+kiosk-core = { git = "https://github.com/thomasschafer/kiosk", rev = "151f275f04f9fabf445c3d6459800c9a321f9c07" }
+kiosk-tui = { git = "https://github.com/thomasschafer/kiosk", rev = "151f275f04f9fabf445c3d6459800c9a321f9c07" }
+kiosk-docgen = { git = "https://github.com/thomasschafer/kiosk", rev = "151f275f04f9fabf445c3d6459800c9a321f9c07" }

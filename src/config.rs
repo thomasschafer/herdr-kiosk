@@ -6,11 +6,10 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-/// In the herdr TUI, the plugin reads `config.toml` from its config directory: run
-/// `herdr plugin config-dir thomasschafer.herdr-kiosk` to locate it. In the Herdr
-/// app, kiosk reads `$XDG_CONFIG_HOME/herdr-kiosk/config.toml`, which is
-/// `~/.config/herdr-kiosk/config.toml` when `XDG_CONFIG_HOME` is unset. All sections are optional, and the defaults are shown below alongside curated
-/// examples for settings that benefit from one.
+/// The plugin reads `config.toml` from its config directory: run
+/// `herdr plugin config-dir thomasschafer.herdr-kiosk` to locate it. All sections are
+/// optional, and the defaults are shown below alongside curated examples for settings
+/// that benefit from one.
 pub struct Config {
     /// Configure command panes created after opening a new workspace.
     pub on_open: OnOpenConfig,
