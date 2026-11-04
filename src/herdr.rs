@@ -656,8 +656,8 @@ mod tests {
     #[cfg(unix)]
     use std::fs;
 
+    #[cfg(unix)]
     use kiosk_core::config::on_open::OnOpenPaneDirection;
-
     #[cfg(unix)]
     use tempfile::TempDir;
 
