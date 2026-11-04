@@ -28,6 +28,7 @@ $repoRoot = Join-Path $testRoot "repo"
 $releaseRoot = Join-Path $testRoot "releases"
 $out = Join-Path (Join-Path $testRoot "out") "herdr-kiosk.exe"
 $cargoLog = Join-Path $testRoot "cargo.log"
+$ghLog = Join-Path $testRoot "gh.log"
 $stdout = Join-Path $testRoot "installer.out"
 $stderr = Join-Path $testRoot "installer.err"
 
@@ -75,6 +76,18 @@ New-Item -ItemType Directory -Path (Split-Path -Parent $built) -Force | Out-Null
 [IO.File]::WriteAllText($built, "built from source`n")
 '@
     [IO.File]::WriteAllText($cargoStub, $cargoStubContents)
+    $ghStub = Join-Path $testRoot "gh-stub.ps1"
+    $ghStubContents = @'
+param([Parameter(ValueFromRemainingArguments = $true)][string[]] $GhArguments)
+$ErrorActionPreference = "Stop"
+Add-Content -LiteralPath $env:HK_TEST_GH_LOG -Value "gh $($GhArguments -join ' ')"
+if ($env:HK_TEST_GH_REFUSES) {
+    [Console]::Error.WriteLine("verification failed")
+    exit 1
+}
+exit 0
+'@
+    [IO.File]::WriteAllText($ghStub, $ghStubContents)
 
     $pwsh = (Get-Process -Id $PID).Path
     $installer = Join-Path $repoScripts "fetch-or-build.ps1"
@@ -85,6 +98,10 @@ New-Item -ItemType Directory -Path (Split-Path -Parent $built) -Force | Out-Null
     $env:HK_TARGET = $target
     $env:HK_CARGO = $cargoStub
     $env:HK_TEST_LOG = $cargoLog
+    $env:HK_GH = Join-Path $testRoot "missing-gh.ps1"
+    $env:HK_TEST_GH_LOG = $ghLog
+    $env:HK_TEST_GH_REFUSES = $null
+    $env:KIOSK_SKIP_ATTESTATION = $null
     $env:CARGO_TARGET_DIR = Join-Path $repoRoot "target"
 
     [IO.File]::WriteAllText($sumsPath, "$("0" * 64)  $asset`n")
@@ -128,7 +145,50 @@ New-Item -ItemType Directory -Path (Split-Path -Parent $built) -Force | Out-Null
         -not (Test-Path -LiteralPath $cargoLog)
     ) "cargo ran for a verified download"
     Assert-Contains $stdout "installed verified"
+    Assert-Contains $stdout "install the GitHub CLI to check its build attestation too"
     Write-Output "successful stubbed download: ok"
+
+    $env:HK_GH = $ghStub
+    Remove-TestFiles @($cargoLog, $ghLog, $out, $stdout, $stderr)
+    & $pwsh -NoLogo -NoProfile -NonInteractive -File $installer 1> $stdout 2> $stderr
+    Assert-True ($LASTEXITCODE -eq 0) "attested install failed"
+    Assert-True (
+        Test-Path -LiteralPath $out -PathType Leaf
+    ) "attested binary was not installed"
+    Assert-True (
+        -not (Test-Path -LiteralPath $cargoLog)
+    ) "cargo ran for an attested download"
+    Assert-Contains $ghLog "gh attestation verify "
+    Assert-Contains $ghLog "$asset --repo thomasschafer/herdr-kiosk"
+    Assert-Contains $stdout "verified ${asset}: checksum and build attestation"
+    Write-Output "attested download with the GitHub CLI: ok"
+
+    $env:HK_TEST_GH_REFUSES = "1"
+    Remove-TestFiles @($cargoLog, $ghLog, $out, $stdout, $stderr)
+    & $pwsh -NoLogo -NoProfile -NonInteractive -File $installer 1> $stdout 2> $stderr
+    Assert-True ($LASTEXITCODE -ne 0) "installed a binary the GitHub CLI refused"
+    Assert-True (
+        -not (Test-Path -LiteralPath $out)
+    ) "a refused binary was installed"
+    Assert-True (
+        -not (Test-Path -LiteralPath $cargoLog)
+    ) "cargo ran for a refused download"
+    Assert-Contains $stderr "verification failed"
+    Assert-Contains $stderr "$asset has no valid build attestation from thomasschafer/herdr-kiosk"
+    Write-Output "refused attestation fails without installing or building: ok"
+
+    $env:KIOSK_SKIP_ATTESTATION = "1"
+    Remove-TestFiles @($cargoLog, $ghLog, $out, $stdout, $stderr)
+    & $pwsh -NoLogo -NoProfile -NonInteractive -File $installer 1> $stdout 2> $stderr
+    Assert-True ($LASTEXITCODE -eq 0) "install skipping the attestation failed"
+    Assert-True (
+        Test-Path -LiteralPath $out -PathType Leaf
+    ) "binary was not installed when skipping the attestation"
+    Assert-True (
+        -not (Test-Path -LiteralPath $ghLog)
+    ) "the GitHub CLI ran although KIOSK_SKIP_ATTESTATION was set"
+    Assert-Contains $stdout "KIOSK_SKIP_ATTESTATION skips its build attestation"
+    Write-Output "KIOSK_SKIP_ATTESTATION skips the attestation check: ok"
 
     Write-Output "fetch-or-build ps tests: PASS"
 }

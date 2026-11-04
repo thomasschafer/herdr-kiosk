@@ -13,6 +13,13 @@ Install from GitHub:
 herdr plugin install thomasschafer/herdr-kiosk
 ```
 
+The install fetches the release's prebuilt binary for your platform and checks it against
+the release's `SHA256SUMS` and, if the [GitHub CLI](https://cli.github.com) is installed,
+its build attestation, which shows that this repository's release workflow built it. It
+stops if the attestation doesn't check out; set `KIOSK_SKIP_ATTESTATION=1` to rely on the
+checksum alone. Where there is no prebuilt binary, or it doesn't match its checksum, the
+install builds from source, which needs Rust.
+
 Add a keybinding to open the picker (here, `prefix+f`):
 
 ```toml

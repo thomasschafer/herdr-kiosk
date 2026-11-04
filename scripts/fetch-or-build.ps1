@@ -110,6 +110,8 @@ $out = Remove-VerbatimPathPrefix (
     Get-EnvironmentValue "HK_OUT" $defaultOut
 )
 $cargo = Get-EnvironmentValue "HK_CARGO" "cargo"
+$gh = Get-EnvironmentValue "HK_GH" "gh"
+$repository = "thomasschafer/herdr-kiosk"
 $temporaryDirectory = $null
 
 try {
@@ -139,7 +141,7 @@ try {
     }
 
     $defaultBaseUrl =
-        "https://github.com/thomasschafer/herdr-kiosk/releases/download/v$version"
+        "https://github.com/$repository/releases/download/v$version"
     $baseUrl = (Get-EnvironmentValue "HK_BASE_URL" $defaultBaseUrl).TrimEnd("/")
     $temporaryDirectory = Join-Path (
         [IO.Path]::GetTempPath()
@@ -177,6 +179,26 @@ try {
     $actual = (Get-FileHash -LiteralPath $assetPath -Algorithm SHA256).Hash
     if (-not $expected.Equals($actual, [StringComparison]::OrdinalIgnoreCase)) {
         throw "checksum mismatch for $asset"
+    }
+
+    # A binary that matches its checksum but that the GitHub CLI says this repository's
+    # release workflow didn't build is refused outright rather than rebuilt, so the
+    # refusal is seen.
+    if ($env:KIOSK_SKIP_ATTESTATION) {
+        Write-Output "fetch-or-build: verified ${asset}: checksum (KIOSK_SKIP_ATTESTATION skips its build attestation)"
+    }
+    elseif ($null -ne (Get-Command -Name $gh -ErrorAction SilentlyContinue)) {
+        & $gh attestation verify $assetPath --repo $repository | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            [Console]::Error.WriteLine(
+                "fetch-or-build: $asset has no valid build attestation from $repository; set KIOSK_SKIP_ATTESTATION=1 to install it on its checksum alone"
+            )
+            exit 1
+        }
+        Write-Output "fetch-or-build: verified ${asset}: checksum and build attestation"
+    }
+    else {
+        Write-Output "fetch-or-build: verified ${asset}: checksum (install the GitHub CLI to check its build attestation too)"
     }
 
     New-ParentDirectory $out
