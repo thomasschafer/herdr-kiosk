@@ -7,7 +7,7 @@ publish = false
 [dependencies]
 anyhow = "1"
 herdr-kiosk = { path = ".." }
-kiosk-docgen = "0.3"
+kiosk-docgen = "0.4"
 
 [lints]
 workspace = true

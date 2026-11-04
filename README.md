@@ -2,7 +2,7 @@
 
 Fuzzy-find Git repositories (or any folder) and branches, then open them as Herdr
 workspaces and worktrees. It runs in both the herdr TUI (as a plugin) and the Herdr
-desktop app (as a mod), from the same binary.
+desktop app (as a natively drawn mod), from the same binary.
 
 ![Demo of fuzzy-finding a repository and branch, then opening its Herdr worktree](media/preview.gif)
 
@@ -42,31 +42,70 @@ from GitHub to update to a newer version.
 
 ## Install in the Herdr app
 
-The app runs kiosk from a checkout of this repository, through the mod in
-[`herdr-app/kiosk`](herdr-app/kiosk). The mod supports macOS and Linux. Build the binary, then link the mod folder into
-the app's `mods/` as `kiosk` (the mod finds the binary through that link, at
-`target/release/herdr-kiosk` in the same checkout):
+In the Herdr desktop app, kiosk is a mod that the app draws natively: the same picker as in
+the herdr TUI, in the app's own look and theme, with the mouse as well as the keyboard. It
+works on macOS, Linux and Windows.
+
+![Demo of the Herdr app's kiosk picker: filtering branches, then creating a new branch's worktree](media/app-preview.gif)
+
+### With the install script
+
+On macOS and Linux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/thomasschafer/herdr-kiosk/main/scripts/install-app.sh | sh
+```
+
+On Windows, in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/thomasschafer/herdr-kiosk/main/scripts/install-app.ps1 | iex
+```
+
+The script installs the latest release's mod and its checksum-verified prebuilt binary
+together in the app's `mods/kiosk` folder. Where a platform has no prebuilt binary, it
+builds one from source, which needs Rust. It needs `git` to fetch the release. Pass
+`--version v0.3.0` (or set `KIOSK_INSTALL_VERSION` on Windows) for a particular release,
+and run it again to update. Read the [shell script](scripts/install-app.sh) or
+[PowerShell script](scripts/install-app.ps1) first if you prefer.
+
+### From source
 
 ```sh
 git clone https://github.com/thomasschafer/herdr-kiosk.git
 cd herdr-kiosk
-cargo build --release
-ln -s "$PWD/herdr-app/kiosk" ~/.config/herdr-app/mods/kiosk
-herdr-app check ~/.config/herdr-app/mods/kiosk
+scripts/install-app.sh --from-source
 ```
 
-Bind a key to open it in `~/.config/herdr-app/keys.json`:
+On Windows, run `scripts\install-app.ps1 -FromSource`. Run it again after pulling to
+update. To work on kiosk, link the mod folder instead, so the app runs the checkout's own
+build and each `cargo build --release` takes effect the next time kiosk opens:
+
+```sh
+cargo build --release
+ln -s "$PWD/herdr-app/kiosk" ~/.config/herdr-app/mods/kiosk
+```
+
+[`scripts/app-sandbox`](scripts/app-sandbox) tries the mod against the released app in a
+container, with real key presses and clicks, and records the preview above.
+
+### Open it
+
+Bind a key to open kiosk in `~/.config/herdr-app/keys.json`, for example:
 
 ```json
 { "global": { "cmd-p": "mod.open:kiosk" } }
 ```
 
-On macOS this takes `cmd-p` from the app's own tab picker.
+On macOS `cmd-p` takes over the app's own tab picker; on Linux and Windows,
+`ctrl-shift-r` is free.
 
-Kiosk opens in a large dialog over the window and closes when it exits. Its
-configuration lives in `~/.config/herdr-kiosk/config.toml` (or under
-`$XDG_CONFIG_HOME`), and the setup wizard writes it on first use. To update,
-pull the checkout and rebuild.
+Kiosk opens as a popup at the top of the window, like the app's own pickers. Type to
+search, and press `enter` or click to open. Hover a row for its buttons: a repository's
+branches, or removing a branch's checkout. Its keys are kiosk's own, the same as in the
+terminal, including any you change under [`[keys]`](#keys); `esc` goes back, and leaves
+from the repository list. Kiosk's configuration lives in `~/.config/herdr-kiosk/config.toml`
+(or under `$XDG_CONFIG_HOME`), and the setup wizard writes it on first use.
 
 In the app, a workspace is a space: opening a repository makes an unnamed space in it,
 which the app names after its folder, and selects the existing space when one is already
@@ -237,7 +276,8 @@ Defaults:
 
 Windows is supported and uses PowerShell launch shims plus a native
 `x86_64-pc-windows-msvc` binary. Installation downloads and verifies that prebuilt,
-with Cargo used only as a fallback.
+with Cargo used only as a fallback, both for the herdr TUI plugin and for the Herdr app's
+mod (`scripts/install-app.ps1`).
 
 ## Development
 

@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# Runs inside the app sandbox container (see run.sh): a headless X display, the released
+# Herdr app on its own home and core, and this checkout's kiosk mod.
+#
+#   sandbox up | down              start or stop the display, the core and the window
+#   sandbox install                build kiosk and install the mod into the sandbox app
+#   sandbox fixtures               make demo repositories in ~/code
+#   sandbox open                   open the kiosk mod
+#   sandbox key <keys>... | type <text> | click X Y | move X Y | wheel up|down N
+#   sandbox shot [file]            the window's last frame
+#   sandbox trace                  every message kiosk sent and received this session
+#   sandbox do|status|ls ...       herdr-app against the sandbox window
+set -euo pipefail
+
+src=${KIOSK_SRC:-/src}
+root=$HOME/sb
+export HERDR_APP_HOME=$root/home HC_SESSION=kiosk-sandbox XDG_STATE_HOME=$root/state \
+  XDG_RUNTIME_DIR=$root/run HERDR_APP_NO_SOUND=1 DISPLAY=:99 KIOSK_SERVE_TRACE=$root/trace.jsonl
+target=$HOME/target
+
+window() { xdotool search --name '^Herdr$' | head -1; }
+
+# Closes whatever the app opened over its window on start, such as its release notes.
+close_overlays() {
+  sleep 1
+  for id in $(herdr-app status | sed -n '/"overlays"/,/]/p' | grep -o '"[^"]*"' | grep -v overlays | tr -d '"'); do
+    herdr-app "do" overlay.close "{\"id\":\"$id\"}" >/dev/null 2>&1 || true
+  done
+}
+
+up() {
+  mkdir -p "$root/home" "$root/state" "$root/run"
+  chmod 700 "$root/run"
+  if ! xdpyinfo >/dev/null 2>&1; then
+    Xvfb :99 -screen 0 1280x820x24 -nolisten tcp >"$root/xvfb.log" 2>&1 &
+    for _ in $(seq 50); do xdpyinfo >/dev/null 2>&1 && break; sleep 0.1; done
+  fi
+  # A first run would open the app's welcome over everything.
+  [[ -f $HERDR_APP_HOME/shared.json ]] || echo '{"frame.welcomed":true}' >"$HERDR_APP_HOME/shared.json"
+  # SANDBOX_APPEARANCE: light or dark rather than the app's default.
+  if [[ -n ${SANDBOX_APPEARANCE:-} && ! -f $HERDR_APP_HOME/settings.json ]]; then
+    echo "{\"appearance\":\"$SANDBOX_APPEARANCE\"}" >"$HERDR_APP_HOME/settings.json"
+  fi
+  setsid herdr-app >"$root/app.log" 2>&1 </dev/null &
+  for _ in $(seq 150); do
+    if herdr-app status >/dev/null 2>&1 && [[ -n $(window) ]]; then
+      xdotool windowsize "$(window)" 1280 820
+      close_overlays
+      echo "sandbox is up"
+      return
+    fi
+    sleep 0.2
+  done
+  cat "$root/app.log" >&2
+  exit 1
+}
+
+down() {
+  pkill -x herdr-app || true
+  hc server stop >/dev/null 2>&1 || true
+  pkill -x Xvfb || true
+  rm -rf "$root"
+}
+
+install() {
+  (cd "$src" && CARGO_TARGET_DIR=$target cargo build --release --locked)
+  local mod=$HERDR_APP_HOME/mods/kiosk
+  mkdir -p "$mod/bin"
+  # Replaced, not overwritten: a running picker keeps its binary open.
+  cp "$target/release/herdr-kiosk" "$mod/bin/.herdr-kiosk.new"
+  mv -f "$mod/bin/.herdr-kiosk.new" "$mod/bin/herdr-kiosk"
+  cp "$src/herdr-app/kiosk/main.js" "$src/herdr-app/kiosk/mod.json" "$mod/"
+  herdr-app check "$mod"
+}
+
+fixtures() {
+  local code=$HOME/code
+  rm -rf "$code" "$HOME/.herdr/worktrees"
+  mkdir -p "$code"
+  git config --global user.email demo@example.com
+  git config --global user.name Demo
+  git config --global init.defaultBranch main
+  repo() {
+    local name=$1
+    shift
+    git init -q "$code/$name"
+    git -C "$code/$name" commit -q --allow-empty -m init
+    for branch in "$@"; do git -C "$code/$name" branch "$branch"; done
+  }
+  repo api feat/auth fix/timeouts refactor/handlers release/2.4
+  repo web feat/dark-mode feat/search chore/deps
+  repo infra feat/terraform fix/dns
+  repo mobile feat/offline fix/crash-on-launch
+  repo design-system feat/tokens
+  repo docs
+  repo cli feat/completions
+  mkdir -p "$HOME/.herdr/worktrees/api"
+  git -C "$code/api" worktree add -q "$HOME/.herdr/worktrees/api/feat-auth" feat/auth
+  # A branch only the remote has.
+  rm -rf "$HOME/remotes"
+  git clone -q --bare "$code/web" "$HOME/remotes/web.git"
+  git -C "$HOME/remotes/web.git" branch feat/from-review main
+  git -C "$code/web" remote add origin "$HOME/remotes/web.git"
+  git -C "$code/web" fetch -q origin
+  for i in $(seq -w 1 "${EXTRA_REPOS:-0}"); do repo "service-$i"; done
+  mkdir -p "$HOME/.config/herdr-kiosk"
+  printf 'search_dirs = ["~/code"]\n' >"$HOME/.config/herdr-kiosk/config.toml"
+}
+
+case ${1:-} in
+  up) up ;;
+  down) down ;;
+  install) install ;;
+  fixtures) fixtures ;;
+  open) : >"$KIOSK_SERVE_TRACE"; herdr-app "do" mod.open '{"name":"kiosk"}' >/dev/null ;;
+  key) shift; xdotool key --window "$(window)" --delay 60 "$@" ;;
+  type) shift; xdotool type --window "$(window)" --delay "${TYPE_DELAY:-60}" "$*" ;;
+  move) xdotool mousemove --window "$(window)" "$2" "$3" ;;
+  click) xdotool mousemove --window "$(window)" "$2" "$3"; sleep 0.15; xdotool click 1 ;;
+  wheel) xdotool click --repeat "$3" --delay 40 "$([[ $2 == up ]] && echo 4 || echo 5)" ;;
+  shot) herdr-app shot "${2:-$root/shot.png}" ;;
+  trace) cat "$KIOSK_SERVE_TRACE" ;;
+  do | status | ls | check) exec herdr-app "$@" ;;
+  *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

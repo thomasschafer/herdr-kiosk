@@ -87,44 +87,58 @@ h server stop 2>/dev/null; t kill-server       # teardown (killing tmux also kil
 
 ## The Herdr app
 
-The app is driven entirely by its own CLI, so no tmux is needed. Isolate it with a
-scratch app home and a separate herdr-core session, and give both a sandbox `HOME` so
-checkouts, kiosk's config and state, and the core's state stay out of your own:
+In the app, kiosk draws nothing itself: `herdr-kiosk app` serves the picker over a loopback
+socket and the mod in `herdr-app/kiosk` draws it with the app's own UI kit. Its terminal
+picker plays no part, so the herdr TUI harness above does not reach it.
+
+[`scripts/app-sandbox`](../scripts/app-sandbox) runs the released app headless in a Docker
+container, on its own home, core and X display, so real key presses and clicks drive it
+without touching your screen:
+
+```sh
+scripts/app-sandbox/run.sh e2e      # the whole suite: build, install, drive, assert
+scripts/app-sandbox/run.sh up       # or by hand: start the display, the core and the window
+scripts/app-sandbox/run.sh fixtures # demo repositories in the container's ~/code
+scripts/app-sandbox/run.sh install  # build this checkout and install the mod
+scripts/app-sandbox/run.sh open     # mod.open:kiosk
+scripts/app-sandbox/run.sh type web; scripts/app-sandbox/run.sh key Tab ctrl+h Escape
+scripts/app-sandbox/run.sh click 600 155
+scripts/app-sandbox/run.sh shot /src/target/shot.png   # the app's own frame, in the checkout
+scripts/app-sandbox/run.sh trace    # every message the mod and the picker exchanged
+scripts/app-sandbox/run.sh down; scripts/app-sandbox/run.sh rm
+```
+
+The trace is what makes the suite assert on the picker rather than on pixels: with
+`KIOSK_SERVE_TRACE` naming a file, the picker appends each message to it, `> ` before the
+mod's and `< ` before its own, and each `< {"t":"view",...}` line is exactly what was shown.
+`SANDBOX_APPEARANCE=dark` starts the app dark. `run.sh record` re-records
+`media/app-preview.gif`; look at it before committing it.
+
+To try it on your own desktop instead, use a scratch app home and core so nothing of
+yours changes:
 
 ```sh
 SANDBOX=/tmp/kt                                 # short path: socket length limit
 export HOME=$SANDBOX/home HERDR_APP_HOME=$SANDBOX/apphome HC_SESSION=kiosktest
 export XDG_STATE_HOME=$SANDBOX/xdg/state XDG_CONFIG_HOME=$SANDBOX/xdg/config
 export XDG_RUNTIME_DIR=$SANDBOX/xdg/run
-export PATH=/path/to/herdr-app-and-hc:$PATH     # the app finds hc on PATH
-for v in $(env | sed -n 's/^\(HERDR_[A-Z_]*\)=.*/\1/p'); do
-  [ "$v" = HERDR_APP_HOME ] || unset "$v"       # a herdr TUI pane sets these
-done
-
 herdr-app &                                     # a second window, on this home
-ln -s "$PWD/herdr-app/kiosk" "$HERDR_APP_HOME/mods/kiosk"
-herdr-app check "$HERDR_APP_HOME/mods/kiosk"
-herdr-app do mod.open:kiosk                     # opens the picker
-hc ls --json                                    # kiosk's terminal has no "where"
-hc keys <terminal> down tab enter               # drive the picker
-hc read <terminal>                              # read its screen
-herdr-app ls; herdr-app status                  # assert spaces, panes and overlays
-herdr-app shot shot.png                         # look at the window
-
+scripts/install-app.sh --from-source
+herdr-app do mod.open:kiosk
 herdr-app do app.quit; hc server stop           # teardown
 ```
-
-Use `hc keys` to drive kiosk: `hc send` pastes its text and then presses Enter.
 
 On macOS the window stops drawing while another window covers it, so `shot` can
 return a stale frame. Toggling `herdr-app do window.maximize` twice before a shot
 makes it draw a fresh one.
 
-What to check: keys typed right after `mod.open:kiosk` reach kiosk without a click;
-opening a repository makes a space in it with the `[on_open]` panes and focus on the
-first pane, and quitting an `[on_open]` command leaves its shell; opening it again selects that space without new panes; a
-branch without a checkout gets one in `~/.herdr/worktrees/<repo>/<branch>`, nested
-under its repository in the sidebar; deleting an open, dirty worktree asks to force,
-then removes the checkout and closes its space; `[on_open]` failures show as a
-notification; a failing kiosk (an invalid config) stays on screen until Enter; and a
-missing binary shows a notification.
+What to check: keys typed right after `mod.open:kiosk` reach kiosk without a click, and
+kiosk's chords win over the app's own shortcuts while it is open (`alt+backspace`, `esc`
+going back rather than closing the popup); opening a repository makes a space in it with
+the `[on_open]` panes and focus on the first pane; opening it again selects that space; a
+branch without a checkout gets one in `~/.herdr/worktrees/<repo>/<branch>`, nested under
+its repository in the sidebar; deleting an open, dirty worktree asks to force, then
+removes the checkout and closes its space; notifications from kiosk show as the app's
+own; closing the popup any way ends the picker's process; and a missing binary, an
+invalid config or a mod and binary of different versions show a notification saying
+what to do.

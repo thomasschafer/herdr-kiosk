@@ -5,14 +5,12 @@
 //! inside it, the rule the app's own `worktree` mod uses.
 
 use std::{
-    fs::{self, OpenOptions},
-    io::Write,
     path::{Path, PathBuf},
     process::Command,
     sync::Arc,
 };
 
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
 use kiosk_core::{
@@ -45,21 +43,46 @@ pub trait AppHost: Send + Sync {
 pub struct CliAppHost {
     herdr_app: PathBuf,
     hc: PathBuf,
+    /// The app's home, which selects the window `herdr-app` drives. Without it, `herdr-app`
+    /// uses its default.
+    app_home: Option<PathBuf>,
 }
 
 impl CliAppHost {
-    pub fn new(herdr_app: impl Into<PathBuf>, hc: impl Into<PathBuf>) -> Self {
+    pub fn new(
+        herdr_app: impl Into<PathBuf>,
+        hc: impl Into<PathBuf>,
+        app_home: Option<PathBuf>,
+    ) -> Self {
         Self {
             herdr_app: herdr_app.into(),
             hc: hc.into(),
+            app_home,
         }
     }
 }
 
-fn run_program(binary: &Path, args: &[String]) -> Result<std::process::Output, HerdrError> {
-    Command::new(binary).args(args).output().map_err(|error| {
+/// Set for `herdr-app` so it drives the window the picker was opened from.
+const APP_HOME_VAR: &str = "HERDR_APP_HOME";
+
+fn run_program(mut command: Command, binary: &Path) -> Result<std::process::Output, HerdrError> {
+    hide_console(&mut command);
+    command.output().map_err(|error| {
         HerdrError::Invocation(format!("could not execute {}: {error}", binary.display()))
     })
+}
+
+/// The app starts kiosk without a console, so on Windows each console program kiosk runs
+/// would otherwise open a window of its own.
+fn hide_console(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    let _ = command;
 }
 
 fn exit_failure(binary: &Path, output: &std::process::Output) -> HerdrError {
@@ -73,7 +96,12 @@ fn exit_failure(binary: &Path, output: &std::process::Output) -> HerdrError {
 
 impl AppHost for CliAppHost {
     fn herdr_app(&self, args: &[String]) -> Result<Vec<u8>, HerdrError> {
-        let output = run_program(&self.herdr_app, args)?;
+        let mut command = Command::new(&self.herdr_app);
+        command.args(args);
+        if let Some(home) = &self.app_home {
+            command.env(APP_HOME_VAR, home);
+        }
+        let output = run_program(command, &self.herdr_app)?;
         if output.status.success() {
             return Ok(output.stdout);
         }
@@ -88,7 +116,9 @@ impl AppHost for CliAppHost {
     }
 
     fn hc(&self, args: &[String]) -> Result<Vec<u8>, HerdrError> {
-        let output = run_program(&self.hc, args)?;
+        let mut command = Command::new(&self.hc);
+        command.args(args);
+        let output = run_program(command, &self.hc)?;
         if output.status.success() {
             return Ok(output.stdout);
         }
@@ -168,12 +198,6 @@ struct HcForeground {
     cwd: Option<PathBuf>,
 }
 
-#[derive(Serialize)]
-struct Notice<'a> {
-    title: &'a str,
-    body: &'a str,
-}
-
 /// A space on this machine, with the live folder of each of its panes' terminals in the
 /// app's order.
 #[derive(Debug, Clone)]
@@ -214,25 +238,36 @@ pub struct HerdrApp {
     host: Arc<dyn AppHost>,
     git: Arc<dyn GitProvider>,
     placement: WorktreePlacement,
-    notice_file: PathBuf,
+    notices: Arc<dyn Notices>,
     on_open: OnOpenConfig,
 }
 
+/// Where the app backend's notifications go: the app mod, which shows them as the app's own.
+pub trait Notices: Send + Sync {
+    fn post(&self, title: &str, body: &str) -> Result<(), String>;
+}
+
+impl Notices for kiosk_serve::Notifier {
+    fn post(&self, title: &str, body: &str) -> Result<(), String> {
+        self.notify(title, body, kiosk_serve::NoticeLevel::Warning)
+            .map_err(|error| format!("{error:#}"))
+    }
+}
+
 impl HerdrApp {
-    /// New checkouts go in `placement`, and notifications are appended to `notice_file` as
-    /// JSON lines for the app mod to show.
+    /// New checkouts go in `placement`, and notifications go to `notices`.
     pub fn new(
         host: Arc<dyn AppHost>,
         git: Arc<dyn GitProvider>,
         placement: WorktreePlacement,
-        notice_file: PathBuf,
+        notices: Arc<dyn Notices>,
         on_open: OnOpenConfig,
     ) -> Self {
         Self {
             host,
             git,
             placement,
-            notice_file,
+            notices,
             on_open,
         }
     }
@@ -501,24 +536,9 @@ impl Backend for HerdrApp {
     fn notify(&self, title: &str, body: &str) -> Result<(), HerdrError> {
         require_nonempty("notification title", title)?;
         require_nonempty("notification body", body)?;
-        let notice_error = |error: std::io::Error| {
-            HerdrError::Invocation(format!(
-                "could not write notification to {}: {error}",
-                self.notice_file.display()
-            ))
-        };
-        if let Some(parent) = self.notice_file.parent() {
-            fs::create_dir_all(parent).map_err(notice_error)?;
-        }
-        let mut line =
-            serde_json::to_string(&Notice { title, body }).expect("a notice always serializes");
-        line.push('\n');
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.notice_file)
-            .and_then(|mut file| file.write_all(line.as_bytes()))
-            .map_err(notice_error)
+        self.notices.post(title, body).map_err(|error| {
+            HerdrError::Invocation(format!("could not show a notification: {error}"))
+        })
     }
 
     fn worktrees(&self) -> Worktrees<'_, Self> {

@@ -266,14 +266,31 @@ struct Fixture {
     repo: PathBuf,
     app: Arc<FakeApp>,
     backend: Arc<HerdrApp>,
+    notices: Arc<PostedNotices>,
 }
 
-fn backend(app: &Arc<FakeApp>, temp: &Path, on_open: OnOpenConfig) -> HerdrApp {
+/// Notifications posted, in order.
+#[derive(Default)]
+struct PostedNotices(Mutex<Vec<(String, String)>>);
+
+impl Notices for PostedNotices {
+    fn post(&self, title: &str, body: &str) -> Result<(), String> {
+        self.0.lock().unwrap().push((title.into(), body.into()));
+        Ok(())
+    }
+}
+
+fn backend(
+    app: &Arc<FakeApp>,
+    notices: &Arc<PostedNotices>,
+    temp: &Path,
+    on_open: OnOpenConfig,
+) -> HerdrApp {
     HerdrApp::new(
         Arc::clone(app) as Arc<dyn AppHost>,
         Arc::new(CliGitProvider),
         WorktreePlacement::new(temp.join("worktrees")).unwrap(),
-        temp.join("notices").join("kiosk.jsonl"),
+        Arc::clone(notices) as Arc<dyn Notices>,
         on_open,
     )
 }
@@ -287,12 +304,14 @@ impl Fixture {
         let temp = TempDir::new().unwrap();
         let repo = repo_fixture(temp.path(), "repo");
         let app = Arc::new(FakeApp::default());
-        let backend = Arc::new(backend(&app, temp.path(), on_open));
+        let notices = Arc::new(PostedNotices::default());
+        let backend = Arc::new(backend(&app, &notices, temp.path(), on_open));
         Self {
             temp,
             repo,
             app,
             backend,
+            notices,
         }
     }
 
@@ -710,7 +729,12 @@ fn every_terminal_folder_is_looked_up_at_once_and_kept_with_its_pane() {
     for folder in &folders {
         app.add_space(folder);
     }
-    let backend = backend(&app, temp.path(), OnOpenConfig::default());
+    let backend = backend(
+        &app,
+        &Arc::new(PostedNotices::default()),
+        temp.path(),
+        OnOpenConfig::default(),
+    );
 
     let spaces = backend.spaces().unwrap();
 
@@ -732,7 +756,7 @@ fn every_terminal_folder_is_looked_up_at_once_and_kept_with_its_pane() {
 }
 
 #[test]
-fn notifications_are_appended_as_json_lines() {
+fn notifications_are_posted_in_order() {
     let fixture = Fixture::new();
 
     fixture.backend.notify("herdr-kiosk", "first").unwrap();
@@ -741,12 +765,20 @@ fn notifications_are_appended_as_json_lines() {
         .notify("herdr-kiosk", "second \"quoted\"")
         .unwrap();
 
-    let contents = fs::read_to_string(fixture.temp.path().join("notices/kiosk.jsonl")).unwrap();
-    let bodies: Vec<String> = contents
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).unwrap()["body"].to_string())
-        .collect();
-    assert_eq!(bodies, [r#""first""#, r#""second \"quoted\"""#]);
+    assert_eq!(
+        *fixture.notices.0.lock().unwrap(),
+        [
+            ("herdr-kiosk".to_owned(), "first".to_owned()),
+            ("herdr-kiosk".to_owned(), "second \"quoted\"".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn empty_notifications_are_refused() {
+    let fixture = Fixture::new();
+    assert!(fixture.backend.notify("herdr-kiosk", "").is_err());
+    assert!(fixture.notices.0.lock().unwrap().is_empty());
 }
 
 fn editor_on_open() -> OnOpenConfig {
@@ -828,7 +860,7 @@ mod cli {
             "hc",
             r#"printf '{"error":{"kind":"not_found","message":"no terminal t9"}}' >&2; exit 3"#,
         );
-        let host = CliAppHost::new(app, hc);
+        let host = CliAppHost::new(app, hc, None);
 
         assert_eq!(
             retry_while_text_file_busy(|| host.herdr_app(&["do".into()])).unwrap_err(),
@@ -844,10 +876,33 @@ mod cli {
     }
 
     #[test]
+    fn herdr_app_drives_the_window_of_the_app_home_it_was_given() {
+        let temp = TempDir::new().unwrap();
+        let app = script(
+            &temp,
+            "herdr-app",
+            r#"printf '%s' "${HERDR_APP_HOME-unset}""#,
+        );
+        let hc = script(&temp, "hc", r#"printf '%s' "${HERDR_APP_HOME-unset}""#);
+        let home = temp.path().join("app-home");
+        let host = CliAppHost::new(&app, &hc, Some(home.clone()));
+        let output = retry_while_text_file_busy(|| host.herdr_app(&["ls".into()])).unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            home.display().to_string()
+        );
+
+        let default = CliAppHost::new(&app, &hc, None);
+        let inherited = std::env::var("HERDR_APP_HOME").unwrap_or_else(|_| "unset".into());
+        let output = retry_while_text_file_busy(|| default.herdr_app(&["ls".into()])).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), inherited);
+    }
+
+    #[test]
     fn other_failures_report_the_exit_and_stderr() {
         let temp = TempDir::new().unwrap();
         let app = script(&temp, "herdr-app", "echo 'window is gone' >&2; exit 2");
-        let host = CliAppHost::new(app, temp.path().join("missing-hc"));
+        let host = CliAppHost::new(app, temp.path().join("missing-hc"), None);
 
         let error = retry_while_text_file_busy(|| host.herdr_app(&["ls".into()])).unwrap_err();
         assert!(

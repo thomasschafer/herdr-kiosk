@@ -1,29 +1,33 @@
-//! Which host kiosk was launched from, read from its environment: the herdr TUI
-//! (as a plugin), the Herdr desktop app (through its `kiosk` mod), or neither.
+//! How kiosk was started: by the herdr TUI (as a plugin), by the Herdr desktop app's
+//! `kiosk` mod (the `app` command), or by neither.
 
-use std::{ffi::OsString, path::PathBuf};
+use std::{
+    ffi::OsString,
+    path::{Path, PathBuf},
+};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 
 use crate::context::PluginContext;
 
 /// Set by the herdr TUI for plugin processes (and every pane it runs).
 pub const HERDR_BIN_PATH: &str = "HERDR_BIN_PATH";
 pub const HERDR_PLUGIN_CONTEXT_JSON: &str = "HERDR_PLUGIN_CONTEXT_JSON";
-const HERDR_PLUGIN_DIRS: [&str; 2] = ["HERDR_PLUGIN_CONFIG_DIR", "HERDR_PLUGIN_STATE_DIR"];
 
-/// Set by the Herdr app's `kiosk` mod.
-pub const KIOSK_APP_BIN: &str = "HERDR_KIOSK_APP_BIN";
-pub const KIOSK_HC_BIN: &str = "HERDR_KIOSK_HC_BIN";
-pub const KIOSK_NOTICE_FILE: &str = "HERDR_KIOSK_NOTICE_FILE";
-pub const KIOSK_CONTEXT_JSON: &str = "HERDR_KIOSK_CONTEXT_JSON";
-const KIOSK_APP_VARS: [&str; 4] = [
-    KIOSK_APP_BIN,
-    KIOSK_HC_BIN,
-    KIOSK_NOTICE_FILE,
-    KIOSK_CONTEXT_JSON,
-];
+/// The command the Herdr app's `kiosk` mod runs.
+pub const APP_COMMAND: &str = "app";
 
+const USAGE: &str = "usage: herdr-kiosk [app [--app-home <folder>] [--context <json>]]";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Invocation {
+    /// The picker in this terminal.
+    Terminal(Host),
+    /// The picker for the Herdr app, which draws it natively.
+    App(AppArgs),
+}
+
+/// Who started the terminal picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Host {
     /// Neither herdr nor the Herdr app started kiosk, so it has no backend.
@@ -32,22 +36,63 @@ pub enum Host {
         herdr_binary: PathBuf,
         context: PluginContext,
     },
-    HerdrApp {
-        herdr_app_binary: PathBuf,
-        hc_binary: PathBuf,
-        /// Where notifications go for the mod to show once kiosk exits.
-        notice_file: PathBuf,
-        context: PluginContext,
-    },
 }
 
 impl Host {
     pub fn context(&self) -> Option<&PluginContext> {
         match self {
             Self::Standalone => None,
-            Self::HerdrTui { context, .. } | Self::HerdrApp { context, .. } => Some(context),
+            Self::HerdrTui { context, .. } => Some(context),
         }
     }
+}
+
+/// What the app mod passes the `app` command.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AppArgs {
+    /// The app's home (`HERDR_APP_HOME`), which selects the window `herdr-app` drives.
+    pub app_home: Option<PathBuf>,
+    /// Where the user is in the app.
+    pub context: PluginContext,
+}
+
+pub fn invocation() -> Result<Invocation> {
+    invocation_with(std::env::args_os().skip(1), |name| std::env::var_os(name))
+}
+
+pub fn invocation_with(
+    args: impl IntoIterator<Item = OsString>,
+    get_env: impl Fn(&str) -> Option<OsString>,
+) -> Result<Invocation> {
+    let mut args = args.into_iter();
+    let Some(command) = args.next() else {
+        return detect_host_with(get_env).map(Invocation::Terminal);
+    };
+    if command != APP_COMMAND {
+        bail!("unknown command {}; {USAGE}", command.to_string_lossy());
+    }
+    let mut app = AppArgs::default();
+    while let Some(flag) = args.next() {
+        let mut value = |flag: &str| {
+            args.next()
+                .with_context(|| format!("{flag} needs a value; {USAGE}"))
+        };
+        match flag.to_str() {
+            Some("--app-home") => {
+                let path = PathBuf::from(value("--app-home")?);
+                if !path.is_absolute() {
+                    bail!("--app-home must be an absolute path: {}", path.display());
+                }
+                app.app_home = Some(path);
+            }
+            Some("--context") => {
+                let json = value("--context")?;
+                app.context = context_from(Some(json), "--context")?;
+            }
+            _ => bail!("unknown option {}; {USAGE}", flag.to_string_lossy()),
+        }
+    }
+    Ok(Invocation::App(app))
 }
 
 pub fn detect_host() -> Result<Host> {
@@ -56,49 +101,13 @@ pub fn detect_host() -> Result<Host> {
 
 pub fn detect_host_with(get_env: impl Fn(&str) -> Option<OsString>) -> Result<Host> {
     let get = |name: &str| get_env(name).filter(|value| !value.is_empty());
-    let tui = get(HERDR_BIN_PATH);
-    let app = get(KIOSK_APP_BIN);
-    match (tui, app) {
-        (Some(_), Some(_)) => bail!(
-            "both {HERDR_BIN_PATH} (herdr TUI) and {KIOSK_APP_BIN} (Herdr app) are set; \
-             the Herdr app's kiosk mod unsets the herdr TUI's variables, so start kiosk from it"
-        ),
-        (Some(herdr_binary), None) => {
-            if let Some(name) = KIOSK_APP_VARS.into_iter().find(|name| get(name).is_some()) {
-                bail!("{name} is set for the Herdr app, but kiosk was started by the herdr TUI");
-            }
-            Ok(Host::HerdrTui {
-                herdr_binary: herdr_binary.into(),
-                context: context_from(get(HERDR_PLUGIN_CONTEXT_JSON), HERDR_PLUGIN_CONTEXT_JSON)?,
-            })
-        }
-        (None, Some(herdr_app_binary)) => {
-            if let Some(name) = [HERDR_PLUGIN_CONTEXT_JSON]
-                .into_iter()
-                .chain(HERDR_PLUGIN_DIRS)
-                .find(|name| get(name).is_some())
-            {
-                bail!("{name} is set for the herdr TUI, but kiosk was started by the Herdr app");
-            }
-            let absolute = |name: &str, value: Option<OsString>| -> Result<PathBuf> {
-                let Some(value) = value else {
-                    bail!("{name} must be set when {KIOSK_APP_BIN} is");
-                };
-                let path = PathBuf::from(value);
-                if !path.is_absolute() {
-                    bail!("{name} must be an absolute path: {}", path.display());
-                }
-                Ok(path)
-            };
-            Ok(Host::HerdrApp {
-                herdr_app_binary: absolute(KIOSK_APP_BIN, Some(herdr_app_binary))?,
-                hc_binary: absolute(KIOSK_HC_BIN, get(KIOSK_HC_BIN))?,
-                notice_file: absolute(KIOSK_NOTICE_FILE, get(KIOSK_NOTICE_FILE))?,
-                context: context_from(get(KIOSK_CONTEXT_JSON), KIOSK_CONTEXT_JSON)?,
-            })
-        }
-        (None, None) => Ok(Host::Standalone),
-    }
+    let Some(herdr_binary) = get(HERDR_BIN_PATH) else {
+        return Ok(Host::Standalone);
+    };
+    Ok(Host::HerdrTui {
+        herdr_binary: herdr_binary.into(),
+        context: context_from(get(HERDR_PLUGIN_CONTEXT_JSON), HERDR_PLUGIN_CONTEXT_JSON)?,
+    })
 }
 
 fn context_from(json: Option<OsString>, name: &str) -> Result<PluginContext> {
@@ -111,9 +120,54 @@ fn context_from(json: Option<OsString>, name: &str) -> Result<PluginContext> {
     PluginContext::from_json(json).map_err(|error| anyhow::anyhow!("invalid {name}: {error}"))
 }
 
+/// The program `name` on `PATH`, as a shell would find it.
+pub fn find_program(name: &str) -> Result<PathBuf> {
+    find_program_in(name, std::env::var_os("PATH"), std::env::var_os("PATHEXT"))
+}
+
+fn find_program_in(
+    name: &str,
+    path: Option<OsString>,
+    pathext: Option<OsString>,
+) -> Result<PathBuf> {
+    let extensions: Vec<String> = if cfg!(windows) {
+        pathext
+            .and_then(|value| value.into_string().ok())
+            .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into())
+            .split(';')
+            .filter(|extension| !extension.is_empty())
+            .map(str::to_owned)
+            .collect()
+    } else {
+        vec![String::new()]
+    };
+    std::env::split_paths(&path.unwrap_or_default())
+        .filter(|dir| dir.is_absolute())
+        .flat_map(|dir| {
+            extensions
+                .iter()
+                .map(move |extension| dir.join(format!("{name}{extension}")))
+        })
+        .find(|candidate| is_executable(candidate))
+        .with_context(|| format!("{name} is not on PATH"))
+}
+
+fn is_executable(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        path.metadata()
+            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, path::Path};
+    use std::collections::HashMap;
 
     use super::*;
 
@@ -125,22 +179,20 @@ mod tests {
         detect_host_with(|name| vars.get(name).cloned())
     }
 
-    #[cfg(not(windows))]
-    const ABSOLUTE: [&str; 3] = ["/bin/herdr-app", "/bin/hc", "/tmp/notices.jsonl"];
-    #[cfg(windows)]
-    const ABSOLUTE: [&str; 3] = [r"C:\bin\herdr-app", r"C:\bin\hc", r"C:\tmp\notices.jsonl"];
+    fn invoke(args: &[&str]) -> Result<Invocation> {
+        invocation_with(args.iter().map(OsString::from), |_| None)
+    }
 
-    const APP: [(&str, &str); 4] = [
-        (KIOSK_APP_BIN, ABSOLUTE[0]),
-        (KIOSK_HC_BIN, ABSOLUTE[1]),
-        (KIOSK_NOTICE_FILE, ABSOLUTE[2]),
-        (KIOSK_CONTEXT_JSON, r#"{"focused_pane_cwd":"/repo/src"}"#),
-    ];
+    #[cfg(not(windows))]
+    const APP_HOME: &str = "/home/me/.config/herdr-app";
+    #[cfg(windows)]
+    const APP_HOME: &str = r"C:\Users\me\.config\herdr-app";
 
     #[test]
     fn no_host_variables_means_standalone() {
         assert_eq!(detect(&[]).unwrap(), Host::Standalone);
         assert_eq!(detect(&[(HERDR_BIN_PATH, "")]).unwrap(), Host::Standalone);
+        assert_eq!(invoke(&[]).unwrap(), Invocation::Terminal(Host::Standalone));
     }
 
     #[test]
@@ -163,74 +215,85 @@ mod tests {
     }
 
     #[test]
-    fn herdr_app_reads_its_binaries_notice_file_and_context() {
-        let host = detect(&APP).unwrap();
+    fn invalid_plugin_context_is_reported_with_its_variable() {
+        let error = detect(&[
+            (HERDR_BIN_PATH, "/bin/herdr"),
+            (HERDR_PLUGIN_CONTEXT_JSON, "not json"),
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains(HERDR_PLUGIN_CONTEXT_JSON), "{error}");
+    }
+
+    #[test]
+    fn the_app_command_reads_its_home_and_context() {
+        let invocation = invoke(&[
+            APP_COMMAND,
+            "--app-home",
+            APP_HOME,
+            "--context",
+            r#"{"focused_pane_cwd":"/repo/src"}"#,
+        ])
+        .unwrap();
+        let Invocation::App(app) = invocation else {
+            panic!("{invocation:?}");
+        };
+        assert_eq!(app.app_home.as_deref(), Some(Path::new(APP_HOME)));
+        assert_eq!(app.context.current_cwd(), Some(Path::new("/repo/src")));
         assert_eq!(
-            host,
-            Host::HerdrApp {
-                herdr_app_binary: ABSOLUTE[0].into(),
-                hc_binary: ABSOLUTE[1].into(),
-                notice_file: ABSOLUTE[2].into(),
-                context: PluginContext {
-                    focused_pane_cwd: Some("/repo/src".into()),
-                    workspace_cwd: None,
-                },
-            }
-        );
-        assert_eq!(
-            host.context().unwrap().current_cwd(),
-            Some(Path::new("/repo/src"))
+            invoke(&[APP_COMMAND]).unwrap(),
+            Invocation::App(AppArgs::default())
         );
     }
 
     #[test]
-    fn both_hosts_at_once_is_an_error() {
-        let mut vars = APP.to_vec();
-        vars.push((HERDR_BIN_PATH, "/bin/herdr"));
-        let error = detect(&vars).unwrap_err().to_string();
-        assert!(error.contains("both"), "{error}");
+    fn the_app_command_ignores_the_herdr_tuis_variables() {
+        let invocation = invocation_with([OsString::from(APP_COMMAND)], |name| {
+            (name == HERDR_BIN_PATH).then(|| "/bin/herdr".into())
+        })
+        .unwrap();
+        assert_eq!(invocation, Invocation::App(AppArgs::default()));
     }
 
     #[test]
-    fn the_other_hosts_variables_are_rejected() {
-        let error = detect(&[(HERDR_BIN_PATH, "/bin/herdr"), (KIOSK_NOTICE_FILE, "/n")])
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains(KIOSK_NOTICE_FILE), "{error}");
-
-        for name in [
-            HERDR_PLUGIN_CONTEXT_JSON,
-            "HERDR_PLUGIN_CONFIG_DIR",
-            "HERDR_PLUGIN_STATE_DIR",
+    fn bad_app_arguments_are_refused() {
+        for (args, expected) in [
+            (&["serve"][..], "unknown command"),
+            (&[APP_COMMAND, "--verbose"], "unknown option"),
+            (&[APP_COMMAND, "--app-home"], "needs a value"),
+            (&[APP_COMMAND, "--app-home", "relative"], "absolute"),
+            (&[APP_COMMAND, "--context", "not json"], "--context"),
         ] {
-            let mut vars = APP.to_vec();
-            vars.push((name, "{}"));
-            let error = detect(&vars).unwrap_err().to_string();
-            assert!(error.contains(name), "{error}");
+            let error = invoke(args).unwrap_err().to_string();
+            assert!(error.contains(expected), "{args:?}: {error}");
         }
     }
 
     #[test]
-    fn herdr_app_requires_every_absolute_path() {
-        for missing in [KIOSK_HC_BIN, KIOSK_NOTICE_FILE] {
-            let vars: Vec<_> = APP
-                .into_iter()
-                .filter(|(name, _)| *name != missing)
-                .collect();
-            let error = detect(&vars).unwrap_err().to_string();
-            assert!(error.contains(missing), "{error}");
+    fn programs_are_found_on_path() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let name = "kiosk-test-program";
+        let file_name = if cfg!(windows) {
+            format!("{name}.exe")
+        } else {
+            name.to_owned()
+        };
+        let program = second.path().join(&file_name);
+        std::fs::write(&program, "").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let not_executable = first.path().join(&file_name);
+            std::fs::write(&not_executable, "").unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        let mut vars = APP.to_vec();
-        vars[1] = (KIOSK_HC_BIN, "hc");
-        let error = detect(&vars).unwrap_err().to_string();
-        assert!(error.contains("absolute"), "{error}");
-    }
-
-    #[test]
-    fn invalid_context_is_reported_with_its_variable() {
-        let mut vars = APP.to_vec();
-        vars[3] = (KIOSK_CONTEXT_JSON, "not json");
-        let error = detect(&vars).unwrap_err().to_string();
-        assert!(error.contains(KIOSK_CONTEXT_JSON), "{error}");
+        let path = std::env::join_paths([first.path(), second.path()]).unwrap();
+        assert_eq!(
+            find_program_in(name, Some(path.clone()), None).unwrap(),
+            program
+        );
+        let error = find_program_in("not-a-kiosk-program", Some(path), None).unwrap_err();
+        assert!(error.to_string().contains("not on PATH"), "{error}");
     }
 }

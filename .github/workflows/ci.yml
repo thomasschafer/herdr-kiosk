@@ -43,6 +43,10 @@ jobs:
         if: runner.os == 'Linux'
         run: scripts/test-fetch-or-build.sh
 
+      - name: Test app installer
+        if: runner.os != 'Windows'
+        run: scripts/test-install-app.sh
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -83,6 +87,11 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: scripts/test-fetch-or-build.ps1
+
+      - name: Test install-app.ps1 installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: scripts/test-install-app.ps1
 
       - name: Run clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
