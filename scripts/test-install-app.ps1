@@ -148,6 +148,8 @@ try {
     Assert-True ($run.Code -ne 0 -and $run.Output.Contains("needs a checkout")) "built without a checkout: $($run.Output)"
 
     Write-Output "install-app.ps1 tests passed"
+    # The last installer run failed on purpose; its exit code is not this script's.
+    $global:LASTEXITCODE = 0
 }
 finally {
     foreach ($name in $saved.Keys) {
