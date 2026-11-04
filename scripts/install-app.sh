@@ -54,7 +54,10 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/herdr-kiosk-install.XXXXXX") || fail 'could not
 trap 'rm -rf -- "$tmp"' EXIT HUP INT TERM
 
 # The checkout this script is in, if it is in one and no other version was asked for.
-script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" 2>/dev/null && pwd || true)
+script_dir=
+if dir=$(CDPATH='' cd -- "$(dirname -- "$0")" 2>/dev/null && pwd); then
+    script_dir=$dir
+fi
 checkout=
 if [ -z "$version" ] && [ -n "$script_dir" ] && [ -f "$script_dir/../herdr-plugin.toml" ] &&
     [ -f "$script_dir/../herdr-app/kiosk/main.js" ]; then

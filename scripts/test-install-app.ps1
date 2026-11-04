@@ -9,6 +9,12 @@ function Assert-True([bool] $Condition, [string] $Message) {
     }
 }
 
+# Text is compared ignoring line endings, as git on Windows checks files out with CRLF.
+function Assert-SameText([string] $Left, [string] $Right) {
+    $read = { param($Path) (Get-Content -LiteralPath $Path -Raw) -replace "`r`n", "`n" }
+    Assert-True ((& $read $Left) -ceq (& $read $Right)) "$Left differs from $Right"
+}
+
 function Assert-Same([string] $Left, [string] $Right) {
     Assert-True ((Get-FileHash -LiteralPath $Left).Hash -eq (Get-FileHash -LiteralPath $Right).Hash) "$Left differs from $Right"
 }
@@ -41,8 +47,8 @@ function Invoke-Installer([string] $Script, [string[]] $Arguments = @()) {
 function Assert-Installed([string] $AppHome) {
     $mod = Join-Path (Join-Path $AppHome "mods") "kiosk"
     Assert-Same (Join-Path (Join-Path $mod "bin") "herdr-kiosk.exe") (Join-Path $releases $asset)
-    Assert-Same (Join-Path $mod "main.js") (Join-Path (Join-Path (Join-Path $projectRoot "herdr-app") "kiosk") "main.js")
-    Assert-Same (Join-Path $mod "mod.json") (Join-Path (Join-Path (Join-Path $projectRoot "herdr-app") "kiosk") "mod.json")
+    Assert-SameText (Join-Path $mod "main.js") (Join-Path (Join-Path (Join-Path $projectRoot "herdr-app") "kiosk") "main.js")
+    Assert-SameText (Join-Path $mod "mod.json") (Join-Path (Join-Path (Join-Path $projectRoot "herdr-app") "kiosk") "mod.json")
     Assert-True ((Get-Content -LiteralPath $calls -Raw).Contains("check $mod")) "the app did not check $mod"
 }
 
