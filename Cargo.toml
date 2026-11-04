@@ -31,8 +31,3 @@ workspace = true
 
 [profile.release]
 lto = true
-
-[patch.crates-io]
-kiosk-core = { git = "https://github.com/thomasschafer/kiosk", rev = "a317d44052f5eca02b6b4585923b54a4f3c9e0f2" }
-kiosk-tui = { git = "https://github.com/thomasschafer/kiosk", rev = "a317d44052f5eca02b6b4585923b54a4f3c9e0f2" }
-kiosk-docgen = { git = "https://github.com/thomasschafer/kiosk", rev = "a317d44052f5eca02b6b4585923b54a4f3c9e0f2" }
