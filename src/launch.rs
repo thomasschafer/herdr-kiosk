@@ -289,9 +289,12 @@ mod tests {
             std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         let path = std::env::join_paths([first.path(), second.path()]).unwrap();
-        assert_eq!(
-            find_program_in(name, Some(path.clone()), None).unwrap(),
-            program
+        let found = find_program_in(name, Some(path.clone()), None).unwrap();
+        assert!(
+            kiosk_core::path::equivalent(&found, &program),
+            "found {} rather than {}",
+            found.display(),
+            program.display()
         );
         let error = find_program_in("not-a-kiosk-program", Some(path), None).unwrap_err();
         assert!(error.to_string().contains("not on PATH"), "{error}");
