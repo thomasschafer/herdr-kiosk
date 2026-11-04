@@ -1,7 +1,8 @@
 //! herdr-kiosk's own config sections, read beside kiosk's shared ones.
 
 use anyhow::Result;
-use kiosk_core::config::{ConfigExtension, OnOpenConfig};
+use kiosk_core::config::{ConfigExtension, OnOpenConfig, ThemeConfig};
+use kiosk_tui::theme::ThemedConfig;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -13,6 +14,15 @@ use serde::{Deserialize, Serialize};
 pub struct Config {
     /// Configure command panes created after opening a new workspace.
     pub on_open: OnOpenConfig,
+    /// Customize terminal-palette colors used by the picker. Light-terminal users
+    /// can set `muted`, `border`, and other colors explicitly.
+    pub theme: ThemeConfig,
+}
+
+impl ThemedConfig for Config {
+    fn theme(&self) -> &ThemeConfig {
+        &self.theme
+    }
 }
 
 impl ConfigExtension for Config {
@@ -105,7 +115,7 @@ panes = [{ command = "  ", direction = "right" }]"#,
     }
 
     #[test]
-    fn unknown_keys_in_core_and_on_open_sections_are_both_reported() {
+    fn unknown_keys_in_core_and_plugin_sections_are_all_reported() {
         let (_, _, warnings) = parse_config::<Config>(
             "future = 1\n[theme]\nfuture_theme = 1\n[on_open]\nfuture_on_open = 1\n",
         )
@@ -118,8 +128,8 @@ panes = [{ command = "  ", direction = "right" }]"#,
             messages,
             [
                 "unknown config key ignored: future",
-                "unknown config key ignored: theme.future_theme",
                 "unknown config key ignored: on_open.future_on_open",
+                "unknown config key ignored: theme.future_theme",
             ]
         );
     }

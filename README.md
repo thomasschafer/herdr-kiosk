@@ -56,8 +56,10 @@ gallery; its README covers installing it.
 
 Type to fuzzy-search repositories and branches (and plain folders, if you enable
 `include_non_git`). `enter` opens the selected checkout or folder, `tab` opens a
-repository's branch view (for Git repositories), and `ctrl+h` shows all active bindings
-for the current view.
+repository's branch view (for Git repositories), and `esc` goes back, or closes the picker
+from the repository list. `ctrl+u` clears the search, which edits like a shell prompt
+(`alt+b` and `alt+f` move by word, `ctrl+a` and `ctrl+e` to either end), and `ctrl+h` (or
+`f1`) shows all active bindings for the current view.
 
 ## Configuration
 
@@ -169,15 +171,32 @@ Defaults:
 ```toml
 [keys.general]
 "ctrl+c" = "quit"
-"ctrl+e" = "scan_warnings"
 "ctrl+h" = "help"
-"ctrl+x" = "dismiss_toast"
+"ctrl+s" = "scan_warnings"
+"f1" = "help"
 
 [keys.text_edit]
+"alt+b" = "cursor_word_left"
 "alt+backspace" = "delete_word"
+"alt+d" = "delete_word_forward"
+"alt+delete" = "delete_word_forward"
+"alt+f" = "cursor_word_right"
+"alt+left" = "cursor_word_left"
+"alt+right" = "cursor_word_right"
 "backspace" = "backspace"
+"ctrl+a" = "cursor_start"
+"ctrl+b" = "cursor_left"
+"ctrl+d" = "delete_forward"
+"ctrl+e" = "cursor_end"
+"ctrl+f" = "cursor_right"
+"ctrl+k" = "delete_to_end"
+"ctrl+left" = "cursor_word_left"
+"ctrl+right" = "cursor_word_right"
+"ctrl+u" = "clear"
 "ctrl+w" = "delete_word"
-"esc" = "clear"
+"delete" = "delete_forward"
+"end" = "cursor_end"
+"home" = "cursor_start"
 "left" = "cursor_left"
 "right" = "cursor_right"
 
@@ -193,7 +212,7 @@ Defaults:
 
 [keys.repo_select]
 "enter" = "open"
-"q" = "quit"
+"esc" = "quit"
 "tab" = "branches_view"
 
 [keys.branch_select]
