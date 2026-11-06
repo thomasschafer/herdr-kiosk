@@ -16,4 +16,5 @@ pub const PRODUCT: Product = Product {
     backend_name: "Herdr",
     no_backend_message: "not running inside herdr",
     setup_intro: "Pick repositories and branches without leaving herdr.",
+    keys: &[],
 };
