@@ -7,13 +7,13 @@ license = "MIT"
 
 [dependencies]
 anyhow = "1"
-kiosk-core = "0.4"
-kiosk-tui = "0.4"
+kiosk-core = "0.7"
+kiosk-tui = "0.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [dev-dependencies]
-kiosk-core = { version = "0.4", features = ["test-support"] }
+kiosk-core = { version = "0.7", features = ["test-support"] }
 tempfile = "3"
 
 [workspace]

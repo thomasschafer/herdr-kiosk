@@ -1,10 +1,14 @@
 use std::{env, path::Path};
 
 use anyhow::{Result, bail};
-use herdr_kiosk::config::{Config, SOURCE};
+use herdr_kiosk::{
+    PRODUCT,
+    config::{Config, SOURCE},
+};
 use kiosk_docgen::ProductDocs;
 
 const DOCS: ProductDocs<'static> = ProductDocs {
+    product: &PRODUCT,
     sources: &[SOURCE],
     extension: "Config",
     order: &["search_dirs", "include_non_git", "theme", "on_open", "keys"],

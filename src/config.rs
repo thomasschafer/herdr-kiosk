@@ -44,12 +44,13 @@ mod tests {
     use super::*;
 
     fn parse(contents: &str) -> Result<Config> {
-        parse_config::<Config>(contents).map(|(_, config, _)| config)
+        parse_config::<Config>(&crate::PRODUCT, contents).map(|(_, config, _)| config)
     }
 
     #[test]
     fn parses_valid_on_open_panes() {
         let (_, config, warnings) = parse_config::<Config>(
+            &crate::PRODUCT,
             r#"
 [on_open]
 panes = [
@@ -117,6 +118,7 @@ panes = [{ command = "  ", direction = "right" }]"#,
     #[test]
     fn unknown_keys_in_core_and_plugin_sections_are_all_reported() {
         let (_, _, warnings) = parse_config::<Config>(
+            &crate::PRODUCT,
             "future = 1\n[theme]\nfuture_theme = 1\n[on_open]\nfuture_on_open = 1\n",
         )
         .unwrap();
@@ -137,7 +139,8 @@ panes = [{ command = "  ", direction = "right" }]"#,
     #[test]
     fn a_managed_worktree_directory_is_not_a_setting_here() {
         let (_, _, warnings) =
-            parse_config::<Config>("[worktrees]\ndirectory = \"~/trees\"\n").unwrap();
+            parse_config::<Config>(&crate::PRODUCT, "[worktrees]\ndirectory = \"~/trees\"\n")
+                .unwrap();
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].message.contains("worktrees"));
     }

@@ -166,6 +166,43 @@ Assign a key to `"noop"` to unbind an inherited mapping.
 
 Write chords with lowercase `ctrl+`, `alt+`, and `shift+` modifiers followed by a character or a named key such as `enter`, `esc`, `tab`, `backspace`, `delete`, an arrow, `home`, `end`, `pageup`, `pagedown`, or `space`.
 
+Each section accepts these actions:
+
+- `[keys.general]`: `noop`, `quit`, `help`, `dismiss_toast`, `scan_warnings`
+- `[keys.text_edit]`: `noop`, `clear`, `backspace`, `delete_forward`, `delete_word`, `delete_word_forward`, `delete_to_end`, `cursor_left`, `cursor_right`, `cursor_word_left`, `cursor_word_right`, `cursor_start`, `cursor_end`
+- `[keys.list_navigation]`: `noop`, `move_up`, `move_down`
+- `[keys.modal]`: `noop`, `open`, `back`
+- `[keys.repo_select]`: `noop`, `open`, `branches_view`, `quit`
+- `[keys.branch_select]`: `noop`, `open`, `back`, `new_branch`, `delete`, `backspace`, `backspace_or_back`
+
+What each action does:
+
+- `noop` — Unbound
+- `quit` — Quit the picker
+- `help` — Show active key bindings
+- `dismiss_toast` — Dismiss the visible notification
+- `scan_warnings` — Show directories that could not be scanned
+- `clear` — Clear the search query
+- `backspace` — Delete the previous character
+- `delete_forward` — Delete the next character
+- `delete_word` — Delete the previous word
+- `delete_word_forward` — Delete the next word
+- `delete_to_end` — Delete to the end
+- `cursor_left` — Move the cursor left
+- `cursor_right` — Move the cursor right
+- `cursor_word_left` — Move the cursor back a word
+- `cursor_word_right` — Move the cursor forward a word
+- `cursor_start` — Move the cursor to the start
+- `cursor_end` — Move the cursor to the end
+- `move_up` — Move selection up
+- `move_down` — Move selection down
+- `open` — Open or confirm the selection
+- `back` — Go back or cancel
+- `branches_view` — Browse repository branches
+- `new_branch` — Create a new branch
+- `delete` — Delete the selected checkout
+- `backspace_or_back` — Delete the previous character, or go back when the search is empty
+
 Defaults:
 
 ```toml
