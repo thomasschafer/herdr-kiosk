@@ -1,5 +1,8 @@
 # herdr-kiosk
 
+> [!NOTE]
+> This repository is archived and no longer maintained. Kiosk now lives on as a picker for the [Herdr desktop app](https://herdr.dev), at [thomasschafer/kiosk](https://github.com/thomasschafer/kiosk).
+
 Fuzzy-find Git repositories (or any folder) and branches, then open them as Herdr
 workspaces and worktrees, as a plugin for the herdr TUI.
 
